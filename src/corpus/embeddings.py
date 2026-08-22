@@ -2,7 +2,7 @@
 
 Kept deliberately thin (a direct httpx call rather than an SDK) so the request
 body is explicit and free of client-injected fields. Retries transient failures
-(timeouts, 5xx) since a CPU embedder behind a gateway can be slow under load.
+(timeouts, 5xx) since a remote embedder can be slow under load.
 """
 
 from __future__ import annotations

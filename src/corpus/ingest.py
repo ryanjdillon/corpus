@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 
 from haystack.document_stores.types import DuplicatePolicy
 
@@ -12,6 +13,7 @@ from .embeddings import Embedder, EmbedInputError
 from .fetchers import build_fetcher
 from .models import Record
 from .store import existing_ids, get_cursor, get_document_store, set_cursor, to_document
+from .telemetry import documents_counter, embed_batch_size, embed_duration
 
 log = logging.getLogger("corpus.ingest")
 
@@ -60,10 +62,15 @@ def ingest(source: str, batch_size: int = 50) -> int:
         # chunk carries the document.
         nonlocal total
         texts = [_embed_text(r) for r in records]
+        attrs = {"source": source}
+        start = time.monotonic()
         vectors = embedder.embed(texts)
+        embed_duration.record(time.monotonic() - start, attrs)
+        embed_batch_size.record(len(records), attrs)
         docs = [to_document(r, classify(r), v) for r, v in zip(records, vectors)]
         store.write_documents(docs, policy=DuplicatePolicy.OVERWRITE)
         total += len(docs)
+        documents_counter.add(len(docs), {"source": source, "outcome": "written"})
         log.info("ingest %s: wrote %d (%d total)", source, len(docs), total)
 
     def _process(records: list[Record]) -> None:
@@ -82,6 +89,7 @@ def ingest(source: str, batch_size: int = 50) -> int:
                 _process(records[mid:])
             else:
                 skipped += 1
+                documents_counter.add(1, {"source": source, "outcome": "skipped"})
                 log.warning(
                     "ingest %s: skipping record %s (skipped=%d): %s",
                     source, records[0].key(), skipped, exc,

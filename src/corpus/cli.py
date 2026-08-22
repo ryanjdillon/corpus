@@ -7,6 +7,7 @@ import logging
 import click
 import uvicorn
 
+from . import telemetry
 from .config import settings
 
 
@@ -18,12 +19,18 @@ def main() -> None:
 @main.command()
 def api() -> None:
     """Run the REST API server."""
-    uvicorn.run("corpus.api:app", host=settings.host, port=settings.port)
+    telemetry.configure("corpus")
+    from .api import app
+
+    telemetry.instrument_fastapi(app)
+    telemetry.register_corpus_size_gauge()
+    uvicorn.run(app, host=settings.host, port=settings.port)
 
 
 @main.command()
 def mcp() -> None:
     """Run the MCP server (streamable-HTTP)."""
+    telemetry.configure("corpus-mcp")
     from .mcp_server import run
 
     run()
@@ -34,10 +41,14 @@ def mcp() -> None:
 @click.option("--batch-size", default=50, show_default=True)
 def ingest(source: str, batch_size: int) -> None:
     """Ingest from a source id, e.g. 'imap:example'."""
+    telemetry.configure("corpus-ingest")
     from .ingest import ingest as run_ingest
 
-    count = run_ingest(source, batch_size=batch_size)
-    click.echo(f"ingested {count} documents from {source}")
+    try:
+        count = run_ingest(source, batch_size=batch_size)
+        click.echo(f"ingested {count} documents from {source}")
+    finally:
+        telemetry.shutdown()  # flush metrics/traces before the process exits
 
 
 if __name__ == "__main__":

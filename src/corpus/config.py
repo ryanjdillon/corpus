@@ -13,13 +13,13 @@ class Settings(BaseSettings):
     db_schema: str = "corpus"
     documents_table: str = "documents"
 
-    # OpenAI-compatible embedding endpoint. Points at an in-cluster gateway that
-    # serves a local embedding model; content never leaves the LAN.
+    # Any endpoint serving the OpenAI embeddings API — a locally hosted model or
+    # a cloud provider.
     openai_api_base: str = "http://localhost:8080/v1"
     openai_api_key: str = ""
     embedding_model: str = "local-embed"
     embedding_dimensions: int = 1024
-    # Generous: a CPU embedder may take a while for a batch under load.
+    # Generous: a slow endpoint may take a while for a batch under load.
     embed_timeout: float = 300.0
 
     # Optional local model used only to break low-confidence classification ties.
