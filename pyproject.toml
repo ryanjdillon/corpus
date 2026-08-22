@@ -1,6 +1,6 @@
 [project]
 name = "corpus"
-version = "0.1.0"
+version = "0.1.1"
 description = "Local-only document & email semantic search"
 requires-python = ">=3.12"
 dependencies = [
@@ -12,7 +12,9 @@ dependencies = [
     "mail-parser>=4.1",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
-    "mcp>=1.2",
+    # Pinned to the 1.x SDK: it ships FastMCP (mcp.server.fastmcp) with the
+    # streamable-HTTP transport. 2.0 restructured the API and dropped that path.
+    "mcp>=1.9,<2",
     "pydantic>=2.9",
     "pydantic-settings>=2.6",
     "click>=8.1",
