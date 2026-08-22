@@ -11,7 +11,7 @@ from .config import settings
 from .embeddings import Embedder
 from .fetchers import build_fetcher
 from .models import Record
-from .store import get_cursor, get_document_store, set_cursor, to_document
+from .store import existing_ids, get_cursor, get_document_store, set_cursor, to_document
 
 log = logging.getLogger("corpus.ingest")
 
@@ -32,7 +32,8 @@ def ingest(source: str, batch_size: int = 50) -> int:
     store = get_document_store()
     embedder = Embedder()
     cursor = get_cursor(source)
-    log.info("ingest %s from cursor=%s", source, cursor)
+    seen = existing_ids(source)
+    log.info("ingest %s from cursor=%s (%d already stored)", source, cursor, len(seen))
 
     batch: list[Record] = []
     total = 0
@@ -41,19 +42,20 @@ def ingest(source: str, batch_size: int = 50) -> int:
         nonlocal total
         if not batch:
             return
-        docs = []
-        for rec in batch:
-            cls = classify(rec)
-            # First chunk carries the document; long bodies index the head.
-            head = _chunk(rec.body_text)[0]
-            emb = embedder.embed_one(f"{rec.subject or ''}\n\n{head}")
-            docs.append(to_document(rec, cls, emb))
+        # Embed the whole batch in one call — far faster than per-message and
+        # kinder to a CPU embedder. First chunk carries the document.
+        texts = [f"{r.subject or ''}\n\n{_chunk(r.body_text)[0]}" for r in batch]
+        vectors = embedder.embed(texts)
+        docs = [to_document(r, classify(r), v) for r, v in zip(batch, vectors)]
         store.write_documents(docs, policy=DuplicatePolicy.OVERWRITE)
         total += len(docs)
+        log.info("ingest %s: wrote %d (%d total)", source, len(docs), total)
         batch.clear()
 
     try:
         for rec in fetcher.fetch(cursor):
+            if rec.key() in seen:
+                continue  # already stored (resume a partial backfill)
             batch.append(rec)
             if len(batch) >= batch_size:
                 flush()

@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     embedding_model: str = "local-embed"
     embedding_dimensions: int = 1024
+    # Generous: a CPU embedder may take a while for a batch under load.
+    embed_timeout: float = 300.0
 
     # Optional local model used only to break low-confidence classification ties.
     classify_model: str = ""  # empty => rule + prototype classification only

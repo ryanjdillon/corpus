@@ -61,6 +61,18 @@ def to_document(record, classification, embedding) -> Document:
 # --- sync cursor (bespoke sync_state table, created out-of-band) ---
 
 
+def existing_ids(source: str) -> set[str]:
+    """Document ids already stored for a source, so ingestion can resume after a
+    partial run instead of re-embedding everything."""
+    table = f"{settings.db_schema}.{settings.documents_table}"
+    with psycopg.connect(_dsn()) as conn, conn.cursor() as cur:
+        cur.execute("SELECT to_regclass(%s)", (table,))
+        if cur.fetchone()[0] is None:
+            return set()
+        cur.execute(f"SELECT id FROM {table} WHERE meta->>'source' = %s", (source,))
+        return {row[0] for row in cur.fetchall()}
+
+
 def get_cursor(source: str) -> str | None:
     with psycopg.connect(_dsn()) as conn, conn.cursor() as cur:
         cur.execute(
