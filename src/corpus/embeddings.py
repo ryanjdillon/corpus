@@ -16,6 +16,12 @@ from .config import settings
 _RETRIES = 4
 
 
+class EmbedInputError(Exception):
+    """A non-retryable client error (4xx) from the embedding endpoint: the input
+    itself was rejected (e.g. too long). Callers can isolate and skip the
+    offending record rather than abort a whole batch."""
+
+
 class Embedder:
     def __init__(self) -> None:
         self._client = httpx.Client(
@@ -39,9 +45,12 @@ class Embedder:
                 resp.raise_for_status()
                 return [row["embedding"] for row in resp.json()["data"]]
             except httpx.HTTPStatusError as exc:
-                # Client errors (4xx) are not transient — fail fast.
+                # Client errors (4xx) are not transient: the input was rejected.
+                # Signal it distinctly so the caller can skip the offending record.
                 if exc.response.status_code < 500:
-                    raise
+                    raise EmbedInputError(
+                        f"{exc.response.status_code}: {exc.response.text[:200]}"
+                    ) from exc
                 last = exc
             except httpx.TransportError as exc:  # timeouts, connection resets
                 last = exc

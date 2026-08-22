@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from corpus import embeddings
-from corpus.embeddings import Embedder
+from corpus.embeddings import Embedder, EmbedInputError
 
 
 def _mock_transport(monkeypatch, handler):
@@ -44,7 +44,8 @@ def test_embed_fails_fast_on_4xx(monkeypatch):
     _mock_transport(monkeypatch, handler)
     embedder = Embedder()
     try:
-        with pytest.raises(httpx.HTTPStatusError):
+        # 4xx becomes EmbedInputError so callers can skip the offending record.
+        with pytest.raises(EmbedInputError):
             embedder.embed_one("x")
     finally:
         embedder.close()
