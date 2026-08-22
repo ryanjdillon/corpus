@@ -25,6 +25,26 @@ def enabled() -> bool:
     return bool(os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
 
 
+# Auto-instrumentation emits standard semconv names (http.server.duration, …).
+# Rename them under the corpus. prefix so every metric this service exports is
+# discoverable as corpus_* (the custom instruments below are already prefixed).
+_INSTRUMENTATION_METRICS = [
+    "http.server.duration",
+    "http.server.active_requests",
+    "http.server.request.size",
+    "http.server.response.size",
+    "http.client.duration",
+    "http.client.request.size",
+    "http.client.response.size",
+]
+
+
+def _instrumentation_views():
+    from opentelemetry.sdk.metrics.view import View
+
+    return [View(instrument_name=n, name=f"corpus.{n}") for n in _INSTRUMENTATION_METRICS]
+
+
 def configure(default_service_name: str) -> None:
     """Install OTLP trace + metric providers and instrument httpx. No-op unless
     an OTLP endpoint is configured; safe to call more than once."""
@@ -50,7 +70,9 @@ def configure(default_service_name: str) -> None:
     trace.set_tracer_provider(tracer_provider)
 
     reader = PeriodicExportingMetricReader(OTLPMetricExporter())
-    metrics.set_meter_provider(MeterProvider(resource=resource, metric_readers=[reader]))
+    metrics.set_meter_provider(
+        MeterProvider(resource=resource, metric_readers=[reader], views=_instrumentation_views())
+    )
 
     HTTPXClientInstrumentor().instrument()
     atexit.register(shutdown)
