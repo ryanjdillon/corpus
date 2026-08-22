@@ -25,6 +25,14 @@ tier. Keep both green. Coverage is ratcheted in CI (see
 `.github/coverage-baseline.txt`): it may not drop, and any increase must raise
 the baseline in the same change.
 
+## Before opening a PR
+
+Run **`just check`** and fix everything it reports **before** pushing a branch or
+opening a PR. It runs the same lint (pinned ruff), tests, and coverage ratchet as
+CI, so a green `just check` means green CI. Do not rely on CI to surface lint or
+coverage-regression failures — catch them locally first. (ruff is pinned in the
+`dev` extra and in the CI workflow to the same version so results match.)
+
 ## Governance roadmap (do not drift)
 
 `GOVERNANCE.md` defines the target access-control model and a staged roadmap

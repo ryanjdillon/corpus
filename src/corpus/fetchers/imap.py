@@ -82,7 +82,8 @@ class ImapFetcher:
                             continue
                         try:
                             record = self._to_record(folder, uid, raw)
-                        except Exception:  # noqa: BLE001 - skip one unparseable message
+                        except Exception:
+                            # Skip one unparseable message rather than abort.
                             log.warning(
                                 "imap: skipping unparseable %s:%s", folder, uid, exc_info=True
                             )

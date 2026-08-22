@@ -13,15 +13,18 @@ test:
 test-int:
     uv run pytest -m integration
 
-# Lint.
+# Lint (uses the pinned ruff from the venv, matching CI).
 lint:
-    ruff check .
+    uv run ruff check .
 
 # Full coverage (unit + integration) with the ratchet gate.
 cov:
     uv run coverage run --source=corpus -m pytest -o addopts= tests
     uv run coverage report --precision=2
     uv run python scripts/coverage_gate.py "$(uv run coverage report --format=total --precision=2)" .github/coverage-baseline.txt
+
+# All pre-PR checks, mirroring CI. Run this (and fix any failures) before pushing.
+check: lint cov
 
 # One-time Gmail OAuth to mint a refresh token.
 # Usage: just gmail-auth path/to/client_secret.json

@@ -185,7 +185,8 @@ class GmailFetcher:
         label_names = [self._label_names.get(i, i) for i in d.get("labelIds", [])]
         try:
             return self._to_record(d["id"], d.get("threadId"), raw, label_names)
-        except Exception:  # noqa: BLE001 - one unparseable message must not abort a backfill
+        except Exception:
+            # One unparseable message must not abort a backfill.
             log.warning("gmail: skipping unparseable message %s", mid, exc_info=True)
             return None
 
