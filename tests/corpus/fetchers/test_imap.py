@@ -75,6 +75,34 @@ def test_incremental_cursor(greenmail, monkeypatch):
     assert [r.subject for r in later] == ["Third"]
 
 
+def test_unparseable_message_is_skipped(greenmail, monkeypatch):
+    # A message that fails to parse must be skipped, not abort the fetch.
+    _configure(monkeypatch, greenmail["imap_port"])
+    greenmail["send"](USER, "Boom", "body")
+
+    from imapclient import IMAPClient
+
+    from corpus.fetchers import imap as imap_mod
+
+    deadline = time.time() + 15
+    while time.time() < deadline:  # wait until the message is in the mailbox
+        with IMAPClient("127.0.0.1", port=greenmail["imap_port"], ssl=False) as c:
+            c.login(USER, "test")
+            c.select_folder("INBOX")
+            if c.search(["ALL"]):
+                break
+        time.sleep(0.5)
+
+    def boom(_raw):
+        raise ValueError("bad message")
+
+    monkeypatch.setattr(imap_mod.mailparser, "parse_from_bytes", boom)
+    fetcher = build_fetcher("imap:test")
+    assert list(fetcher.fetch(None)) == []  # skipped, no exception
+    cursor = fetcher.next_cursor()
+    assert cursor and ":" in cursor  # cursor still advances past the bad message
+
+
 def test_catalogs_all_folders(greenmail, monkeypatch):
     # Unset folder selection => discover and catalog every folder.
     _configure(monkeypatch, greenmail["imap_port"], folders="all")

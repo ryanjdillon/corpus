@@ -18,6 +18,7 @@ since then (falling back to a full backfill if the historyId has expired).
 from __future__ import annotations
 
 import base64
+import logging
 import os
 from collections.abc import Iterator
 from datetime import UTC, datetime
@@ -26,6 +27,9 @@ import httpx
 import mailparser
 
 from ..models import Record
+from .base import as_text
+
+log = logging.getLogger("corpus.fetchers.gmail")
 
 _TOKEN_URL = "https://oauth2.googleapis.com/token"
 _API = "https://gmail.googleapis.com/gmail/v1/users/me"
@@ -179,7 +183,11 @@ class GmailFetcher:
         d = resp.raise_for_status().json()
         raw = base64.urlsafe_b64decode(d["raw"])
         label_names = [self._label_names.get(i, i) for i in d.get("labelIds", [])]
-        return self._to_record(d["id"], d.get("threadId"), raw, label_names)
+        try:
+            return self._to_record(d["id"], d.get("threadId"), raw, label_names)
+        except Exception:  # noqa: BLE001 - one unparseable message must not abort a backfill
+            log.warning("gmail: skipping unparseable message %s", mid, exc_info=True)
+            return None
 
     def _to_record(
         self, mid: str, thread_id: str | None, raw: bytes, labels: list[str]
@@ -200,7 +208,7 @@ class GmailFetcher:
             thread_id=thread_id,
             from_addr=from_addr,
             to_addrs=to_addrs,
-            subject=parsed.subject,
+            subject=as_text(parsed.subject),
             sent_at=sent_at,
             labels=labels,
             headers=headers,

@@ -8,6 +8,17 @@ from typing import Protocol
 from ..models import Record
 
 
+def as_text(value: object) -> str | None:
+    """Normalize a parsed header to str|None. mailparser may return a header
+    (e.g. a duplicated Subject) as a list rather than a string."""
+    if isinstance(value, (list, tuple)):
+        value = " ".join(str(v) for v in value)
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
 class Fetcher(Protocol):
     """A source of Records supporting incremental sync via an opaque cursor."""
 

@@ -21,6 +21,7 @@ a folder resets that folder's UID window.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from collections.abc import Iterator
 from datetime import UTC, datetime
@@ -29,6 +30,9 @@ import mailparser
 from imapclient import IMAPClient
 
 from ..models import Record
+from .base import as_text
+
+log = logging.getLogger("corpus.fetchers.imap")
 
 _ALL = {"", "all", "*"}
 
@@ -76,7 +80,15 @@ class ImapFetcher:
                         raw = data.get(b"RFC822")
                         if not raw:
                             continue
-                        yield self._to_record(folder, uid, raw)
+                        try:
+                            record = self._to_record(folder, uid, raw)
+                        except Exception:  # noqa: BLE001 - skip one unparseable message
+                            log.warning(
+                                "imap: skipping unparseable %s:%s", folder, uid, exc_info=True
+                            )
+                            max_uid = max(max_uid, uid)
+                            continue
+                        yield record
                         max_uid = max(max_uid, uid)
                 new_state[folder] = f"{validity}:{max_uid}"
         self._next_cursor = json.dumps(new_state, sort_keys=True)
@@ -114,7 +126,7 @@ class ImapFetcher:
             thread_id=headers.get("Message-ID"),
             from_addr=from_addr,
             to_addrs=to_addrs,
-            subject=parsed.subject,
+            subject=as_text(parsed.subject),
             sent_at=sent_at,
             headers=headers,
             uri=f"imap://{self.host}/{folder}/{uid}",
