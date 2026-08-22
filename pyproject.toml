@@ -34,6 +34,8 @@ test = [
 dev = [
     # For the one-time Gmail OAuth helper (scripts/gmail_oauth.py).
     "google-auth-oauthlib>=1.2",
+    # Pinned to match CI so `just check` catches exactly what CI does.
+    "ruff==0.16.4",
 ]
 
 [project.scripts]
