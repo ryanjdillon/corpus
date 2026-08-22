@@ -28,10 +28,16 @@ jobs:
       - name: Install
         run: pip install -e '.[test]'
 
-      - name: Unit tests
-        run: pytest -q
-
       # ubuntu-latest runners ship a running Docker daemon, so the Docker-SDK
-      # fixtures (pgvector, GreenMail) work here.
-      - name: Integration tests
-        run: pytest -q -m integration
+      # fixtures (pgvector, GreenMail) run here. Clearing addopts includes the
+      # integration tier alongside the unit tests in one coverage run.
+      - name: Tests with coverage (unit + integration)
+        run: coverage run --source=corpus -m pytest -o addopts= tests
+
+      - name: Coverage report
+        run: coverage report --precision=2
+
+      - name: Coverage ratchet
+        run: |
+          current=$(coverage report --format=total --precision=2)
+          python scripts/coverage_gate.py "$current" .github/coverage-baseline.txt
