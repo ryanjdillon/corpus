@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 class Record(BaseModel):
     """A single ingestable item (an email or a document) before storage."""
 
-    source: str  # fetcher id, e.g. "imap:boatclub"
+    source: str  # fetcher id, e.g. "imap:example"
     source_uid: str  # stable per-source id; (source, source_uid) is unique
     kind: str  # "email" | "file"
 

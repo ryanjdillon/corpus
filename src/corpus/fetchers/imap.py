@@ -1,14 +1,14 @@
 """Generic IMAP fetcher.
 
 Credentials come from the environment, namespaced by the fetcher name so several
-mailboxes can be configured independently, e.g. for name "boatclub":
+mailboxes can be configured independently, e.g. for name "example":
 
-    CORPUS_IMAP_BOATCLUB_HOST=mail.example.org
-    CORPUS_IMAP_BOATCLUB_PORT=993
-    CORPUS_IMAP_BOATCLUB_USER=crew@example.org
-    CORPUS_IMAP_BOATCLUB_PASSWORD=...
-    CORPUS_IMAP_BOATCLUB_FOLDERS=INBOX,Archive   # optional, default INBOX
-    CORPUS_IMAP_BOATCLUB_SSL=true                 # optional, default true
+    CORPUS_IMAP_EXAMPLE_HOST=imap.example.com
+    CORPUS_IMAP_EXAMPLE_PORT=993
+    CORPUS_IMAP_EXAMPLE_USER=user@example.com
+    CORPUS_IMAP_EXAMPLE_PASSWORD=...
+    CORPUS_IMAP_EXAMPLE_FOLDERS=INBOX,Archive   # optional, default INBOX
+    CORPUS_IMAP_EXAMPLE_SSL=true                 # optional, default true
 
 Incremental sync uses IMAP UIDVALIDITY + the highest seen UID as the cursor,
 encoded as "<uidvalidity>:<uid>".

@@ -1,18 +1,17 @@
 # corpus
 
-Local-only semantic search over documents and email.
+Local-only semantic search over email.
 
-Fetches mail (and, later, local documents), classifies each message with cheap
-header/rule heuristics, embeds it with a local embedding model behind an
-OpenAI-compatible endpoint, and stores vectors + metadata in Postgres/pgvector.
-Content is only ever sent to the configured local endpoint — nothing leaves the
-network for processing.
+Fetches messages over IMAP, classifies each with cheap header/rule heuristics,
+embeds it with a local embedding model behind an OpenAI-compatible endpoint, and
+stores vectors + metadata in Postgres/pgvector. Content is only ever sent to the
+configured local endpoint — nothing leaves the network for processing.
 
 Two query modes:
 
 - **Semantic search** — vector similarity with optional metadata filters.
 - **Structured query** — analytical metadata queries that return *every* match
-  (e.g. all promotional mail older than two weeks), as plain SQL.
+  (e.g. every message with a given label before a date), as plain SQL.
 
 Both are exposed over a REST API and an MCP server.
 
@@ -40,14 +39,16 @@ All settings are environment variables, prefixed `CORPUS_` (see
 
 ### IMAP sources
 
-Each IMAP mailbox is configured by name. For `corpus ingest imap:boatclub`:
+Each IMAP mailbox is configured by name. The name becomes the env-var prefix and
+the source id passed to `corpus ingest`. For `corpus ingest imap:example`:
 
 ```
-CORPUS_IMAP_BOATCLUB_HOST=mail.example.org
-CORPUS_IMAP_BOATCLUB_PORT=993
-CORPUS_IMAP_BOATCLUB_USER=crew@example.org
-CORPUS_IMAP_BOATCLUB_PASSWORD=...
-CORPUS_IMAP_BOATCLUB_FOLDERS=INBOX,Archive   # optional
+CORPUS_IMAP_EXAMPLE_HOST=imap.example.com
+CORPUS_IMAP_EXAMPLE_PORT=993
+CORPUS_IMAP_EXAMPLE_USER=user@example.com
+CORPUS_IMAP_EXAMPLE_PASSWORD=...
+CORPUS_IMAP_EXAMPLE_FOLDERS=INBOX,Archive   # optional, default INBOX
+CORPUS_IMAP_EXAMPLE_SSL=true                 # optional, default true
 ```
 
 Incremental sync tracks IMAP `UIDVALIDITY:UID` per source in a `sync_state`
@@ -72,12 +73,6 @@ Integration tests spin up pinned containers via the Docker SDK
 Docker is unavailable. The embedding endpoint is faked in-process, so no model
 is downloaded. Unit tests are the default; integration tests are opt-in via
 `-m integration`.
-
-On NixOS, pip's numpy wheel needs libstdc++ on the loader path:
-
-```bash
-export LD_LIBRARY_PATH="$(nix eval --raw nixpkgs#stdenv.cc.cc.lib)/lib:$LD_LIBRARY_PATH"
-```
 
 ## Build
 

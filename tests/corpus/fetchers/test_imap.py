@@ -8,7 +8,7 @@ from corpus.fetchers import build_fetcher
 
 pytestmark = pytest.mark.integration
 
-USER = "crew@example.org"
+USER = "user@example.org"
 
 
 def _configure(monkeypatch, imap_port: int) -> None:
