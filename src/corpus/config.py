@@ -1,0 +1,36 @@
+"""Runtime configuration, sourced from environment variables."""
+
+from __future__ import annotations
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="CORPUS_", extra="ignore")
+
+    # Postgres (pgvector). The DB user owns a dedicated schema.
+    database_url: str = "postgresql://corpus_app@localhost:5432/ai"
+    db_schema: str = "corpus"
+    documents_table: str = "documents"
+
+    # OpenAI-compatible embedding endpoint. Points at an in-cluster gateway that
+    # serves a local embedding model; content never leaves the LAN.
+    openai_api_base: str = "http://localhost:8080/v1"
+    openai_api_key: str = ""
+    embedding_model: str = "local-embed"
+    embedding_dimensions: int = 1024
+
+    # Optional local model used only to break low-confidence classification ties.
+    classify_model: str = ""  # empty => rule + prototype classification only
+
+    # Chunking for long bodies.
+    chunk_tokens: int = 512
+    chunk_overlap: int = 64
+
+    # HTTP service.
+    host: str = "0.0.0.0"
+    port: int = 8000
+    mcp_port: int = 9000
+
+
+settings = Settings()
