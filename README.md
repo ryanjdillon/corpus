@@ -1,6 +1,6 @@
 # corpus
 
-Local-first semantic search and structured query over your own content.
+Semantic search and structured query over your own content.
 
 corpus ingests items from pluggable sources, classifies each with cheap
 header/rule heuristics, embeds it through an OpenAI-compatible endpoint, and
@@ -9,10 +9,9 @@ source-agnostic — a *source* is anything that yields records (see
 [docs/extending-fetchers.md](docs/extending-fetchers.md)). Email ships today, via
 IMAP and Gmail; other document sources fit the same model.
 
-The embedding endpoint defaults to a locally hosted model, so nothing leaves your
-network for processing. Point `CORPUS_OPENAI_API_BASE` at a hosted provider
-instead if you prefer their models over that privacy — the pipeline is identical
-either way.
+The embedding endpoint is any OpenAI-compatible API: a locally hosted model, so
+nothing leaves your network, or a hosted provider — the same pipeline either
+way.
 
 See [docs/architecture.md](docs/architecture.md) for the design.
 
