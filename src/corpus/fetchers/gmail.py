@@ -181,13 +181,14 @@ class GmailFetcher:
         if resp.status_code == 404:
             return None  # deleted between listing and fetch
         d = resp.raise_for_status().json()
-        raw = base64.urlsafe_b64decode(d["raw"])
-        label_names = [self._label_names.get(i, i) for i in d.get("labelIds", [])]
         try:
+            raw = base64.urlsafe_b64decode(d["raw"])
+            label_names = [self._label_names.get(i, i) for i in d.get("labelIds", [])]
             return self._to_record(d["id"], d.get("threadId"), raw, label_names)
         except Exception:
-            # One unparseable message must not abort a backfill.
-            log.warning("gmail: skipping unparseable message %s", mid, exc_info=True)
+            # A single unprocessable message (missing/invalid body, unparseable
+            # headers, …) must not abort a backfill.
+            log.warning("gmail: skipping unprocessable message %s", mid, exc_info=True)
             return None
 
     def _to_record(
