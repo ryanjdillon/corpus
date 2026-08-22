@@ -176,3 +176,15 @@ def test_unparseable_message_is_skipped_not_fatal(gmail_env, mock_httpx, monkeyp
     monkeypatch.setattr(gmail_mod.mailparser, "parse_from_bytes", boom)
     fetcher = build_fetcher("gmail:test")
     assert list(fetcher.fetch(None)) == []  # both messages skipped, no exception
+
+
+def test_message_with_bad_body_is_skipped(gmail_env, mock_httpx, monkeypatch):
+    # A message whose body can't be decoded (not just parsed) is also skipped.
+    from corpus.fetchers import gmail as gmail_mod
+
+    def boom(_data):
+        raise ValueError("bad base64")
+
+    monkeypatch.setattr(gmail_mod.base64, "urlsafe_b64decode", boom)
+    fetcher = build_fetcher("gmail:test")
+    assert list(fetcher.fetch(None)) == []
