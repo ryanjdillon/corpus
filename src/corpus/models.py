@@ -23,6 +23,10 @@ class Record(BaseModel):
     subject: str | None = None
     sent_at: datetime | None = None
 
+    # Provider labels/categories (e.g. Gmail labels). Empty for sources without
+    # them (plain IMAP conveys only the folder).
+    labels: list[str] = Field(default_factory=list)
+
     headers: dict[str, str] = Field(default_factory=dict)
     uri: str | None = None
     body_text: str = ""

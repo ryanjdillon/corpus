@@ -42,6 +42,7 @@ def to_document(record, classification, embedding) -> Document:
         "thread_id": record.thread_id,
         "from_addr": record.from_addr,
         "to_addrs": record.to_addrs,
+        "labels": record.labels,
         "subject": record.subject,
         "sent_at": record.sent_at.isoformat() if record.sent_at else None,
         "uri": record.uri,

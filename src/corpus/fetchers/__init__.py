@@ -14,4 +14,8 @@ def build_fetcher(source: str) -> Fetcher:
         from .imap import ImapFetcher
 
         return ImapFetcher(name or "default")
+    if kind == "gmail":
+        from .gmail import GmailFetcher
+
+        return GmailFetcher(name or "default")
     raise ValueError(f"unknown fetcher source: {source!r}")
