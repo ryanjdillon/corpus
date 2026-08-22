@@ -35,6 +35,12 @@ def test_shutdown_noop_when_unconfigured(monkeypatch):
     telemetry.shutdown()  # no-op, no error
 
 
+def test_instrumentation_views_prefix_all_names():
+    views = telemetry._instrumentation_views()
+    assert len(views) == len(telemetry._INSTRUMENTATION_METRICS)
+    assert all(v._name.startswith("corpus.") for v in views)
+
+
 def test_corpus_size_observations(monkeypatch):
     monkeypatch.setattr(
         "corpus.search.stats",
