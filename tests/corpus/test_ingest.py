@@ -1,7 +1,7 @@
 """Ingestion pipeline against real Postgres + the fake embedder, with a stubbed
 fetcher so the test doesn't depend on a mail server."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -33,7 +33,7 @@ def _records(n: int) -> list[Record]:
             kind="email",
             from_addr="a@b.com",
             subject=f"subject {i}",
-            sent_at=datetime(2026, 1, i + 1, tzinfo=timezone.utc),
+            sent_at=datetime(2026, 1, i + 1, tzinfo=UTC),
             headers={"List-Unsubscribe": "<mailto:x>", "Precedence": "bulk"},
             body_text=f"promotional body {i}",
         )

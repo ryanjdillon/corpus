@@ -85,8 +85,6 @@ def stats() -> dict[str, Any]:
     with psycopg.connect(settings.database_url) as conn, conn.cursor() as cur:
         cur.execute(f"SELECT count(*) FROM {table}")
         total = cur.fetchone()[0]
-        cur.execute(
-            f"SELECT meta->>'label', count(*) FROM {table} GROUP BY 1 ORDER BY 2 DESC"
-        )
+        cur.execute(f"SELECT meta->>'label', count(*) FROM {table} GROUP BY 1 ORDER BY 2 DESC")
         by_label = {row[0]: row[1] for row in cur.fetchall()}
     return {"total": total, "by_label": by_label}

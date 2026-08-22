@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from corpus.models import Classification, Record
 
@@ -26,7 +26,7 @@ def test_record_accepts_full_payload():
         from_addr="a@b.com",
         to_addrs=["c@d.com", "e@f.com"],
         subject="hello",
-        sent_at=datetime(2026, 6, 1, tzinfo=timezone.utc),
+        sent_at=datetime(2026, 6, 1, tzinfo=UTC),
         headers={"X-Test": "1"},
         body_text="hi there",
     )

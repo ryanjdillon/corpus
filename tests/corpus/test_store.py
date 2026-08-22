@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -16,7 +16,7 @@ def _record(uid: str, subject: str) -> Record:
         account="me@x.org",
         from_addr="a@b.com",
         subject=subject,
-        sent_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        sent_at=datetime(2026, 1, 1, tzinfo=UTC),
         body_text=f"body of {subject}",
     )
 

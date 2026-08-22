@@ -17,8 +17,8 @@ encoded as "<uidvalidity>:<uid>".
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
-from typing import Iterator
+from collections.abc import Iterator
+from datetime import UTC, datetime
 
 import mailparser
 from imapclient import IMAPClient
@@ -76,7 +76,7 @@ class ImapFetcher:
         headers = {k: str(v) for k, v in (parsed.headers or {}).items()}
         sent_at: datetime | None = parsed.date
         if sent_at and sent_at.tzinfo is None:
-            sent_at = sent_at.replace(tzinfo=timezone.utc)
+            sent_at = sent_at.replace(tzinfo=UTC)
         from_addr = parsed.from_[0][1] if parsed.from_ else None
         to_addrs = [addr for _, addr in (parsed.to or [])]
         body = parsed.text_plain[0] if parsed.text_plain else (parsed.body or "")

@@ -33,7 +33,9 @@ def test_fetch_parses_messages(greenmail, monkeypatch):
     _configure(monkeypatch, greenmail["imap_port"])
     greenmail["send"](USER, "Kayak trip", "Let's paddle Saturday.")
     greenmail["send"](
-        USER, "Winter sale", "50% off",
+        USER,
+        "Winter sale",
+        "50% off",
         from_addr="news@mailchimp.com",
         extra_headers={"List-Unsubscribe": "<mailto:unsub@x>"},
     )

@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -18,7 +18,7 @@ def _index(uid: str, subject: str, body: str, label: str, sent_at: str) -> None:
         account="me@x.org",
         from_addr="a@b.com",
         subject=subject,
-        sent_at=datetime.fromisoformat(sent_at).replace(tzinfo=timezone.utc),
+        sent_at=datetime.fromisoformat(sent_at).replace(tzinfo=UTC),
         body_text=body,
     )
     embedder = Embedder()

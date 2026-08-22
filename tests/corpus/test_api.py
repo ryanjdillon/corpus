@@ -15,7 +15,8 @@ def test_health():
 
 def test_search_endpoint(monkeypatch):
     monkeypatch.setattr(
-        search, "semantic_search",
+        search,
+        "semantic_search",
         lambda query, top_k=10, filters=None: [{"id": "1", "query": query, "top_k": top_k}],
     )
     resp = _client().post("/search", json={"query": "boats", "top_k": 3})
@@ -27,7 +28,8 @@ def test_search_endpoint(monkeypatch):
 
 def test_query_endpoint(monkeypatch):
     monkeypatch.setattr(
-        search, "structured_query",
+        search,
+        "structured_query",
         lambda **kw: [{"id": "1"}, {"id": "2"}],
     )
     resp = _client().post("/query", json={"label": "promotional", "before": "2026-01-01"})

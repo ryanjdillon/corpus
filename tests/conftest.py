@@ -11,9 +11,9 @@ import hashlib
 import json
 import socket
 import time
+from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
-from typing import Iterator
 
 import pytest
 
@@ -137,20 +137,27 @@ class _EmbedServer(ThreadingHTTPServer):
 
 
 class _EmbedHandler(BaseHTTPRequestHandler):
-    def do_POST(self) -> None:  # noqa: N802
+    def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length", "0"))
         body = json.loads(self.rfile.read(length) or b"{}")
         inp = body.get("input", [])
         if isinstance(inp, str):
             inp = [inp]
         data = [
-            {"object": "embedding", "index": i,
-             "embedding": deterministic_vector(t, self.server.dim)}
+            {
+                "object": "embedding",
+                "index": i,
+                "embedding": deterministic_vector(t, self.server.dim),
+            }
             for i, t in enumerate(inp)
         ]
         payload = json.dumps(
-            {"object": "list", "data": data, "model": body.get("model"),
-             "usage": {"prompt_tokens": 0, "total_tokens": 0}}
+            {
+                "object": "list",
+                "data": data,
+                "model": body.get("model"),
+                "usage": {"prompt_tokens": 0, "total_tokens": 0},
+            }
         ).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -204,9 +211,13 @@ def greenmail(docker_client) -> Iterator[dict[str, int]]:
         _wait_port("127.0.0.1", smtp_port)
         time.sleep(1.0)  # let the IMAP service finish binding
 
-        def send(to_addr: str, subject: str, body: str,
-                 from_addr: str = "sender@example.org",
-                 extra_headers: dict[str, str] | None = None) -> None:
+        def send(
+            to_addr: str,
+            subject: str,
+            body: str,
+            from_addr: str = "sender@example.org",
+            extra_headers: dict[str, str] | None = None,
+        ) -> None:
             _send_mail(smtp_port, to_addr, subject, body, from_addr, extra_headers)
 
         yield {"imap_port": imap_port, "smtp_port": smtp_port, "send": send}
@@ -214,9 +225,14 @@ def greenmail(docker_client) -> Iterator[dict[str, int]]:
         container.stop()
 
 
-def _send_mail(smtp_port: int, to_addr: str, subject: str, body: str,
-               from_addr: str = "sender@example.org",
-               extra_headers: dict[str, str] | None = None) -> None:
+def _send_mail(
+    smtp_port: int,
+    to_addr: str,
+    subject: str,
+    body: str,
+    from_addr: str = "sender@example.org",
+    extra_headers: dict[str, str] | None = None,
+) -> None:
     import smtplib
     from email.message import EmailMessage
 

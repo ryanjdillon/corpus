@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from corpus.classify import classify
 from corpus.models import Record
@@ -11,7 +11,7 @@ def _email(headers=None, from_addr="a@b.com") -> Record:
         kind="email",
         from_addr=from_addr,
         subject="hi",
-        sent_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        sent_at=datetime(2026, 1, 1, tzinfo=UTC),
         headers=headers or {},
         body_text="body",
     )
