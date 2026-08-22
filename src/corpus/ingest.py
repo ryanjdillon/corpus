@@ -9,7 +9,7 @@ from haystack.document_stores.types import DuplicatePolicy
 
 from .classify import classify
 from .config import settings
-from .embeddings import Embedder, EmbedInputError
+from .embeddings import Embedder, EmbedUnavailableError
 from .fetchers import build_fetcher
 from .models import Record
 from .store import existing_ids, get_cursor, get_document_store, set_cursor, to_document
@@ -23,10 +23,10 @@ log = logging.getLogger("corpus.ingest")
 # under the model's token limit. ~8000 chars is roughly 2k tokens.
 _MAX_EMBED_CHARS = 8000
 
-# Errors that mean "this specific record is bad" — skip it, don't abort the run.
-# Infra failures (5xx/timeout after retries, DB errors) are not listed, so they
-# propagate and fail the run, to be retried later from where it left off.
-_SKIPPABLE = (EmbedInputError, ValueError, UnicodeError)
+# Abort the run if this many records fail consecutively: a long unbroken run of
+# failures means something systemic (e.g. the store is unreachable), not a few
+# bad messages. The run is resumable from its persisted cursor.
+_MAX_CONSECUTIVE_SKIPS = 25
 
 
 def _chunk(text: str) -> list[str]:
@@ -56,6 +56,7 @@ def ingest(source: str, batch_size: int = 50) -> int:
     batch: list[Record] = []
     total = 0
     skipped = 0
+    consecutive_skips = 0
 
     def _embed_and_store(records: list[Record]) -> None:
         # Embed the whole group in one call — far faster than per-message. First
@@ -74,26 +75,37 @@ def ingest(source: str, batch_size: int = 50) -> int:
         log.info("ingest %s: wrote %d (%d total)", source, len(docs), total)
 
     def _process(records: list[Record]) -> None:
-        """Embed + store a group. On a record-level error, bisect to isolate and
-        skip only the offending record(s) so one bad message can't abort the
-        whole backfill. Infra errors propagate and fail the run (resumable)."""
-        nonlocal skipped
+        """Embed + store a group. On a record-level error (bad input, unparseable
+        content, a value the store rejects), bisect to isolate and skip only the
+        offending record(s) so one bad message can't abort the whole backfill. A
+        genuinely unavailable embedder aborts immediately; too many consecutive
+        skips (another systemic failure) also aborts. The run is resumable."""
+        nonlocal skipped, consecutive_skips
         if not records:
             return
         try:
             _embed_and_store(records)
-        except _SKIPPABLE as exc:
+            consecutive_skips = 0
+        except EmbedUnavailableError:
+            raise  # systemic, not a bad record — abort and resume later
+        except Exception as exc:
             if len(records) > 1:
                 mid = len(records) // 2
                 _process(records[:mid])
                 _process(records[mid:])
-            else:
-                skipped += 1
-                documents_counter.add(1, {"source": source, "outcome": "skipped"})
-                log.warning(
-                    "ingest %s: skipping record %s (skipped=%d): %s",
-                    source, records[0].key(), skipped, exc,
-                )
+                return
+            skipped += 1
+            consecutive_skips += 1
+            documents_counter.add(1, {"source": source, "outcome": "skipped"})
+            log.warning(
+                "ingest %s: skipping record %s (skipped=%d): %s",
+                source, records[0].key(), skipped, exc,
+            )
+            if consecutive_skips >= _MAX_CONSECUTIVE_SKIPS:
+                raise RuntimeError(
+                    f"aborting: {consecutive_skips} records failed consecutively "
+                    "(store or embedder likely unavailable)"
+                ) from exc
 
     def flush() -> None:
         if not batch:

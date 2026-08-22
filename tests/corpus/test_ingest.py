@@ -179,3 +179,72 @@ def test_ingest_skips_bad_record_and_stores_rest(pg, rejecting_embeddings, monke
     ids = {d.id for d in store.filter_documents()}
     assert "imap:test::2" not in ids  # the poisoned record was skipped
     assert {"imap:test::0", "imap:test::1", "imap:test::3"} <= ids
+
+
+class _StatusHandler(BaseHTTPRequestHandler):
+    """Always responds with a fixed status (set via .status on the server)."""
+
+    def do_POST(self) -> None:
+        self.send_response(self.server.status)
+        self.end_headers()
+        self.wfile.write(b'{"error":"x"}')
+
+    def log_message(self, *args) -> None:
+        pass
+
+
+def _serve_status(status, monkeypatch):
+    from corpus.config import settings
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _StatusHandler)
+    server.status = status
+    server.daemon_threads = True
+    port = server.server_address[1]
+    Thread(target=server.serve_forever, daemon=True).start()
+    monkeypatch.setattr(settings, "openai_api_base", f"http://127.0.0.1:{port}/v1")
+    monkeypatch.setattr(settings, "openai_api_key", "test")
+    monkeypatch.setattr("corpus.embeddings.time.sleep", lambda *_: None)  # no retry backoff
+    return server
+
+
+@pytest.mark.integration
+def test_ingest_aborts_when_embedder_unavailable(pg, monkeypatch):
+    from corpus.embeddings import EmbedUnavailableError
+
+    server = _serve_status(503, monkeypatch)  # 5xx after retries -> unavailable
+    try:
+        monkeypatch.setattr(
+            ingest_mod, "build_fetcher", lambda source: _FakeFetcher(_records(4), "1:4")
+        )
+        with pytest.raises(EmbedUnavailableError):
+            ingest_mod.ingest("imap:test", batch_size=4)
+        from corpus.store import get_document_store
+
+        assert get_document_store().count_documents() == 0  # aborted, nothing stored
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+@pytest.mark.integration
+def test_ingest_aborts_after_too_many_consecutive_skips(pg, monkeypatch):
+    server = _serve_status(400, monkeypatch)  # every record rejected as bad input
+    try:
+        monkeypatch.setattr(
+            ingest_mod, "build_fetcher", lambda source: _FakeFetcher(_records(30), "1:30")
+        )
+        with pytest.raises(RuntimeError):  # the consecutive-skip guard trips
+            ingest_mod.ingest("imap:test", batch_size=8)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_strip_nul_removes_nul_recursively():
+    from corpus.store import _strip_nul
+
+    assert _strip_nul("a\x00b") == "ab"
+    assert _strip_nul(["x\x00", "y"]) == ["x", "y"]
+    assert _strip_nul({"k": "v\x00"}) == {"k": "v"}
+    assert _strip_nul(42) == 42
+    assert _strip_nul(None) is None

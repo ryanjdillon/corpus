@@ -31,6 +31,18 @@ def get_document_store() -> PgvectorDocumentStore:
     )
 
 
+def _strip_nul(value):
+    """Postgres text/jsonb cannot store NUL (\\u0000); strip it from any string,
+    recursing into lists and dicts so no metadata value can break a write."""
+    if isinstance(value, str):
+        return value.replace("\x00", "")
+    if isinstance(value, list):
+        return [_strip_nul(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _strip_nul(v) for k, v in value.items()}
+    return value
+
+
 def to_document(record, classification, embedding) -> Document:
     """Map a normalized record + classification into a Haystack Document."""
     meta = {
@@ -52,8 +64,8 @@ def to_document(record, classification, embedding) -> Document:
     }
     return Document(
         id=record.key(),
-        content=record.body_text,
-        meta={k: v for k, v in meta.items() if v is not None},
+        content=_strip_nul(record.body_text),
+        meta={k: _strip_nul(v) for k, v in meta.items() if v is not None},
         embedding=embedding,
     )
 
