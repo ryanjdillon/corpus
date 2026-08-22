@@ -22,6 +22,12 @@ class EmbedInputError(Exception):
     offending record rather than abort a whole batch."""
 
 
+class EmbedUnavailableError(Exception):
+    """The embedding endpoint is unavailable (5xx or transport error) after all
+    retries — a systemic failure, not a bad record. Callers should abort (and
+    resume later) rather than skip records."""
+
+
 class Embedder:
     def __init__(self) -> None:
         self._client = httpx.Client(
@@ -56,7 +62,7 @@ class Embedder:
                 last = exc
             time.sleep(min(2**attempt, 20))
         assert last is not None
-        raise last
+        raise EmbedUnavailableError(str(last)) from last
 
     def embed_one(self, text: str) -> list[float]:
         return self.embed([text])[0]

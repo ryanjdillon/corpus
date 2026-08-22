@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from corpus import embeddings
-from corpus.embeddings import Embedder, EmbedInputError
+from corpus.embeddings import Embedder, EmbedInputError, EmbedUnavailableError
 
 
 def _mock_transport(monkeypatch, handler):
@@ -59,7 +59,8 @@ def test_embed_gives_up_after_retries(monkeypatch):
     _mock_transport(monkeypatch, handler)
     embedder = Embedder()
     try:
-        with pytest.raises(httpx.HTTPStatusError):
+        # Exhausted 5xx retries surface as EmbedUnavailableError (systemic).
+        with pytest.raises(EmbedUnavailableError):
             embedder.embed_one("x")
     finally:
         embedder.close()
