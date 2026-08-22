@@ -8,6 +8,7 @@ mailboxes can be configured independently, e.g. for name "boatclub":
     CORPUS_IMAP_BOATCLUB_USER=crew@example.org
     CORPUS_IMAP_BOATCLUB_PASSWORD=...
     CORPUS_IMAP_BOATCLUB_FOLDERS=INBOX,Archive   # optional, default INBOX
+    CORPUS_IMAP_BOATCLUB_SSL=true                 # optional, default true
 
 Incremental sync uses IMAP UIDVALIDITY + the highest seen UID as the cursor,
 encoded as "<uidvalidity>:<uid>".
@@ -39,6 +40,7 @@ class ImapFetcher:
         self.password = _env(name, "PASSWORD")
         folders = _env(name, "FOLDERS", "INBOX")
         self.folders = [f.strip() for f in folders.split(",") if f.strip()]
+        self.ssl = _env(name, "SSL", "true").lower() not in {"false", "0", "no"}
         if not (self.host and self.user and self.password):
             raise ValueError(f"IMAP fetcher {name!r} missing host/user/password env")
         self._next_cursor: str | None = None
@@ -46,7 +48,7 @@ class ImapFetcher:
     def fetch(self, cursor: str | None) -> Iterator[Record]:
         prev_validity, prev_uid = self._parse_cursor(cursor)
         max_uid = prev_uid
-        with IMAPClient(self.host, port=self.port, ssl=True) as client:
+        with IMAPClient(self.host, port=self.port, ssl=self.ssl) as client:
             client.login(self.user, self.password)
             for folder in self.folders:
                 info = client.select_folder(folder, readonly=True)

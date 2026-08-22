@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import psycopg
 from haystack import Document
+from haystack.utils import Secret
 from haystack_integrations.document_stores.pgvector import PgvectorDocumentStore
 
 from .config import settings
@@ -20,7 +21,7 @@ def _dsn() -> str:
 
 def get_document_store() -> PgvectorDocumentStore:
     return PgvectorDocumentStore(
-        connection_string=_dsn(),
+        connection_string=Secret.from_token(_dsn()),
         schema_name=settings.db_schema,
         table_name=settings.documents_table,
         embedding_dimension=settings.embedding_dimensions,

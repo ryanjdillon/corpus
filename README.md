@@ -59,6 +59,26 @@ The document table is created and managed by the pgvector document store inside
 `CORPUS_DB_SCHEMA`; the DB role must own that schema. A small `sync_state`
 table (source, cursor, updated_at) tracks per-source progress.
 
+## Tests
+
+```bash
+pip install -e '.[test]'
+pytest                  # fast unit tests
+pytest -m integration   # Docker-backed: pgvector + GreenMail
+```
+
+Integration tests spin up pinned containers via the Docker SDK
+(`pgvector/pgvector:pg17`, `greenmail/standalone:2.1.3`) and auto-skip when
+Docker is unavailable. The embedding endpoint is faked in-process, so no model
+is downloaded. Unit tests are the default; integration tests are opt-in via
+`-m integration`.
+
+On NixOS, pip's numpy wheel needs libstdc++ on the loader path:
+
+```bash
+export LD_LIBRARY_PATH="$(nix eval --raw nixpkgs#stdenv.cc.cc.lib)/lib:$LD_LIBRARY_PATH"
+```
+
 ## Build
 
 `deploy/Dockerfile` builds a wheel and installs it. Pushing a `v*` tag builds
