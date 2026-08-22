@@ -1,5 +1,18 @@
 # Agent guidance for this repository
 
+## Documentation & comments
+
+Docs and code comments describe the **current state of the code** and its
+rationale — nothing else.
+
+- Never reference a chat/agent dialogue, a prior conversation, or how the code
+  "used to" work / "was just changed". A comment explains the code as it stands.
+- Keep comments general to the code, not to any one deployment. Describe what the
+  code does and why (e.g. "an OpenAI-compatible embedding endpoint"), not the
+  author's cluster, hosts, or environment.
+- When you change code, update the comments and docs it touches so they stay
+  true; delete comments describing things that no longer exist.
+
 ## Commits
 
 Use Conventional Commit messages (`feat:`, `fix:`, `docs:`, `refactor:`,
