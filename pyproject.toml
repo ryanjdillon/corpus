@@ -26,6 +26,10 @@ test = [
     "pytest-cov>=6.0",
     "docker>=7.1",
 ]
+dev = [
+    # For the one-time Gmail OAuth helper (scripts/gmail_oauth.py).
+    "google-auth-oauthlib>=1.2",
+]
 
 [project.scripts]
 corpus = "corpus.cli:main"
