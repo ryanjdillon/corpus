@@ -11,12 +11,13 @@ pytestmark = pytest.mark.integration
 USER = "user@example.org"
 
 
-def _configure(monkeypatch, imap_port: int) -> None:
+def _configure(monkeypatch, imap_port: int, folders: str = "INBOX") -> None:
     monkeypatch.setenv("CORPUS_IMAP_TEST_HOST", "127.0.0.1")
     monkeypatch.setenv("CORPUS_IMAP_TEST_PORT", str(imap_port))
     monkeypatch.setenv("CORPUS_IMAP_TEST_USER", USER)
     monkeypatch.setenv("CORPUS_IMAP_TEST_PASSWORD", "test")
     monkeypatch.setenv("CORPUS_IMAP_TEST_SSL", "false")
+    monkeypatch.setenv("CORPUS_IMAP_TEST_FOLDERS", folders)
 
 
 def _fetch_with_retry(fetcher, cursor, expected, timeout=15.0):
@@ -50,7 +51,8 @@ def test_fetch_parses_messages(greenmail, monkeypatch):
         assert r.kind == "email"
         assert r.account == USER
         assert r.body_text.strip()
-        assert r.source_uid.isdigit()
+        assert r.source_uid.startswith("INBOX:")
+        assert r.source_uid.rsplit(":", 1)[1].isdigit()
     # Headers survive parsing (needed downstream for classification).
     promo = next(r for r in records if r.subject == "Winter sale")
     assert any(k.lower() == "list-unsubscribe" for k in promo.headers)
@@ -71,3 +73,29 @@ def test_incremental_cursor(greenmail, monkeypatch):
     fetcher2 = build_fetcher("imap:test")
     later = _fetch_with_retry(fetcher2, cursor, expected=1)
     assert [r.subject for r in later] == ["Third"]
+
+
+def test_catalogs_all_folders(greenmail, monkeypatch):
+    # Unset folder selection => discover and catalog every folder.
+    _configure(monkeypatch, greenmail["imap_port"], folders="all")
+    greenmail["send"](USER, "Inbox item", "in the inbox")
+
+    from imapclient import IMAPClient
+
+    with IMAPClient("127.0.0.1", port=greenmail["imap_port"], ssl=False) as client:
+        client.login(USER, "test")
+        client.create_folder("Archive")
+        client.append(
+            "Archive",
+            b"From: sender@example.org\r\nSubject: Archived item\r\n\r\narchived body\r\n",
+        )
+
+    fetcher = build_fetcher("imap:test")
+    records = _fetch_with_retry(fetcher, None, expected=2)
+
+    by_folder = {r.folder: r for r in records}
+    assert "INBOX" in by_folder
+    assert "Archive" in by_folder
+    assert by_folder["Archive"].subject == "Archived item"
+    # Ids are unique across folders even when per-folder UIDs coincide.
+    assert len({r.source_uid for r in records}) == len(records)

@@ -7,15 +7,20 @@ mailboxes can be configured independently, e.g. for name "example":
     CORPUS_IMAP_EXAMPLE_PORT=993
     CORPUS_IMAP_EXAMPLE_USER=user@example.com
     CORPUS_IMAP_EXAMPLE_PASSWORD=...
-    CORPUS_IMAP_EXAMPLE_FOLDERS=INBOX,Archive   # optional, default INBOX
+    CORPUS_IMAP_EXAMPLE_FOLDERS=INBOX,Archive   # optional; default is all folders
     CORPUS_IMAP_EXAMPLE_SSL=true                 # optional, default true
 
-Incremental sync uses IMAP UIDVALIDITY + the highest seen UID as the cursor,
-encoded as "<uidvalidity>:<uid>".
+FOLDERS selects which mailboxes to catalog: a comma-separated list, or unset
+(or "all"/"*") to discover and catalog every selectable folder on the account.
+
+Incremental sync is tracked per folder: the cursor is a JSON object mapping each
+folder to "<uidvalidity>:<uid>" (its highest seen UID). A UIDVALIDITY change for
+a folder resets that folder's UID window.
 """
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Iterator
 from datetime import UTC, datetime
@@ -24,6 +29,8 @@ import mailparser
 from imapclient import IMAPClient
 
 from ..models import Record
+
+_ALL = {"", "all", "*"}
 
 
 def _env(name: str, key: str, default: str = "") -> str:
@@ -38,38 +45,54 @@ class ImapFetcher:
         self.port = int(_env(name, "PORT", "993"))
         self.user = _env(name, "USER")
         self.password = _env(name, "PASSWORD")
-        folders = _env(name, "FOLDERS", "INBOX")
-        self.folders = [f.strip() for f in folders.split(",") if f.strip()]
+        folders = _env(name, "FOLDERS", "")
+        # None => discover all selectable folders at fetch time.
+        self.folders: list[str] | None = (
+            None
+            if folders.strip().lower() in _ALL
+            else [f.strip() for f in folders.split(",") if f.strip()]
+        )
         self.ssl = _env(name, "SSL", "true").lower() not in {"false", "0", "no"}
         if not (self.host and self.user and self.password):
             raise ValueError(f"IMAP fetcher {name!r} missing host/user/password env")
         self._next_cursor: str | None = None
 
     def fetch(self, cursor: str | None) -> Iterator[Record]:
-        prev_validity, prev_uid = self._parse_cursor(cursor)
-        max_uid = prev_uid
+        state = self._load_cursor(cursor)
+        new_state = dict(state)
         with IMAPClient(self.host, port=self.port, ssl=self.ssl) as client:
             client.login(self.user, self.password)
-            for folder in self.folders:
+            for folder in self._resolve_folders(client):
+                prev_validity, prev_uid = self._parse_folder_cursor(state.get(folder))
                 info = client.select_folder(folder, readonly=True)
                 validity = int(info[b"UIDVALIDITY"])
-                # A UIDVALIDITY change invalidates prior UIDs for this mailbox.
-                start_uid = prev_uid + 1 if validity == prev_validity else 1
-                uids = client.search(["UID", f"{start_uid}:*"])
-                uids = [u for u in uids if u >= start_uid]
-                if not uids:
-                    self._next_cursor = f"{validity}:{max_uid}"
-                    continue
-                for uid, data in client.fetch(uids, ["RFC822"]).items():
-                    raw = data.get(b"RFC822")
-                    if not raw:
-                        continue
-                    yield self._to_record(folder, uid, raw)
-                    max_uid = max(max_uid, uid)
-                self._next_cursor = f"{validity}:{max_uid}"
+                # A UIDVALIDITY change invalidates prior UIDs for this folder.
+                same = validity == prev_validity
+                start_uid = prev_uid + 1 if same else 1
+                max_uid = prev_uid if same else 0
+                uids = [u for u in client.search(["UID", f"{start_uid}:*"]) if u >= start_uid]
+                if uids:
+                    for uid, data in client.fetch(uids, ["RFC822"]).items():
+                        raw = data.get(b"RFC822")
+                        if not raw:
+                            continue
+                        yield self._to_record(folder, uid, raw)
+                        max_uid = max(max_uid, uid)
+                new_state[folder] = f"{validity}:{max_uid}"
+        self._next_cursor = json.dumps(new_state, sort_keys=True)
 
     def next_cursor(self) -> str | None:
         return self._next_cursor
+
+    def _resolve_folders(self, client: IMAPClient) -> list[str]:
+        if self.folders is not None:
+            return self.folders
+        discovered = []
+        for flags, _delim, name in client.list_folders():
+            if b"\\Noselect" in flags:  # containers that can't hold messages
+                continue
+            discovered.append(name)
+        return discovered
 
     def _to_record(self, folder: str, uid: int, raw: bytes) -> Record:
         parsed = mailparser.parse_from_bytes(raw)
@@ -82,7 +105,9 @@ class ImapFetcher:
         body = parsed.text_plain[0] if parsed.text_plain else (parsed.body or "")
         return Record(
             source=self.source,
-            source_uid=str(uid),
+            # Folder-qualified so ids stay unique across folders (UIDs are only
+            # unique within a folder).
+            source_uid=f"{folder}:{uid}",
             kind="email",
             account=self.user,
             folder=folder,
@@ -97,8 +122,18 @@ class ImapFetcher:
         )
 
     @staticmethod
-    def _parse_cursor(cursor: str | None) -> tuple[int, int]:
-        if not cursor or ":" not in cursor:
+    def _load_cursor(cursor: str | None) -> dict[str, str]:
+        if not cursor:
+            return {}
+        try:
+            value = json.loads(cursor)
+        except (ValueError, TypeError):
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    @staticmethod
+    def _parse_folder_cursor(value: str | None) -> tuple[int, int]:
+        if not value or ":" not in value:
             return (0, 0)
-        validity, uid = cursor.split(":", 1)
+        validity, uid = value.split(":", 1)
         return (int(validity), int(uid))
