@@ -7,9 +7,9 @@ from typing import Any
 from fastapi import FastAPI
 from pydantic import BaseModel
 
-from . import search
+from . import __version__, search
 
-app = FastAPI(title="corpus", version="0.1.0")
+app = FastAPI(title="corpus", version=__version__)
 
 
 class SearchRequest(BaseModel):
