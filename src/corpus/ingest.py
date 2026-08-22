@@ -101,6 +101,11 @@ def ingest(source: str, batch_size: int = 50) -> int:
         records = list(batch)
         batch.clear()
         _process(records)
+        # Persist progress mid-run so an interrupted backfill resumes near where
+        # it stopped, for fetchers that checkpoint incrementally (e.g. Gmail).
+        cursor = fetcher.next_cursor()
+        if cursor:
+            set_cursor(source, cursor)
 
     try:
         for rec in fetcher.fetch(cursor):

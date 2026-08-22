@@ -110,3 +110,57 @@ def test_incremental_uses_history(gmail_env, mock_httpx):
     records = list(fetcher.fetch("1000"))
     assert [r.source_uid for r in records] == ["m3"]
     assert fetcher.next_cursor() == "1005"
+
+
+def _paginated_handler(request: httpx.Request) -> httpx.Response:
+    url = str(request.url)
+    if url.startswith("https://oauth2.googleapis.com/token"):
+        return httpx.Response(200, json={"access_token": "tok", "expires_in": 3600})
+    path = request.url.path
+    if path.endswith("/labels"):
+        return httpx.Response(200, json={"labels": LABELS})
+    if path.endswith("/profile"):
+        return httpx.Response(200, json={"emailAddress": "me@gmail.com", "historyId": "1000"})
+    if path.endswith("/messages"):
+        if request.url.params.get("pageToken") == "p2":
+            return httpx.Response(200, json={"messages": [{"id": "m3"}, {"id": "m4"}]})
+        return httpx.Response(
+            200, json={"messages": [{"id": "m1"}, {"id": "m2"}], "nextPageToken": "p2"}
+        )
+    if "/messages/" in path:
+        mid = path.rsplit("/", 1)[1]
+        return httpx.Response(
+            200,
+            json={"id": mid, "threadId": f"t-{mid}", "labelIds": ["INBOX"], "raw": _raw(f"msg {mid}")},
+        )
+    return httpx.Response(404, json={})
+
+
+@pytest.fixture
+def paginated_httpx(monkeypatch):
+    transport = httpx.MockTransport(_paginated_handler)
+    real_client = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda *a, **k: real_client(*a, transport=transport, **k))
+    monkeypatch.setattr(
+        httpx, "post", lambda url, **k: real_client(transport=transport).post(url, **k)
+    )
+
+
+def test_backfill_checkpoints_page_token(gmail_env, paginated_httpx):
+    fetcher = build_fetcher("gmail:test")
+    gen = fetcher.fetch(None)
+    assert [next(gen).source_uid for _ in range(3)] == ["m1", "m2", "m3"]
+    # Crossing the page boundary checkpoints the next page token mid-backfill.
+    assert fetcher.next_cursor() == "backfill:p2"
+    assert next(gen).source_uid == "m4"
+    with pytest.raises(StopIteration):
+        next(gen)
+    assert fetcher.next_cursor() == "1000"  # completed backfill -> historyId
+
+
+def test_backfill_resumes_from_page_token(gmail_env, paginated_httpx):
+    fetcher = build_fetcher("gmail:test")
+    # Resuming skips page 1 entirely — only page 2's messages are fetched.
+    records = list(fetcher.fetch("backfill:p2"))
+    assert [r.source_uid for r in records] == ["m3", "m4"]
+    assert fetcher.next_cursor() == "1000"

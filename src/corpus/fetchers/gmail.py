@@ -30,6 +30,11 @@ from ..models import Record
 _TOKEN_URL = "https://oauth2.googleapis.com/token"
 _API = "https://gmail.googleapis.com/gmail/v1/users/me"
 
+# Cursor prefix marking an in-progress backfill: the remainder is the Gmail
+# messages.list page token to resume from. A plain (numeric) cursor is a
+# completed backfill's historyId, used for incremental sync.
+_BACKFILL_PREFIX = "backfill:"
+
 
 def _env(name: str, key: str, default: str = "") -> str:
     return os.environ.get(f"CORPUS_GMAIL_{name.upper()}_{key}", default)
@@ -71,6 +76,12 @@ class GmailFetcher:
             if not cursor:
                 yield from self._backfill(api, wanted_ids)
                 self._next_cursor = current_history
+            elif cursor.startswith(_BACKFILL_PREFIX):
+                # Resume an interrupted backfill from the saved page token.
+                yield from self._backfill(
+                    api, wanted_ids, start_page=cursor[len(_BACKFILL_PREFIX) :]
+                )
+                self._next_cursor = current_history
             else:
                 yield from self._incremental(api, cursor, wanted_ids, current_history)
         finally:
@@ -93,11 +104,13 @@ class GmailFetcher:
         resp.raise_for_status()
         return resp.json()["access_token"]
 
-    def _backfill(self, api: httpx.Client, wanted_ids: list[str] | None) -> Iterator[Record]:
+    def _backfill(
+        self, api: httpx.Client, wanted_ids: list[str] | None, start_page: str | None = None
+    ) -> Iterator[Record]:
         params: dict[str, object] = {"maxResults": 500}
         if wanted_ids:
             params["labelIds"] = wanted_ids
-        page: str | None = None
+        page: str | None = start_page
         while True:
             if page:
                 params["pageToken"] = page
@@ -109,6 +122,11 @@ class GmailFetcher:
             page = data.get("nextPageToken")
             if not page:
                 break
+            # Checkpoint the next page so an interrupted backfill resumes from
+            # here instead of re-listing the whole mailbox. The ingest persists
+            # this after each flush; earlier pages are already stored, and
+            # existing_ids skips any overlap.
+            self._next_cursor = f"{_BACKFILL_PREFIX}{page}"
 
     def _incremental(
         self,
