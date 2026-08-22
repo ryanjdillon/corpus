@@ -164,3 +164,15 @@ def test_backfill_resumes_from_page_token(gmail_env, paginated_httpx):
     records = list(fetcher.fetch("backfill:p2"))
     assert [r.source_uid for r in records] == ["m3", "m4"]
     assert fetcher.next_cursor() == "1000"
+
+
+def test_unparseable_message_is_skipped_not_fatal(gmail_env, mock_httpx, monkeypatch):
+    # A message that fails to parse must be skipped, not abort the whole backfill.
+    from corpus.fetchers import gmail as gmail_mod
+
+    def boom(_raw_bytes):
+        raise ValueError("bad message")
+
+    monkeypatch.setattr(gmail_mod.mailparser, "parse_from_bytes", boom)
+    fetcher = build_fetcher("gmail:test")
+    assert list(fetcher.fetch(None)) == []  # both messages skipped, no exception
