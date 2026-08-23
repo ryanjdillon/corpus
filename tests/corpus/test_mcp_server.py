@@ -10,7 +10,7 @@ def test_module_imports_and_registers_tools():
 
     assert mcp_server.mcp is not None
     # The tool functions are defined at import time.
-    for name in ("corpus_search", "corpus_query", "corpus_stats"):
+    for name in ("corpus_search", "corpus_query", "corpus_get", "corpus_stats"):
         assert hasattr(mcp_server, name)
 
 

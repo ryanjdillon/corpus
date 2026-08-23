@@ -80,6 +80,22 @@ def structured_query(
     ]
 
 
+def get_document(id: str) -> dict[str, Any] | None:
+    """Fetch one stored document by id: full body content plus all metadata.
+
+    Companion to `semantic_search`, which returns only a 300-char snippet — a
+    caller can escalate to the complete record here when a snippet is too thin.
+    Returns None if no document has that id.
+    """
+    table = f"{settings.db_schema}.{settings.documents_table}"
+    with psycopg.connect(settings.database_url) as conn, conn.cursor() as cur:
+        cur.execute(f"SELECT id, content, meta FROM {table} WHERE id = %s", (id,))
+        row = cur.fetchone()
+    if row is None:
+        return None
+    return {"id": row[0], "content": row[1], "meta": row[2]}
+
+
 def stats() -> dict[str, Any]:
     table = f"{settings.db_schema}.{settings.documents_table}"
     with psycopg.connect(settings.database_url) as conn, conn.cursor() as cur:

@@ -35,6 +35,14 @@ def corpus_query(
 
 
 @mcp.tool()
+def corpus_get(id: str) -> dict[str, Any] | None:
+    """Fetch one indexed document by id: full body content and all metadata.
+    Use to escalate from a corpus_search snippet to the complete record.
+    Returns null if no document has that id."""
+    return search.get_document(id)
+
+
+@mcp.tool()
 def corpus_stats() -> dict[str, Any]:
     """Index totals and per-label counts."""
     return search.stats()
