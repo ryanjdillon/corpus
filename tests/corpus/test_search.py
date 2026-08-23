@@ -47,6 +47,22 @@ def test_structured_query_filters_by_label_and_date(pg, fake_embeddings):
     assert ids == {"imap:test::1"}
 
 
+def test_get_document_returns_full_record(pg, fake_embeddings):
+    body = "the complete body text, far longer than any 300-char snippet. " * 8
+    _index("1", "full record", body, "personal", "2026-01-10")
+    doc = search.get_document("imap:test::1")
+    assert doc is not None
+    assert doc["id"] == "imap:test::1"
+    assert doc["content"] == body
+    assert doc["meta"]["subject"] == "full record"
+    assert doc["meta"]["label"] == "personal"
+
+
+def test_get_document_missing_returns_none(pg, fake_embeddings):
+    _index("1", "present", "present body", "personal", "2026-01-10")
+    assert search.get_document("imap:test::nope") is None
+
+
 def test_stats_counts_by_label(pg, fake_embeddings):
     _index("1", "a", "a", "promotional", "2026-01-01")
     _index("2", "b", "b", "promotional", "2026-01-02")
