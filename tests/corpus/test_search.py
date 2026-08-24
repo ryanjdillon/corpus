@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -45,6 +45,21 @@ def test_structured_query_filters_by_label_and_date(pg, fake_embeddings):
     results = search.structured_query(label="promotional", before="2026-02-01")
     ids = {r["id"] for r in results}
     assert ids == {"imap:test::1"}
+
+
+def test_structured_query_since_window(pg, fake_embeddings):
+    now = datetime.now(UTC)
+    _index("1", "recent", "recent mail", "personal", (now - timedelta(hours=2)).isoformat())
+    _index("2", "old", "old mail", "personal", (now - timedelta(days=5)).isoformat())
+    results = search.structured_query(since="1d")
+    assert {r["id"] for r in results} == {"imap:test::1"}
+
+
+def test_relative_cutoff_parses_and_rejects():
+    cutoff = search._relative_cutoff("2h")
+    assert cutoff < datetime.now(UTC).isoformat()
+    with pytest.raises(ValueError):
+        search._relative_cutoff("nonsense")
 
 
 def test_get_document_returns_full_record(pg, fake_embeddings):

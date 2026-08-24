@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import psycopg
@@ -40,15 +42,36 @@ def semantic_search(
     ]
 
 
+_DURATION_RE = re.compile(r"^\s*(\d+)\s*([smhdw])\s*$")
+_UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
+
+
+def _relative_cutoff(since: str) -> str:
+    """Turn a relative window like '24h', '7d', '30m' into an ISO cutoff timestamp
+    (now - window), so callers need not know the current time. Units: s, m
+    (minutes), h, d, w."""
+    match = _DURATION_RE.match(since.lower())
+    if not match:
+        raise ValueError(f"invalid duration {since!r}; use e.g. '24h', '7d', '30m'")
+    amount, unit = int(match.group(1)), match.group(2)
+    cutoff = datetime.now(UTC) - timedelta(seconds=amount * _UNIT_SECONDS[unit])
+    return cutoff.isoformat()
+
+
 def structured_query(
     label: str | None = None,
     account: str | None = None,
     before: str | None = None,
     after: str | None = None,
+    since: str | None = None,
     limit: int = 500,
 ) -> list[dict[str, Any]]:
     """Analytical, non-semantic query over metadata (e.g. 'all promotional older
-    than 2 weeks'). Returns every match up to `limit`, ordered newest first."""
+    than 2 weeks', or the last day's mail with since='1d'). Returns every match up
+    to `limit`, ordered newest first. `since` is a relative window (now - since),
+    applied as the lower bound when `after` is not given."""
+    if since and not after:
+        after = _relative_cutoff(since)
     clauses = []
     params: list[Any] = []
     if label:
