@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
@@ -27,10 +27,8 @@ mcp = FastMCP(
 
 @mcp.tool()
 def corpus_search(
-    query: Annotated[
-        str, Field(description="Natural-language text, matched semantically against content.")
-    ],
-    top_k: Annotated[int, Field(description="Maximum number of ranked matches to return.")] = 10,
+    query: str = Field(description="Natural-language text, matched semantically against content."),
+    top_k: int = Field(default=10, description="Maximum number of ranked matches to return."),
 ) -> list[dict[str, Any]]:
     """Semantic (vector) search over the indexed mail/documents.
 
@@ -46,29 +44,25 @@ def corpus_search(
 
 @mcp.tool()
 def corpus_query(
-    label: Annotated[
-        str | None,
-        Field(description="Exact data-class label, e.g. 'personal', 'promotional', 'newsletter'."),
-    ] = None,
-    account: Annotated[
-        str | None, Field(description="Exact account address to filter by.")
-    ] = None,
-    before: Annotated[
-        str | None, Field(description="Upper bound on sent time, an absolute ISO-8601 timestamp.")
-    ] = None,
-    after: Annotated[
-        str | None, Field(description="Lower bound on sent time, an absolute ISO-8601 timestamp.")
-    ] = None,
-    since: Annotated[
-        str | None,
-        Field(
-            description="Relative lower bound (now - window): '30m', '24h', '7d', '2w'. Preferred "
-            "for 'recent'/'last day' queries; ignored when `after` is given."
-        ),
-    ] = None,
-    limit: Annotated[
-        int, Field(description="Maximum number of matches to return (newest first).")
-    ] = 500,
+    label: str | None = Field(
+        default=None,
+        description="Exact data-class label, e.g. 'personal', 'promotional', 'newsletter'.",
+    ),
+    account: str | None = Field(default=None, description="Exact account address to filter by."),
+    before: str | None = Field(
+        default=None, description="Upper bound on sent time, an absolute ISO-8601 timestamp."
+    ),
+    after: str | None = Field(
+        default=None, description="Lower bound on sent time, an absolute ISO-8601 timestamp."
+    ),
+    since: str | None = Field(
+        default=None,
+        description="Relative lower bound (now - window): '30m', '24h', '7d', '2w'. Preferred "
+        "for 'recent'/'last day' queries; ignored when `after` is given.",
+    ),
+    limit: int = Field(
+        default=500, description="Maximum number of matches to return (newest first)."
+    ),
 ) -> dict[str, Any]:
     """Structured, non-semantic metadata query over the indexed mail/documents.
 
@@ -87,9 +81,7 @@ def corpus_query(
 
 @mcp.tool()
 def corpus_get(
-    id: Annotated[
-        str, Field(description="Document id from a corpus_search / corpus_query result.")
-    ],
+    id: str = Field(description="Document id from a corpus_search / corpus_query result."),
 ) -> dict[str, Any] | None:
     """Fetch one indexed document by id: full body content and all metadata.
 
