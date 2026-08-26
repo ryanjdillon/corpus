@@ -46,6 +46,35 @@ def test_ingest_command(monkeypatch):
     assert calls == {"cfg": "corpus-ingest", "shut": True}
 
 
+def test_scan_command(monkeypatch, tmp_path):
+    import corpus.scan as scan_mod
+
+    report = {
+        "scanned": 3,
+        "with_secrets": 1,
+        "totals": {"us_ssn": 2},
+        "hits": [
+            {
+                "id": "imap:test::1",
+                "secret_types": ["us_ssn"],
+                "from_addr": "a@b.com",
+                "subject": "form",
+                "sent_at": "2026-01-01T00:00:00+00:00",
+            }
+        ],
+    }
+    monkeypatch.setattr(scan_mod, "scan_archive", lambda source, account, limit: report)
+
+    out = tmp_path / "report.json"
+    result = CliRunner().invoke(cli.main, ["scan", "--json", str(out)])
+    assert result.exit_code == 0, result.output
+    assert "scanned 3; 1 contain secrets" in result.output
+    assert "us_ssn: 2 (1 messages)" in result.output
+    assert "[us_ssn]  a@b.com  form" in result.output
+    assert out.exists()
+    assert '"us_ssn"' in out.read_text()
+
+
 def test_ingest_flushes_telemetry_on_error(monkeypatch):
     import corpus.ingest as ingest_mod
 
