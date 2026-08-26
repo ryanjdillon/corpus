@@ -7,6 +7,8 @@ owns that schema, so Haystack can create and manage its table there.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import psycopg
 from haystack import Document
 from haystack.utils import Secret
@@ -83,6 +85,34 @@ def existing_ids(source: str) -> set[str]:
             return set()
         cur.execute(f"SELECT id FROM {table} WHERE meta->>'source' = %s", (source,))
         return {row[0] for row in cur.fetchall()}
+
+
+def iter_documents(
+    source: str | None = None, account: str | None = None
+) -> Iterator[tuple[str, str, dict]]:
+    """Stream (id, content, meta) for stored documents, optionally filtered by
+    source/account. Uses a server-side cursor so the whole archive need not be held
+    in memory."""
+    table = f"{settings.db_schema}.{settings.documents_table}"
+    clauses: list[str] = []
+    params: list[str] = []
+    if source:
+        clauses.append("meta->>'source' = %s")
+        params.append(source)
+    if account:
+        clauses.append("meta->>'account' = %s")
+        params.append(account)
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    sql = f"SELECT id, content, meta FROM {table}{where}"
+    with psycopg.connect(_dsn()) as conn:
+        with conn.cursor() as check:
+            check.execute("SELECT to_regclass(%s)", (table,))
+            if check.fetchone()[0] is None:
+                return
+        with conn.cursor(name="corpus_scan") as cur:
+            cur.itersize = 500
+            cur.execute(sql, params)
+            yield from cur
 
 
 def get_cursor(source: str) -> str | None:
