@@ -30,10 +30,12 @@ def corpus_search(
     query: str = Field(description="Natural-language text, matched semantically against content."),
     top_k: int = Field(default=10, description="Maximum number of ranked matches to return."),
 ) -> list[dict[str, Any]]:
-    """Semantic (vector) search over the indexed mail/documents.
+    """Semantic (vector) search over the indexed mail/documents, by MEANING.
 
-    Use for meaning-based lookup ("find emails about X"). For time windows like
-    "the last day/week", use ``corpus_query`` with ``since`` instead.
+    Use ONLY for topic/similarity lookups ("find emails about the invoice").
+    Do NOT use for time-based questions — "today", "recent", "this week",
+    "latest" — those MUST use ``corpus_query`` with ``since`` (semantic search
+    ignores dates and will return old, irrelevant matches).
 
     Returns:
         Ranked matches, each with subject, from_addr, sent_at, label, and a
