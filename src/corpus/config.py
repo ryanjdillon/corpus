@@ -25,6 +25,11 @@ class Settings(BaseSettings):
     # Optional local model used only to break low-confidence classification ties.
     classify_model: str = ""  # empty => rule + prototype classification only
 
+    # Local model for batch enrichment (structured per-message summary +
+    # classification via guided decoding). Empty => enrichment disabled.
+    enrich_model: str = ""
+    enrich_timeout: float = 120.0
+
     # Chunking for long bodies.
     chunk_tokens: int = 512
     chunk_overlap: int = 64
