@@ -1,4 +1,4 @@
-"""Command-line entrypoints: api | mcp | ingest | scan."""
+"""Command-line entrypoints: api | mcp | ingest | scan | enrich | audit-secrets."""
 
 from __future__ import annotations
 
@@ -49,6 +49,41 @@ def ingest(source: str, batch_size: int) -> None:
         click.echo(f"ingested {count} documents from {source}")
     finally:
         telemetry.shutdown()  # flush metrics/traces before the process exits
+
+
+@main.command()
+@click.option("--source", default=None, help="filter by source id, e.g. gmail:personal")
+@click.option("--account", default=None, help="filter by account address")
+@click.option("--limit", default=0, type=int, help="enrich at most N messages (0 = all)")
+@click.option("--force", is_flag=True, help="re-enrich documents already stored")
+def enrich(source: str | None, account: str | None, limit: int, force: bool) -> None:
+    """Batch-enrich stored documents: summary + classification, plus an LLM secret
+    audit on any with flagged candidates."""
+    telemetry.configure("corpus-enrich")
+    from .enrich_batch import run_enrich
+
+    try:
+        r = run_enrich(source=source, account=account, limit=limit, force=force)
+        click.echo(f"enriched {r['enriched']}, audited {r['audited']} of {r['scanned']} scanned")
+    finally:
+        telemetry.shutdown()
+
+
+@main.command(name="audit-secrets")
+@click.option("--source", default=None, help="filter by source id, e.g. gmail:personal")
+@click.option("--account", default=None, help="filter by account address")
+@click.option("--limit", default=0, type=int, help="scan at most N messages (0 = all)")
+def audit_secrets_cmd(source: str | None, account: str | None, limit: int) -> None:
+    """Re-run only the LLM secret confirmation over stored documents with
+    candidates -- no re-enrichment."""
+    telemetry.configure("corpus-audit")
+    from .enrich_batch import run_audit
+
+    try:
+        r = run_audit(source=source, account=account, limit=limit)
+        click.echo(f"audited {r['audited']} of {r['scanned']} scanned")
+    finally:
+        telemetry.shutdown()
 
 
 @main.command()

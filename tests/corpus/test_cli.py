@@ -90,3 +90,33 @@ def test_ingest_flushes_telemetry_on_error(monkeypatch):
     result = CliRunner().invoke(cli.main, ["ingest", "imap:test"])
     assert result.exit_code != 0
     assert calls.get("shut") is True  # flushed even on failure
+
+
+def test_enrich_command(monkeypatch):
+    import corpus.enrich_batch as eb
+
+    calls = {}
+    monkeypatch.setattr(cli.telemetry, "configure", lambda n: calls.__setitem__("cfg", n))
+    monkeypatch.setattr(cli.telemetry, "shutdown", lambda: calls.__setitem__("shut", True))
+    monkeypatch.setattr(
+        eb, "run_enrich", lambda source, account, limit, force: {"scanned": 5, "enriched": 4, "audited": 1}
+    )
+
+    result = CliRunner().invoke(cli.main, ["enrich", "--limit", "5"])
+    assert result.exit_code == 0, result.output
+    assert "enriched 4, audited 1 of 5 scanned" in result.output
+    assert calls == {"cfg": "corpus-enrich", "shut": True}
+
+
+def test_audit_secrets_command(monkeypatch):
+    import corpus.enrich_batch as eb
+
+    calls = {}
+    monkeypatch.setattr(cli.telemetry, "configure", lambda n: calls.__setitem__("cfg", n))
+    monkeypatch.setattr(cli.telemetry, "shutdown", lambda: calls.__setitem__("shut", True))
+    monkeypatch.setattr(eb, "run_audit", lambda source, account, limit: {"scanned": 3, "audited": 2})
+
+    result = CliRunner().invoke(cli.main, ["audit-secrets"])
+    assert result.exit_code == 0, result.output
+    assert "audited 2 of 3 scanned" in result.output
+    assert calls == {"cfg": "corpus-audit", "shut": True}
