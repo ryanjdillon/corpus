@@ -1,15 +1,22 @@
 # Architecture
 
 corpus turns content from arbitrary sources into a searchable store of vectors +
-metadata. The pipeline is a straight line of **deep modules** — each has a small
-interface and hides its machinery — so a change to one (a new source, a different
-embedder, another store backend) doesn't ripple through the others.
+metadata, then derives two read-only branches from that store — enrichment and
+secret scanning. Every part is a **deep module**: a small interface hiding its
+machinery, so a change to one (a new source, a different embedder, another store
+backend, a new detector) doesn't ripple through the others.
 
 ```
-source → Record → classify → embed → Document → store
-                                                   ↑
-                              search / query ──────┘   (API · MCP)
+Gmail/IMAP → fetchers → classify → embeddings → store (pgvector) ← search → api · mcp
+                                                   │
+                          enrichment  ── documents ┤   (LLM: guided JSON)
+                          secret scan ── documents ┘   (pii · leaks · LLM confirm)
 ```
+
+The rendered diagram of the runtime pipeline is
+[`architecture.html`](architecture.html), generated from the checked
+[`architecture.json`](architecture.json) specification (Archify). Regenerate it
+whenever the module topology changes.
 
 ## The core type
 
@@ -26,13 +33,23 @@ is implementation.
 
 | Module | Interface | Hides |
 |---|---|---|
+| `models` | `Record`, `Classification` | The normalized item types every stage passes, with `(source, source_uid)` identity. |
 | `fetchers` | `build_fetcher(source) -> Fetcher`; `Fetcher.fetch(cursor)` yields Records | Per-source protocols (IMAP, Gmail API), auth, pagination, incremental cursors. See [extending-fetchers.md](extending-fetchers.md). |
 | `classify` | `classify(record) -> Classification` | Header/rule heuristics (and an optional model tie-breaker) that assign a data-class label + confidence. |
 | `embeddings` | `Embedder.embed(texts) -> vectors` | The OpenAI-compatible HTTP call, retries, and the typed `EmbedInputError` for rejected inputs. |
-| `store` | `get_document_store()`, `to_document(...)`, cursor helpers | The pgvector document store and the `sync_state` cursor table. |
-| `ingest` | `ingest(source, batch_size) -> count` | Orchestration: fetch → skip-already-stored → batch → embed → write, with per-record resilience (see below). |
-| `search` | `semantic_search(...)`, `structured_query(...)`, `stats()` | Vector similarity and analytical SQL over the store. |
+| `store` | `get_document_store()`, `to_document(...)`, `iter_documents(...)`, cursor helpers | The pgvector document store, the `sync_state` cursor, and a server-side streaming read cursor. |
+| `ingest` | `ingest(source, batch_size) -> count` | Orchestration of the ingest line: fetch → classify → embed → write, with per-record resilience (see below). |
+| `search` | `semantic_search(...)`, `structured_query(...)`, `stats()` | Vector similarity (HNSW) and analytical SQL over the store. |
 | `api` / `mcp_server` | REST endpoints / MCP tools | Thin adapters over `search`. |
+| `cli` | `main` — `api · mcp · ingest · scan · enrich · audit-secrets` | Click entrypoints that configure telemetry and launch each server or batch pipeline. |
+| `enrichment` | `Enrichment` / `SecretAudit` structs, `json_schema()`, `SCHEMA_VERSION` | The msgspec enrichment + secret-audit schema; version fingerprints derived from the schema itself. |
+| `enricher` | `Enricher.enrich(text) -> Enrichment` | The guided-decoding LLM call that produces structured, secret-free enrichment. |
+| `secret_audit` | `audit_secrets(text, candidates) -> SecretAudit` | The LLM confirmation + severity pass over deterministic secret candidates. |
+| `enrich_batch` | `run_enrich(store, …)`, `run_audit(store, …)` | Batch orchestration: enrich every document, audit only flagged ones; re-audit without re-enriching. |
+| `enrich_store` | `EnrichStore` | The derived enrichments table — lazy DDL, upserts, resume ids, and per-stage provenance. |
+| `scan` | `detect(text)`, `audit_candidates(text)`, `scan_archive(…)`, `SCAN_VERSION` | Merges `pii` + `leaks`; the audit candidate gate; the whole-archive secret report. |
+| `pii` | `pii.scan(text) -> ScanResult` | Presidio identity/financial recognizers with adjacency-gated precision; types + counts, never values. |
+| `leaks` | `leaks.scan(text) -> dict` | Local credential regexes plus an optional Betterleaks subprocess; rule types + counts, never values. |
 | `telemetry` | `configure(name)`, `instrument_fastapi(app)`, `shutdown()` | OpenTelemetry setup and metric instruments (see [Observability](#observability)). |
 | `config` | `settings` | Environment parsing (all vars are `CORPUS_`-prefixed). |
 
@@ -51,20 +68,43 @@ is implementation.
   aborts a large backfill. Embed inputs are length-capped to bound pathological
   content (e.g. a huge unbroken string).
 
-## Embedding endpoint
+## Derived branches: enrichment and secret scanning
 
-Any endpoint speaking the OpenAI embeddings API works, selected purely by
-configuration (`CORPUS_OPENAI_API_BASE`, `CORPUS_OPENAI_API_KEY`,
-`CORPUS_EMBEDDING_MODEL`, `CORPUS_EMBEDDING_DIMENSIONS`). A locally hosted model
-keeps content on your network; a hosted provider trades that for their models.
-The pipeline is identical either way.
+Both branches read documents from the store and write nothing to it except a
+*derived* index — the store's documents remain the source of truth.
+
+- **Secret scanning** is deterministic and model-free. `pii` runs Presidio's
+  identity/financial recognizers (SSN, card, IBAN, bank, crypto) with an
+  adjacency gate that only counts a match when a context word sits beside it;
+  `leaks` runs provider-prefixed credential regexes plus, when configured, the
+  Betterleaks binary. `scan` merges the two and exposes `scan_archive` (the
+  `corpus scan` audit) and `audit_candidates` (the gate that selects which
+  messages are worth an LLM look). Only secret *types* and counts are ever
+  produced — never the values.
+- **Enrichment** (`enrich_batch`) does one LLM pass per document via `enricher`
+  (guided decoding against the `enrichment` schema), and, only where
+  `audit_candidates` flagged something, an LLM `secret_audit` that confirms which
+  candidates are real and grades severity. Results are upserted into the derived
+  table by `enrich_store`, with independent provenance for the enrichment and the
+  audit so either can be regenerated alone. `run_audit` re-runs just the
+  confirmation. The caller (`cli`) owns the `EnrichStore` lifecycle.
+
+## Embedding and LLM endpoint
+
+Both the embedder and the enrichment/secret-audit calls speak the
+OpenAI-compatible API and are selected purely by configuration
+(`CORPUS_OPENAI_API_BASE`, `CORPUS_OPENAI_API_KEY`, `CORPUS_EMBEDDING_MODEL`,
+`CORPUS_ENRICH_MODEL`). One gateway therefore serves both `/embeddings` and
+`/chat/completions`. A locally hosted model keeps content on your network; a
+hosted provider trades that for their models. The pipeline is identical either way.
 
 ## Storage
 
 Documents live in a pgvector-backed table inside `CORPUS_DB_SCHEMA` (the DB role
-owns the schema). Per-source progress is tracked in a small `sync_state` table.
-Identity is `(source, source_uid)`, so re-ingesting overwrites rather than
-duplicates.
+owns the schema). Per-source progress is tracked in a small `sync_state` table,
+and the derived enrichment/secret-audit records live in an `enrichments` table
+created lazily by `enrich_store`. Identity is `(source, source_uid)`, so
+re-ingesting overwrites rather than duplicates.
 
 ## Observability
 
