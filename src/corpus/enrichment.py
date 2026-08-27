@@ -11,6 +11,7 @@ deterministic ``pii`` scan — and are referenced by name here, never quoted).
 from __future__ import annotations
 
 import enum
+import hashlib
 from datetime import date
 
 import msgspec
@@ -187,11 +188,6 @@ class SecretAudit(msgspec.Struct):
     findings: list[ConfirmedSecret] = msgspec.field(default_factory=list)
 
 
-#: Bumped when the struct set changes; stored alongside each enriched record so a
-#: later migration knows which schema produced it.
-SCHEMA_VERSION = 1
-
-
 def json_schema() -> dict:
     """Render the Enrichment struct to a JSON Schema for guided decoding."""
     return msgspec.json.schema(Enrichment)
@@ -200,6 +196,12 @@ def json_schema() -> dict:
 def secret_audit_schema() -> dict:
     """Render the SecretAudit struct to a JSON Schema for guided decoding."""
     return msgspec.json.schema(SecretAudit)
+
+
+#: Fingerprint of the enrichment schema, stored alongside each record so a later
+#: migration knows which schema produced it. Derived from the schema itself, so it
+#: changes automatically when the struct set changes — no manual bump.
+SCHEMA_VERSION = hashlib.sha1(msgspec.json.encode(json_schema())).hexdigest()[:12]
 
 
 def decode(data: bytes | str) -> Enrichment:

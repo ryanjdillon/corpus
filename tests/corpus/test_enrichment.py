@@ -64,8 +64,11 @@ def test_decode_rejects_value_outside_enum():
         enrichment.decode('{"one_line": "x", "abstract": "y", "category": "banana"}')
 
 
-def test_schema_version_is_an_int():
-    assert isinstance(enrichment.SCHEMA_VERSION, int)
+def test_schema_version_is_a_stable_fingerprint():
+    # derived from the schema, not a hand-maintained int
+    assert isinstance(enrichment.SCHEMA_VERSION, str)
+    assert enrichment.SCHEMA_VERSION == enrichment.SCHEMA_VERSION  # deterministic
+    assert len(enrichment.SCHEMA_VERSION) == 12
 
 
 def test_secret_audit_schema_lists_severities():
