@@ -61,9 +61,11 @@ def enrich(source: str | None, account: str | None, limit: int, force: bool) -> 
     audit on any with flagged candidates."""
     telemetry.configure("corpus-enrich")
     from .enrich_batch import run_enrich
+    from .enrich_store import EnrichStore
 
     try:
-        r = run_enrich(source=source, account=account, limit=limit, force=force)
+        with EnrichStore() as store:
+            r = run_enrich(store, source=source, account=account, limit=limit, force=force)
         click.echo(f"enriched {r['enriched']}, audited {r['audited']} of {r['scanned']} scanned")
     finally:
         telemetry.shutdown()
@@ -78,9 +80,11 @@ def audit_secrets_cmd(source: str | None, account: str | None, limit: int) -> No
     candidates -- no re-enrichment."""
     telemetry.configure("corpus-audit")
     from .enrich_batch import run_audit
+    from .enrich_store import EnrichStore
 
     try:
-        r = run_audit(source=source, account=account, limit=limit)
+        with EnrichStore() as store:
+            r = run_audit(store, source=source, account=account, limit=limit)
         click.echo(f"audited {r['audited']} of {r['scanned']} scanned")
     finally:
         telemetry.shutdown()
