@@ -24,22 +24,22 @@ def _row(doc_id: str):
 def test_lazy_create_save_and_resume(pg):
     with EnrichStore() as est:
         assert est.enriched_ids() == set()  # table created empty
-        est.save_enrichment("d1", {"one_line": "hello"}, "local", 1)
-        est.save_audit("d1", ["us_ssn"], {"contains_secret": True}, "local", 1)
+        est.save_enrichment("d1", {"one_line": "hello"}, "local", "sv1")
+        est.save_audit("d1", ["us_ssn"], {"contains_secret": True}, "local", "scan1")
         assert est.enriched_ids() == {"d1"}
 
     # a fresh connection sees the persisted row and both stages' provenance
-    assert _row("d1") == ("local", 1, ["us_ssn"], "local")
+    assert _row("d1") == ("local", "sv1", ["us_ssn"], "local")
 
 
 def test_upsert_replaces_enrichment_only(pg):
     with EnrichStore() as est:
-        est.save_enrichment("d1", {"one_line": "a"}, "local", 1)
-        est.save_audit("d1", ["credit_card"], {"contains_secret": False}, "local", 1)
+        est.save_enrichment("d1", {"one_line": "a"}, "local", "sv1")
+        est.save_audit("d1", ["credit_card"], {"contains_secret": False}, "local", "scan1")
         # re-enrich with a newer model/schema; the audit columns must be untouched
-        est.save_enrichment("d1", {"one_line": "b"}, "local-v2", 2)
+        est.save_enrichment("d1", {"one_line": "b"}, "local-v2", "sv2")
 
     model, schema_version, candidates, audit_model = _row("d1")
-    assert (model, schema_version) == ("local-v2", 2)
+    assert (model, schema_version) == ("local-v2", "sv2")
     assert candidates == ["credit_card"]  # audit side preserved across re-enrichment
     assert audit_model == "local"

@@ -8,14 +8,11 @@ recovery codes / credentials in my mail" pass; it depends on no model.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from typing import Any
 
 from . import leaks, pii, store
-
-#: Bumped when the deterministic detectors change, so a stored audit records which
-#: candidate-generation logic produced it.
-SCAN_VERSION = 1
 
 # Tight literal-phrase gate for recovery/backup codes: these have no deterministic
 # value signature (that's why the noisy token regex was removed), but the wording
@@ -24,6 +21,28 @@ _RECOVERY_HINT = re.compile(
     r"(?:recovery|backup)\s+code|one[-\s]?time\s+(?:pass|code)|two[-\s]?factor|\b2fa\b|verification\s+code",
     re.IGNORECASE,
 )
+
+
+def _detector_fingerprint() -> str:
+    """A stable hash of what the deterministic detectors actually match — the pii
+    recognizers/entities/gates, the leaks rules, and the recovery hint. It changes
+    only when detection logic changes, so nothing needs manual bumping."""
+    parts = (
+        sorted(type(r).__name__ for r in pii._RECOGNIZERS),
+        sorted(pii._ENTITY_NAMES.items()),
+        sorted(pii._CONTEXT_REQUIRED),
+        pii._MIN_SCORE,
+        [(name, pattern.pattern) for name, pattern in leaks._RULES],
+        sorted(leaks._RULE_MAP.items()),
+        _RECOVERY_HINT.pattern,
+    )
+    return hashlib.sha1(repr(parts).encode()).hexdigest()[:12]
+
+
+#: Fingerprint of the deterministic detectors, stored with each audit so it records
+#: which candidate-generation logic produced it. Derived, so it updates itself when
+#: any recognizer, rule, or gate changes.
+SCAN_VERSION = _detector_fingerprint()
 
 
 def detect(content: str | None) -> dict[str, int]:

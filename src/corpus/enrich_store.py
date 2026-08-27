@@ -25,12 +25,12 @@ CREATE TABLE IF NOT EXISTS {table} (
     doc_id            text PRIMARY KEY,
     enrichment        jsonb,
     enrichment_model  text,
-    schema_version    int,
+    schema_version    text,
     enriched_at       timestamptz,
     secret_candidates text[],
     secret_audit      jsonb,
     audit_model       text,
-    scan_version      int,
+    scan_version      text,
     audited_at        timestamptz
 )
 """
@@ -54,7 +54,7 @@ class EnrichStore:
             return {row[0] for row in cur.fetchall()}
 
     def save_enrichment(
-        self, doc_id: str, enrichment: dict, model: str, schema_version: int
+        self, doc_id: str, enrichment: dict, model: str, schema_version: str
     ) -> None:
         with self._conn.cursor() as cur:
             cur.execute(
@@ -73,7 +73,7 @@ class EnrichStore:
         self._conn.commit()
 
     def save_audit(
-        self, doc_id: str, candidates: list[str], audit: dict, model: str, scan_version: int
+        self, doc_id: str, candidates: list[str], audit: dict, model: str, scan_version: str
     ) -> None:
         with self._conn.cursor() as cur:
             cur.execute(
