@@ -1,123 +1,104 @@
 """The batch runner enriches every document and audits only flagged ones, with the
-real candidate gate. The LLM and store are faked via a configurable fixture, so no
-network or DB is touched."""
+real candidate gate. Collaborators are spec-bound mocks injected via fixtures, so
+the doubles can't drift from the real interfaces and no I/O is touched."""
 
 from __future__ import annotations
 
+from unittest.mock import create_autospec
+
 import pytest
 
-from corpus import enrich_batch
+from corpus import secret_audit
+from corpus.enrich_batch import run_audit, run_enrich
+from corpus.enrich_store import EnrichStore
+from corpus.enricher import Enricher
 from corpus.enrichment import Category, Enrichment, SecretAudit
-
-# A doc with an AWS key trips the credential detector; a clean doc trips nothing.
-_KEY_DOC = ("d1", "deploy key AKIAIOSFODNN7EXAMPLE", {})
-_CLEAN_DOC = ("d2", "are we still on for lunch tomorrow?", {})
-
-
-class FakeStore:
-    def __init__(self, seen: set[str] | None = None) -> None:
-        self.enrichments: dict = {}
-        self.audits: dict = {}
-        self._seen = seen or set()
-
-    def enriched_ids(self) -> set[str]:
-        return set(self._seen)
-
-    def save_enrichment(self, doc_id, enrichment, model, schema_version) -> None:
-        self.enrichments[doc_id] = (enrichment, model, schema_version)
-
-    def save_audit(self, doc_id, candidates, audit, model, scan_version) -> None:
-        self.audits[doc_id] = (candidates, audit, model, scan_version)
-
-    def close(self) -> None:
-        pass
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc) -> None:
-        pass
-
-
-def _default_enrich(text: str) -> Enrichment:
-    return Enrichment(one_line="x", abstract="y", category=Category.personal)
-
-
-def _default_audit(text, candidates, model=None) -> SecretAudit:
-    return SecretAudit(contains_secret=bool(candidates))
 
 
 @pytest.fixture
-def enrich_env(monkeypatch):
-    """Wire the batch runner's dependencies to configurable fakes; returns a factory
-    so each test can vary docs, resume state, and enrich/audit behavior."""
-
-    def setup(docs, *, seen=None, enrich=_default_enrich, audit=_default_audit, model="local"):
-        store = FakeStore(seen=seen)
-
-        class _Enricher:
-            def __init__(self):
-                self.model = model
-
-            def enrich(self, text):
-                return enrich(text)
-
-            def close(self):
-                pass
-
-        monkeypatch.setattr(
-            enrich_batch.store, "iter_documents", lambda source=None, account=None: iter(docs)
-        )
-        monkeypatch.setattr(enrich_batch, "Enricher", lambda *a, **k: _Enricher())
-        monkeypatch.setattr(enrich_batch, "EnrichStore", lambda: store)
-        monkeypatch.setattr(enrich_batch, "audit_secrets", audit)
-        return store
-
-    return setup
+def key_doc():
+    """A document that trips the credential detector."""
+    return ("d1", "deploy key AKIAIOSFODNN7EXAMPLE", {})
 
 
-def test_run_enrich_enriches_all_audits_only_flagged(enrich_env):
-    store = enrich_env([_KEY_DOC, _CLEAN_DOC])
+@pytest.fixture
+def clean_doc():
+    """A document that trips no detector."""
+    return ("d2", "are we still on for lunch tomorrow?", {})
 
-    r = enrich_batch.run_enrich()
+
+@pytest.fixture
+def documents():
+    """Wrap docs into the injected iter_documents callable (ignores its filters)."""
+    return lambda *docs: (lambda **_: iter(docs))
+
+
+@pytest.fixture
+def store():
+    m = create_autospec(EnrichStore, instance=True)
+    m.enriched_ids.return_value = set()
+    return m
+
+
+@pytest.fixture
+def enricher():
+    m = create_autospec(Enricher, instance=True)
+    m.model = "local"  # an __init__ attribute, so set explicitly on the spec mock
+    m.enrich.return_value = Enrichment(one_line="x", abstract="y", category=Category.personal)
+    return m
+
+
+@pytest.fixture
+def audit():
+    m = create_autospec(secret_audit.audit_secrets)
+    m.return_value = SecretAudit(contains_secret=True)
+    return m
+
+
+def test_enriches_all_audits_only_flagged(store, enricher, audit, documents, key_doc, clean_doc):
+    r = run_enrich(store, documents=documents(key_doc, clean_doc), enricher=enricher, audit=audit)
 
     assert r == {"scanned": 2, "enriched": 2, "audited": 1}
-    assert set(store.enrichments) == {"d1", "d2"}
-    assert set(store.audits) == {"d1"}  # only the credential doc got an audit
-    assert "aws_access_key" in store.audits["d1"][0]
+    assert store.save_enrichment.call_count == 2
+    assert {c.args[0] for c in store.save_audit.call_args_list} == {"d1"}
+    assert "aws_access_key" in store.save_audit.call_args.args[1]
 
 
-def test_run_enrich_skips_already_enriched(enrich_env):
-    store = enrich_env([_KEY_DOC], seen={"d1"})
+def test_skips_already_enriched(store, enricher, documents, key_doc):
+    store.enriched_ids.return_value = {"d1"}
 
-    r = enrich_batch.run_enrich()
+    r = run_enrich(store, documents=documents(key_doc), enricher=enricher)
 
     assert r == {"scanned": 1, "enriched": 0, "audited": 0}
-    assert store.enrichments == {}
+    store.save_enrichment.assert_not_called()
 
 
-def test_force_reenriches_seen(enrich_env):
-    enrich_env([_KEY_DOC], seen={"d1"})
-    assert enrich_batch.run_enrich(force=True)["enriched"] == 1
+def test_force_reenriches_seen(store, enricher, audit, documents, key_doc):
+    store.enriched_ids.return_value = {"d1"}
+
+    run_enrich(store, documents=documents(key_doc), enricher=enricher, audit=audit, force=True)
+
+    store.save_enrichment.assert_called_once()
 
 
-def test_limit_caps_scan(enrich_env):
-    enrich_env([_CLEAN_DOC, _KEY_DOC])
-    assert enrich_batch.run_enrich(limit=1)["scanned"] == 1
+def test_limit_caps_scan(store, enricher, documents, key_doc, clean_doc):
+    r = run_enrich(store, documents=documents(clean_doc, key_doc), enricher=enricher, limit=1)
+
+    assert r["scanned"] == 1
+    store.save_enrichment.assert_called_once()
 
 
-def test_run_audit_only_audits_candidates_without_enriching(enrich_env, monkeypatch):
-    store = enrich_env([_KEY_DOC, _CLEAN_DOC])
-    monkeypatch.setattr(enrich_batch.settings, "enrich_model", "local")
-
-    r = enrich_batch.run_audit()
+def test_run_audit_only_audits_candidates_without_enriching(
+    store, audit, documents, key_doc, clean_doc
+):
+    r = run_audit(store, documents=documents(key_doc, clean_doc), audit=audit, model="local")
 
     assert r == {"scanned": 2, "audited": 1}
-    assert set(store.audits) == {"d1"}
-    assert store.enrichments == {}  # re-audit never enriches
+    assert {c.args[0] for c in store.save_audit.call_args_list} == {"d1"}
+    store.save_enrichment.assert_not_called()
 
 
-def test_run_audit_requires_model(monkeypatch):
-    monkeypatch.setattr(enrich_batch.settings, "enrich_model", "")
+def test_run_audit_requires_model(store, documents):
+    # no model given and none configured -> refuse rather than call the LLM
     with pytest.raises(ValueError):
-        enrich_batch.run_audit()
+        run_audit(store, documents=documents(), model="")

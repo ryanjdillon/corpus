@@ -92,14 +92,28 @@ def test_ingest_flushes_telemetry_on_error(monkeypatch):
     assert calls.get("shut") is True  # flushed even on failure
 
 
+class _FakeStoreCM:
+    """Stand-in for EnrichStore's context manager in CLI tests (no DB)."""
+
+    def __enter__(self):
+        return object()
+
+    def __exit__(self, *exc):
+        return False
+
+
 def test_enrich_command(monkeypatch):
     import corpus.enrich_batch as eb
+    import corpus.enrich_store as es
 
     calls = {}
     monkeypatch.setattr(cli.telemetry, "configure", lambda n: calls.__setitem__("cfg", n))
     monkeypatch.setattr(cli.telemetry, "shutdown", lambda: calls.__setitem__("shut", True))
+    monkeypatch.setattr(es, "EnrichStore", _FakeStoreCM)
     monkeypatch.setattr(
-        eb, "run_enrich", lambda source, account, limit, force: {"scanned": 5, "enriched": 4, "audited": 1}
+        eb,
+        "run_enrich",
+        lambda store, source, account, limit, force: {"scanned": 5, "enriched": 4, "audited": 1},
     )
 
     result = CliRunner().invoke(cli.main, ["enrich", "--limit", "5"])
@@ -110,11 +124,15 @@ def test_enrich_command(monkeypatch):
 
 def test_audit_secrets_command(monkeypatch):
     import corpus.enrich_batch as eb
+    import corpus.enrich_store as es
 
     calls = {}
     monkeypatch.setattr(cli.telemetry, "configure", lambda n: calls.__setitem__("cfg", n))
     monkeypatch.setattr(cli.telemetry, "shutdown", lambda: calls.__setitem__("shut", True))
-    monkeypatch.setattr(eb, "run_audit", lambda source, account, limit: {"scanned": 3, "audited": 2})
+    monkeypatch.setattr(es, "EnrichStore", _FakeStoreCM)
+    monkeypatch.setattr(
+        eb, "run_audit", lambda store, source, account, limit: {"scanned": 3, "audited": 2}
+    )
 
     result = CliRunner().invoke(cli.main, ["audit-secrets"])
     assert result.exit_code == 0, result.output
