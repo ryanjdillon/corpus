@@ -19,6 +19,20 @@ jobs:
         with:
           version: "0.16.4"
 
+  # Stdlib-only and diff-scoped, so it needs neither setup-python nor an install
+  # step; it adds a couple of seconds to a ~2 minute run.
+  architecture:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The gate diffs against the merge base, which a shallow clone lacks.
+          fetch-depth: 0
+
+      - name: Architecture drift gate
+        run: python3 scripts/architecture_gate.py "origin/${{ github.base_ref }}"
+
   test:
     runs-on: ubuntu-latest
     steps:
