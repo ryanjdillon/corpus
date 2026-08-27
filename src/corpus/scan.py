@@ -10,7 +10,16 @@ from __future__ import annotations
 
 from typing import Any
 
-from . import pii, store
+from . import leaks, pii, store
+
+
+def detect(content: str | None) -> dict[str, int]:
+    """Merge the identity (``pii``) and credential (``leaks``) detectors into a
+    single {secret_type: count} map for one document."""
+    counts = dict(pii.scan(content).secret_counts)
+    for name, count in leaks.scan(content).items():
+        counts[name] = counts.get(name, 0) + count
+    return counts
 
 
 def scan_archive(
@@ -28,16 +37,16 @@ def scan_archive(
         if limit and scanned >= limit:
             break
         scanned += 1
-        result = pii.scan(content)
-        if not result.has_secrets:
+        counts = detect(content)
+        if not counts:
             continue
-        for secret_type, count in result.secret_counts.items():
+        for secret_type, count in counts.items():
             totals[secret_type] = totals.get(secret_type, 0) + count
         meta = meta or {}
         hits.append(
             {
                 "id": doc_id,
-                "secret_types": list(result.secret_types),
+                "secret_types": sorted(counts),
                 "from_addr": meta.get("from_addr"),
                 "subject": meta.get("subject"),
                 "sent_at": meta.get("sent_at"),
