@@ -23,8 +23,12 @@ cov:
     uv run coverage report --precision=2
     uv run python scripts/coverage_gate.py "$(uv run coverage report --format=total --precision=2)" .github/coverage-baseline.txt
 
+# Fail if this branch changes the module set without updating docs/architecture.*.
+arch BASE="origin/main":
+    python3 scripts/architecture_gate.py {{BASE}}
+
 # All pre-PR checks, mirroring CI. Run this (and fix any failures) before pushing.
-check: lint cov
+check: lint cov arch
 
 # One-time Gmail OAuth to mint a refresh token.
 # Usage: just gmail-auth path/to/client_secret.json
