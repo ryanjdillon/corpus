@@ -8,9 +8,22 @@ recovery codes / credentials in my mail" pass; it depends on no model.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from . import leaks, pii, store
+
+#: Bumped when the deterministic detectors change, so a stored audit records which
+#: candidate-generation logic produced it.
+SCAN_VERSION = 1
+
+# Tight literal-phrase gate for recovery/backup codes: these have no deterministic
+# value signature (that's why the noisy token regex was removed), but the wording
+# reliably marks a message worth an LLM look. Selection only — the LLM confirms.
+_RECOVERY_HINT = re.compile(
+    r"(?:recovery|backup)\s+code|one[-\s]?time\s+(?:pass|code)|two[-\s]?factor|\b2fa\b|verification\s+code",
+    re.IGNORECASE,
+)
 
 
 def detect(content: str | None) -> dict[str, int]:
@@ -20,6 +33,18 @@ def detect(content: str | None) -> dict[str, int]:
     for name, count in leaks.scan(content).items():
         counts[name] = counts.get(name, 0) + count
     return counts
+
+
+def audit_candidates(content: str | None) -> list[str]:
+    """Secret types worth an LLM confirmation for this document: the deterministic
+    hits plus ``recovery_code`` when recovery wording is present. Empty means the
+    message is not worth auditing."""
+    if not content:
+        return []
+    candidates = sorted(detect(content))
+    if _RECOVERY_HINT.search(content) and "recovery_code" not in candidates:
+        candidates.append("recovery_code")
+    return candidates
 
 
 def scan_archive(
