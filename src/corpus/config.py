@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     enrich_model: str = ""
     enrich_timeout: float = 120.0
 
+    # External credential scanner (Betterleaks). Empty => local regexes only; set to
+    # the binary name/path to union in its full ruleset (the image sets this).
+    leaks_bin: str = ""
+    leaks_timeout: float = 30.0
+
     # Chunking for long bodies.
     chunk_tokens: int = 512
     chunk_overlap: int = 64

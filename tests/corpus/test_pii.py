@@ -1,11 +1,10 @@
 from corpus import pii
 
 
-def test_detects_ssn_without_leaking_value():
+def test_detects_ssn_with_adjacent_context():
     # 900-xx-xxxx is in the SSA's permanently-reserved (never-issued) range, so it
-    # cannot be anyone's real SSN, yet Presidio still detects the format. (The
-    # classic 123-45-6789 / 078-05-1120 examples are denylisted, so they don't test
-    # detection.)
+    # cannot be anyone's real SSN, yet Presidio still detects the format. "SSN" sits
+    # right beside it, so it counts.
     result = pii.scan("My SSN is 900-12-3456, keep it safe.")
     assert "us_ssn" in result.secret_types
     assert result.has_secrets
@@ -14,28 +13,32 @@ def test_detects_ssn_without_leaking_value():
     assert "900-12-3456" not in repr(result)
 
 
-def test_detects_credit_card_luhn():
-    result = pii.scan("card on file: 4111 1111 1111 1111")
-    assert "credit_card" in result.secret_types
+def test_ssn_shaped_number_without_context_is_ignored():
+    # A 9-digit value with no SSN wording nearby (a datalogger reading, an id) is the
+    # dominant false positive the adjacency gate is meant to drop.
+    result = pii.scan("Sensor sample 900123456 was logged at noon near buoy 7.")
+    assert "us_ssn" not in result.secret_types
 
 
-def test_detects_private_key_header():
-    result = pii.scan("-----BEGIN OPENSSH PRIVATE KEY-----\nQUJD\n-----END OPENSSH PRIVATE KEY-----")
-    assert "private_key" in result.secret_types
+def test_credit_card_requires_adjacent_context():
+    with_ctx = pii.scan("card on file: 4111 1111 1111 1111")
+    assert "credit_card" in with_ctx.secret_types
+    # same Luhn-valid number as an order/tracking id, no card wording -> not flagged
+    no_ctx = pii.scan("Order 4111 1111 1111 1111 has shipped, thanks!")
+    assert "credit_card" not in no_ctx.secret_types
 
 
-def test_recovery_code_requires_context():
-    with_ctx = pii.scan("Your backup codes: ABCD-1234, EFGH-5678 — store them safely.")
-    assert "recovery_code" in with_ctx.secret_types
-    # same-shaped token without recovery context is not a secret
-    no_ctx = pii.scan("Meeting room ABCD-1234 is booked for us.")
-    assert "recovery_code" not in no_ctx.secret_types
+def test_iban_counts_on_format_alone():
+    # IBAN carries its own checksum and is specific enough to trust without context.
+    result = pii.scan("Please wire to GB82 WEST 1234 5698 7654 32 by Friday.")
+    assert "iban" in result.secret_types
+    assert "GB82" not in repr(result)
 
 
-def test_recovery_context_without_code_token():
-    # recovery wording but no code-shaped token -> not flagged
-    result = pii.scan("Click the link to start account recovery.")
-    assert "recovery_code" not in result.secret_types
+def test_driver_license_and_passport_are_not_detected():
+    # These recognizers were removed for near-zero precision; ensure they can't fire.
+    assert "us_driver_license" not in pii.scan("License A1234567 issued 2020").secret_types
+    assert "us_passport" not in pii.scan("Passport 123456789 expires soon").secret_types
 
 
 def test_clean_text_has_no_secrets():
@@ -47,3 +50,8 @@ def test_clean_text_has_no_secrets():
 def test_empty_and_none():
     assert pii.scan("").has_secrets is False
     assert pii.scan(None).has_secrets is False
+
+
+def test_context_near_requires_words():
+    # A recognizer with no context words can never satisfy the adjacency gate.
+    assert pii._context_near("some 900-12-3456 text", 5, 15, []) is False

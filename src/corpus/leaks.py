@@ -1,0 +1,115 @@
+"""Deterministic credential/secret-leak scan over document content.
+
+Two layers, both returning secret *types* and counts — never the values:
+
+1. A small set of local, high-precision regexes for unmistakable credentials
+   (private-key blocks, provider-prefixed API keys/tokens, JWTs). These have
+   distinctive prefixes/structure, so they barely false-positive on prose and run
+   everywhere — no external dependency, no model.
+2. Optionally, Betterleaks (a maintained gitleaks fork) when ``settings.leaks_bin``
+   points at the binary: its full curated ruleset is unioned in for rule types the
+   local regexes don't cover. Only the rule id is read from its report, never the
+   matched secret.
+
+This complements ``pii`` (identity/financial numbers): a leaked API key is a
+different, higher-severity class than an SSN, and detectable with far better
+precision than any hand-rolled recovery-code heuristic — which is why recovery
+codes are left to the LLM confirmation stage instead.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+import subprocess
+
+from .config import settings
+
+log = logging.getLogger(__name__)
+
+# Local rules: (secret_name, pattern). Chosen for distinctive, low-false-positive
+# structure — provider prefixes and key markers, not generic entropy.
+_RULES: list[tuple[str, re.Pattern[str]]] = [
+    ("private_key", re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----")),
+    ("aws_access_key", re.compile(r"\b(?:AKIA|ASIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA)[0-9A-Z]{16}\b")),
+    ("github_token", re.compile(r"\bgh[porsu]_[A-Za-z0-9]{36,251}\b")),
+    ("github_pat", re.compile(r"\bgithub_pat_[A-Za-z0-9_]{60,}\b")),
+    ("slack_token", re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b")),
+    ("slack_webhook", re.compile(r"https://hooks\.slack\.com/services/[A-Za-z0-9/_+-]{40,}")),
+    ("google_api_key", re.compile(r"\bAIza[0-9A-Za-z_\-]{35}\b")),
+    ("stripe_secret_key", re.compile(r"\bsk_live_[0-9A-Za-z]{24,}\b")),
+    # Newer OpenAI keys carry this fixed marker; the bare `sk-...` form is too
+    # false-positive-prone on prose to include.
+    ("openai_key", re.compile(r"\bsk-[A-Za-z0-9]{20}T3BlbkFJ[A-Za-z0-9]{20}\b")),
+    ("jwt", re.compile(r"\beyJ[A-Za-z0-9_\-]{10,}\.eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}")),
+]
+
+# Betterleaks/gitleaks rule id -> our stable name (best-effort; unmapped rule ids
+# are kept verbatim as ``leak_<ruleid>`` so nothing is silently dropped).
+_RULE_MAP = {
+    "private-key": "private_key",
+    "aws-access-token": "aws_access_key",
+    "github-pat": "github_token",
+    "github-fine-grained-pat": "github_pat",
+    "jwt": "jwt",
+    "stripe-access-token": "stripe_secret_key",
+    "slack-bot-token": "slack_token",
+    "gcp-api-key": "google_api_key",
+    "openai-api-key": "openai_key",
+}
+
+
+def _run_betterleaks(text: str) -> dict[str, int]:
+    """Scan ``text`` with the external Betterleaks binary via stdin, returning
+    {rule_name: count}. Degrades to {} (with a warning) if the binary is missing or
+    its report can't be read — the local regexes remain the guaranteed baseline."""
+    try:
+        proc = subprocess.run(
+            [
+                settings.leaks_bin,
+                "stdin",
+                "--report-format",
+                "json",
+                "--report-path",
+                "/dev/stdout",
+                "--no-banner",
+                "--exit-code",
+                "0",
+            ],
+            input=text.encode(),
+            capture_output=True,
+            timeout=settings.leaks_timeout,
+            check=False,
+        )
+    except (FileNotFoundError, OSError, subprocess.SubprocessError) as exc:
+        log.warning("betterleaks unavailable (%s); credential scan limited to local rules", exc)
+        return {}
+    try:
+        findings = json.loads(proc.stdout or b"[]")
+    except json.JSONDecodeError:
+        log.warning("betterleaks returned no parseable report; skipping external scan")
+        return {}
+    counts: dict[str, int] = {}
+    for finding in findings or []:
+        rule = str(finding.get("RuleID") or "generic").lower()
+        name = _RULE_MAP.get(rule, f"leak_{rule}")  # rule id only — never the value
+        counts[name] = counts.get(name, 0) + 1
+    return counts
+
+
+def scan(text: str | None) -> dict[str, int]:
+    """Detect leaked credentials in ``text`` — {secret_name: count}, no values."""
+    if not text:
+        return {}
+    counts: dict[str, int] = {}
+    for name, pattern in _RULES:
+        n = len(pattern.findall(text))
+        if n:
+            counts[name] = counts.get(name, 0) + n
+    if settings.leaks_bin:
+        for name, n in _run_betterleaks(text).items():
+            # Local regexes take precedence; the external scanner only adds rule
+            # types the local layer doesn't already cover (avoids double counting).
+            counts.setdefault(name, n)
+    return counts
