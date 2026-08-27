@@ -8,7 +8,15 @@ import msgspec
 import pytest
 
 from corpus import enrichment
-from corpus.enrichment import Category, Disposition, Domain, Enrichment, Importance
+from corpus.enrichment import (
+    Category,
+    Disposition,
+    Domain,
+    Enrichment,
+    Importance,
+    SecretAudit,
+    SecretSeverity,
+)
 
 
 def test_json_schema_lists_enum_values():
@@ -58,3 +66,25 @@ def test_decode_rejects_value_outside_enum():
 
 def test_schema_version_is_an_int():
     assert isinstance(enrichment.SCHEMA_VERSION, int)
+
+
+def test_secret_audit_schema_lists_severities():
+    dumped = msgspec.json.encode(enrichment.secret_audit_schema()).decode()
+    for severity in ("live", "expired", "reference", "none"):
+        assert severity in dumped
+
+
+def test_secret_audit_decodes_findings():
+    audit = msgspec.json.decode(
+        b'{"contains_secret": true, "findings": '
+        b'[{"type": "us_ssn", "severity": "live", "note": "an SSN is present"}]}',
+        type=SecretAudit,
+    )
+    assert audit.contains_secret is True
+    assert audit.findings[0].type == "us_ssn"
+    assert audit.findings[0].severity is SecretSeverity.live
+
+
+def test_secret_audit_defaults_empty_findings():
+    audit = msgspec.json.decode(b'{"contains_secret": false}', type=SecretAudit)
+    assert audit.findings == []

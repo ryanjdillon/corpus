@@ -161,6 +161,32 @@ class Enrichment(msgspec.Struct):
     suggested_disposition: Disposition = Disposition.keep
 
 
+class SecretSeverity(enum.Enum):
+    """How dangerous a confirmed secret is, worst first."""
+
+    live = "live"  # a currently-usable secret (API key, private key, unexpired code)
+    expired = "expired"  # a real value, but no longer usable (old OTP, past statement)
+    reference = "reference"  # mentions a secret exists, but no value is present
+    none = "none"  # candidate not actually present
+
+
+class ConfirmedSecret(msgspec.Struct):
+    """One secret the LLM confirmed (or rejected) among the deterministic candidates.
+    ``note`` describes it in words and MUST NOT contain the value itself."""
+
+    type: str
+    severity: SecretSeverity
+    note: str = ""
+
+
+class SecretAudit(msgspec.Struct):
+    """LLM verdict over a message's deterministic secret candidates: the precision
+    layer that separates a real disclosure from an incidental match."""
+
+    contains_secret: bool
+    findings: list[ConfirmedSecret] = msgspec.field(default_factory=list)
+
+
 #: Bumped when the struct set changes; stored alongside each enriched record so a
 #: later migration knows which schema produced it.
 SCHEMA_VERSION = 1
@@ -169,6 +195,11 @@ SCHEMA_VERSION = 1
 def json_schema() -> dict:
     """Render the Enrichment struct to a JSON Schema for guided decoding."""
     return msgspec.json.schema(Enrichment)
+
+
+def secret_audit_schema() -> dict:
+    """Render the SecretAudit struct to a JSON Schema for guided decoding."""
+    return msgspec.json.schema(SecretAudit)
 
 
 def decode(data: bytes | str) -> Enrichment:
