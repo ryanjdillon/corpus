@@ -48,8 +48,8 @@ class EnrichUnavailableError(Exception):
 
 class Enricher:
     def __init__(self, model: str | None = None, client: httpx.Client | None = None) -> None:
-        self._model = model or settings.enrich_model
-        if not self._model:
+        self.model = model or settings.enrich_model
+        if not self.model:
             raise ValueError("no enrichment model configured (set CORPUS_ENRICH_MODEL)")
         self._schema = json_schema()
         self._client = client or httpx.Client(
@@ -60,7 +60,7 @@ class Enricher:
 
     def enrich(self, text: str) -> Enrichment:
         payload = {
-            "model": self._model,
+            "model": self.model,
             "temperature": 0,
             "messages": [
                 {"role": "system", "content": _SYSTEM},
