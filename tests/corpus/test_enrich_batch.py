@@ -11,7 +11,7 @@ import pytest
 from corpus import secret_audit
 from corpus.enrich_batch import run_audit, run_enrich
 from corpus.enrich_store import EnrichStore
-from corpus.enricher import Enricher
+from corpus.enricher import Enricher, EnrichError
 from corpus.enrichment import Category, Enrichment, SecretAudit
 
 
@@ -58,7 +58,7 @@ def audit():
 def test_enriches_all_audits_only_flagged(store, enricher, audit, documents, key_doc, clean_doc):
     r = run_enrich(store, documents=documents(key_doc, clean_doc), enricher=enricher, audit=audit)
 
-    assert r == {"scanned": 2, "enriched": 2, "audited": 1}
+    assert r == {"scanned": 2, "enriched": 2, "audited": 1, "skipped": 0}
     assert store.save_enrichment.call_count == 2
     assert {c.args[0] for c in store.save_audit.call_args_list} == {"d1"}
     assert "aws_access_key" in store.save_audit.call_args.args[1]
@@ -69,8 +69,26 @@ def test_skips_already_enriched(store, enricher, documents, key_doc):
 
     r = run_enrich(store, documents=documents(key_doc), enricher=enricher)
 
-    assert r == {"scanned": 1, "enriched": 0, "audited": 0}
+    assert r == {"scanned": 1, "enriched": 0, "audited": 0, "skipped": 0}
     store.save_enrichment.assert_not_called()
+
+
+def test_bad_record_is_skipped_not_fatal(store, enricher, documents, key_doc, clean_doc):
+    # a per-record EnrichError must be skipped so it can't abort a long backfill
+    enricher.enrich.side_effect = EnrichError("bad message")
+
+    r = run_enrich(store, documents=documents(key_doc, clean_doc), enricher=enricher)
+
+    assert r == {"scanned": 2, "enriched": 0, "audited": 0, "skipped": 2}
+    store.save_enrichment.assert_not_called()
+
+
+def test_concurrency_one_enriches_all(store, enricher, audit, documents, key_doc, clean_doc):
+    # concurrency=1 chunks one at a time; every document is still enriched
+    r = run_enrich(
+        store, documents=documents(key_doc, clean_doc), enricher=enricher, audit=audit, concurrency=1
+    )
+    assert r["enriched"] == 2
 
 
 def test_force_reenriches_seen(store, enricher, audit, documents, key_doc):
