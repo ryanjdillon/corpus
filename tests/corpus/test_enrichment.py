@@ -27,6 +27,17 @@ def test_json_schema_lists_enum_values():
         assert value in dumped
 
 
+def test_json_schema_forces_classification_axes_required():
+    # The axes carry struct defaults, but the guided-decoding schema must mark them
+    # required so the model decides each instead of omitting them (which collapsed
+    # every record to domain="other", transactional_type="none", ...).
+    schema = enrichment.json_schema()
+    enr = schema["$defs"]["Enrichment"] if "$defs" in schema else schema
+    required = set(enr["required"])
+    for axis in ("domain", "transactional_type", "requires_action", "importance", "sensitivity_level"):
+        assert axis in required
+
+
 def test_decode_applies_defaults_to_minimal_output():
     # Only the required fields; everything else must fall back to its default.
     doc = enrichment.decode('{"one_line": "hi", "abstract": "a note", "category": "personal"}')
