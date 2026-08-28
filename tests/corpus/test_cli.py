@@ -138,3 +138,19 @@ def test_audit_secrets_command(monkeypatch):
     assert result.exit_code == 0, result.output
     assert "audited 2 of 3 scanned" in result.output
     assert calls == {"cfg": "corpus-audit", "shut": True}
+
+
+def test_export_command(monkeypatch):
+    import corpus.export as ex
+
+    calls = {}
+    monkeypatch.setattr(cli.telemetry, "configure", lambda n: calls.__setitem__("cfg", n))
+    monkeypatch.setattr(cli.telemetry, "shutdown", lambda: calls.__setitem__("shut", True))
+    monkeypatch.setattr(
+        ex, "export_archive", lambda source, account, limit, force: {"scanned": 5, "written": 4, "unchanged": 1}
+    )
+
+    result = CliRunner().invoke(cli.main, ["export", "--limit", "5"])
+    assert result.exit_code == 0, result.output
+    assert "wrote 4, unchanged 1 of 5 scanned" in result.output
+    assert calls == {"cfg": "corpus-export", "shut": True}

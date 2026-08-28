@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     db_schema: str = "corpus"
     documents_table: str = "documents"
 
+    # Canonical raw vault (local-only volume): one markdown file per document.
+    vault_path: str = "/data/vault"
+
     # Any endpoint serving the OpenAI embeddings API — a locally hosted model or
     # a cloud provider.
     openai_api_base: str = "http://localhost:8080/v1"

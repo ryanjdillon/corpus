@@ -38,10 +38,12 @@ is implementation.
 | `classify` | `classify(record) -> Classification` | Header/rule heuristics (and an optional model tie-breaker) that assign a data-class label + confidence. |
 | `embeddings` | `Embedder.embed(texts) -> vectors` | The OpenAI-compatible HTTP call, retries, and the typed `EmbedInputError` for rejected inputs. |
 | `store` | `get_document_store()`, `to_document(...)`, `iter_documents(...)`, cursor helpers | The pgvector document store, the `sync_state` cursor, and a server-side streaming read cursor. |
+| `vault` | `vault_path(id)`, `write(...)`, `read(id)` | The canonical raw markdown vault — source-fact frontmatter + body, one deterministic file per document, on a local-only volume. |
+| `export` | `export_archive(...)` | Materializes the stored corpus into the vault (bootstrap; idempotent). |
 | `ingest` | `ingest(source, batch_size) -> count` | Orchestration of the ingest line: fetch → classify → embed → write, with per-record resilience (see below). |
 | `search` | `semantic_search(...)`, `structured_query(...)`, `stats()` | Vector similarity (HNSW) and analytical SQL over the store. |
 | `api` / `mcp_server` | REST endpoints / MCP tools | Thin adapters over `search`. |
-| `cli` | `main` — `api · mcp · ingest · scan · enrich · audit-secrets` | Click entrypoints that configure telemetry and launch each server or batch pipeline. |
+| `cli` | `main` — `api · mcp · ingest · scan · enrich · audit-secrets · export` | Click entrypoints that configure telemetry and launch each server or batch pipeline. |
 | `enrichment` | `Enrichment` / `SecretAudit` structs, `json_schema()`, `SCHEMA_VERSION` | The msgspec enrichment + secret-audit schema; version fingerprints derived from the schema itself. |
 | `enricher` | `Enricher.enrich(text) -> Enrichment` | The guided-decoding LLM call that produces structured, secret-free enrichment. |
 | `secret_audit` | `audit_secrets(text, candidates) -> SecretAudit` | The LLM confirmation + severity pass over deterministic secret candidates. |

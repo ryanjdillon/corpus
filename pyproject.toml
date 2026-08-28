@@ -1,6 +1,6 @@
 [project]
 name = "corpus"
-version = "0.2.18"
+version = "0.2.19"
 description = "Semantic search and structured query over content from pluggable sources"
 requires-python = ">=3.12"
 dependencies = [
@@ -22,6 +22,7 @@ dependencies = [
     "mcp>=1.9,<2",
     "pydantic>=2.9",
     "pydantic-settings>=2.6",
+    "pyyaml>=6.0",
     "click>=8.1",
     # OpenTelemetry: traces + metrics over OTLP to the cluster collector.
     "opentelemetry-sdk>=1.27",
