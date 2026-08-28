@@ -7,13 +7,13 @@
     "quality_profile": "showcase",
     "repository": {
       "url": "https://github.com/ryanjdillon/corpus",
-      "revision": "bd7eb2819bc3cdb949515b6c6f85c80dfcebc668"
+      "revision": "a8d69efac0523b7ae37acd2e4771c36fe74fe47d"
     },
     "viewBox": [1320, 700]
   },
   "components": [
     { "id": "cli", "type": "backend", "label": "cli", "sublabel": "entrypoint (click)", "pos": [40, 90], "size": [150, 60],
-      "sources": [{ "path": "src/corpus/cli.py", "label": "api|mcp|ingest|scan|enrich" }] },
+      "sources": [{ "path": "src/corpus/cli.py", "label": "api|mcp|ingest|scan|enrich" }, { "path": "src/corpus/export.py", "label": "export → vault" }] },
     { "id": "mail", "type": "external", "label": "Gmail / IMAP", "sublabel": "mail sources", "pos": [280, 90], "size": [150, 60] },
     { "id": "adapters", "type": "backend", "label": "api / mcp_server", "sublabel": "REST + MCP tools", "pos": [1140, 90], "size": [150, 66],
       "sources": [{ "path": "src/corpus/api.py" }, { "path": "src/corpus/mcp_server.py" }] },
@@ -24,7 +24,7 @@
     { "id": "embeddings", "type": "backend", "label": "embeddings", "sublabel": "Embedder (HTTP)", "pos": [660, 320], "size": [150, 64],
       "sources": [{ "path": "src/corpus/embeddings.py", "label": "Embedder.embed" }] },
     { "id": "store", "type": "database", "label": "store", "sublabel": "Postgres / pgvector", "pos": [860, 318], "size": [160, 68],
-      "sources": [{ "path": "src/corpus/store.py", "label": "pgvector + iter_documents" }, { "path": "src/corpus/enrich_store.py", "label": "enrichments table" }] },
+      "sources": [{ "path": "src/corpus/store.py", "label": "pgvector + iter_documents" }, { "path": "src/corpus/enrich_store.py", "label": "enrichments table" }, { "path": "src/corpus/vault.py", "label": "raw vault" }] },
     { "id": "search", "type": "backend", "label": "search", "sublabel": "vector + SQL", "pos": [1140, 320], "size": [150, 64],
       "sources": [{ "path": "src/corpus/search.py", "label": "semantic / structured" }] },
     { "id": "enrichment", "type": "backend", "label": "enrichment", "sublabel": "enrich_batch · enricher", "pos": [740, 470], "size": [180, 68],
