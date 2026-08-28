@@ -1,4 +1,4 @@
-"""Command-line entrypoints: api | mcp | ingest | scan | enrich | audit-secrets."""
+"""Command-line entrypoints: api | mcp | ingest | scan | enrich | audit-secrets | export."""
 
 from __future__ import annotations
 
@@ -67,6 +67,23 @@ def enrich(source: str | None, account: str | None, limit: int, force: bool) -> 
         with EnrichStore() as store:
             r = run_enrich(store, source=source, account=account, limit=limit, force=force)
         click.echo(f"enriched {r['enriched']}, audited {r['audited']} of {r['scanned']} scanned")
+    finally:
+        telemetry.shutdown()
+
+
+@main.command()
+@click.option("--source", default=None, help="filter by source id, e.g. gmail:personal")
+@click.option("--account", default=None, help="filter by account address")
+@click.option("--limit", default=0, type=int, help="export at most N documents (0 = all)")
+@click.option("--force", is_flag=True, help="rewrite vault files even if unchanged")
+def export(source: str | None, account: str | None, limit: int, force: bool) -> None:
+    """Materialize stored documents into the local markdown vault (one file each)."""
+    telemetry.configure("corpus-export")
+    from .export import export_archive
+
+    try:
+        r = export_archive(source=source, account=account, limit=limit, force=force)
+        click.echo(f"wrote {r['written']}, unchanged {r['unchanged']} of {r['scanned']} scanned")
     finally:
         telemetry.shutdown()
 
