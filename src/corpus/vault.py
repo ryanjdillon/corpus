@@ -33,10 +33,15 @@ def vault_path(doc_id: str, root: str | Path | None = None) -> Path:
 
 
 def render(doc_id: str, content: str | None, meta: dict | None) -> str:
-    """The markdown file text: source-fact frontmatter (+ the doc id) then the body."""
+    """The markdown file text: source-fact frontmatter (+ the doc id) then the body.
+
+    The body is normalized to LF: bodies arrive with CRLF (email/MIME), but
+    ``Path.read_text`` reads back universal-LF, so an un-normalized CRLF body would
+    never match on re-write and defeat ``write``'s skip-if-identical."""
     front = {"id": doc_id, **{k: v for k, v in (meta or {}).items() if k not in _DERIVED}}
     fm = yaml.safe_dump(front, sort_keys=True, allow_unicode=True, default_flow_style=False).rstrip()
-    return f"---\n{fm}\n---\n\n{content or ''}\n"
+    body = (content or "").replace("\r\n", "\n").replace("\r", "\n")
+    return f"---\n{fm}\n---\n\n{body}\n"
 
 
 def write(doc_id: str, content: str | None, meta: dict | None, root=None, force: bool = False) -> bool:

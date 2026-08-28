@@ -41,6 +41,16 @@ def test_render_source_facts_only_and_body():
     assert body.rstrip("\n") == "the body"
 
 
+def test_crlf_body_normalized_to_lf_and_idempotent(tmp_path):
+    # Email/MIME bodies arrive CRLF; Path.read_text reads back LF, so an
+    # un-normalized body would rewrite forever. The vault stores canonical LF.
+    args = ("gmail:personal::1", "Hei,\r\n\r\nVedlagt.\r\n", {"subject": "s"})
+    text = vault.render(*args)
+    assert "\r" not in text
+    assert vault.write(*args, root=tmp_path) is True  # created
+    assert vault.write(*args, root=tmp_path) is False  # CRLF body still skips
+
+
 def test_write_idempotent_then_force_then_changed(tmp_path):
     args = ("gmail:personal::1", "body", {"subject": "s"})
     assert vault.write(*args, root=tmp_path) is True  # created
