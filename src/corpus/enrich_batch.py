@@ -15,12 +15,14 @@ the audit call are injectable, so the orchestration can be exercised without I/O
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 
 import msgspec
 
 from . import scan
 from .config import settings
-from .enricher import Enricher
+from .enricher import Enricher, EnrichError
 from .enrichment import SCHEMA_VERSION
 from .secret_audit import audit_secrets
 from .store import iter_documents
@@ -36,6 +38,19 @@ def _model_text(meta, content) -> str:
     return f"Subject: {subject}\n\n{content or ''}"
 
 
+def _chunked(items: Iterable, size: int) -> Iterator[list]:
+    """Yield lists of up to ``size`` items, streaming — so a run holds at most one
+    chunk of document bodies in memory at a time."""
+    chunk: list = []
+    for item in items:
+        chunk.append(item)
+        if len(chunk) >= size:
+            yield chunk
+            chunk = []
+    if chunk:
+        yield chunk
+
+
 def run_enrich(
     store,
     *,
@@ -46,39 +61,67 @@ def run_enrich(
     enricher: Enricher | None = None,
     documents=iter_documents,
     audit=audit_secrets,
+    concurrency: int | None = None,
 ) -> dict[str, int]:
     """Enrich stored documents; audit only those with secret candidates. Resumable:
     already-enriched docs are skipped unless ``force``. ``limit`` of 0 does all.
-    ``store`` is an open EnrichStore whose lifecycle the caller owns."""
+    ``store`` is an open EnrichStore whose lifecycle the caller owns.
+
+    Enrichment/audit LLM calls run ``concurrency`` at a time (the local server
+    batches them); the store writes stay single-threaded on the caller's one
+    connection. A per-record ``EnrichError`` (a bad message) is skipped so it can't
+    abort a long backfill; an ``EnrichUnavailableError`` still propagates."""
+    concurrency = concurrency or settings.enrich_concurrency
     own = enricher is None
     enricher = enricher or Enricher()
-    scanned = enriched = audited = 0
-    try:
+    counts = {"scanned": 0, "enriched": 0, "audited": 0, "skipped": 0}
+
+    def selected() -> Iterator[tuple]:
         seen = set() if force else store.enriched_ids()
         for doc_id, content, meta in documents(source=source, account=account):
-            if limit and scanned >= limit:
-                break
-            scanned += 1
-            if doc_id in seen:
-                continue
-            text = _model_text(meta, content)
+            if limit and counts["scanned"] >= limit:
+                return
+            counts["scanned"] += 1
+            if doc_id not in seen:
+                yield doc_id, content, meta
+
+    def work(item: tuple) -> tuple:
+        doc_id, content, meta = item
+        text = _model_text(meta, content)
+        try:
             enrichment = enricher.enrich(text)
-            store.save_enrichment(
-                doc_id, msgspec.to_builtins(enrichment), enricher.model, SCHEMA_VERSION
-            )
-            enriched += 1
-            candidates = scan.audit_candidates(content)
-            if candidates:
-                result = audit(text, candidates, model=enricher.model)
-                store.save_audit(
-                    doc_id, candidates, msgspec.to_builtins(result), enricher.model, scan.SCAN_VERSION
-                )
-                audited += 1
+        except EnrichError as exc:
+            log.warning("skipping %s: %s", doc_id, exc)
+            return doc_id, None, None, None
+        candidates = scan.audit_candidates(content)
+        result = audit(text, candidates, model=enricher.model) if candidates else None
+        return doc_id, enrichment, candidates, result
+
+    try:
+        with ThreadPoolExecutor(max_workers=concurrency) as pool:
+            for chunk in _chunked(selected(), concurrency):
+                for doc_id, enrichment, candidates, result in pool.map(work, chunk):
+                    if enrichment is None:
+                        counts["skipped"] += 1
+                        continue
+                    store.save_enrichment(
+                        doc_id, msgspec.to_builtins(enrichment), enricher.model, SCHEMA_VERSION
+                    )
+                    counts["enriched"] += 1
+                    if candidates:
+                        store.save_audit(
+                            doc_id, candidates, msgspec.to_builtins(result), enricher.model,
+                            scan.SCAN_VERSION,
+                        )
+                        counts["audited"] += 1
     finally:
         if own:
             enricher.close()
-    log.info("enriched %d, audited %d of %d scanned", enriched, audited, scanned)
-    return {"scanned": scanned, "enriched": enriched, "audited": audited}
+    log.info(
+        "enriched %d, audited %d, skipped %d of %d scanned",
+        counts["enriched"], counts["audited"], counts["skipped"], counts["scanned"],
+    )
+    return counts
 
 
 def run_audit(

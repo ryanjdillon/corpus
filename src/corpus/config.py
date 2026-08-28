@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     # classification via guided decoding). Empty => enrichment disabled.
     enrich_model: str = ""
     enrich_timeout: float = 120.0
+    # Concurrent in-flight enrichment requests; the local server batches them, so a
+    # multi-hour sequential backfill becomes a few hours. 1 = fully sequential.
+    enrich_concurrency: int = 8
 
     # External credential scanner (Betterleaks). Empty => local regexes only; set to
     # the binary name/path to union in its full ruleset (the image sets this).
