@@ -28,6 +28,14 @@ from .store import iter_documents
 log = logging.getLogger("corpus.enrich")
 
 
+def _model_text(meta, content) -> str:
+    """What the model sees: the subject prepended to the body. The subject is
+    highly informative for classification (domain/category), and the deterministic
+    detectors already run on the body separately."""
+    subject = (meta or {}).get("subject") or ""
+    return f"Subject: {subject}\n\n{content or ''}"
+
+
 def run_enrich(
     store,
     *,
@@ -47,20 +55,21 @@ def run_enrich(
     scanned = enriched = audited = 0
     try:
         seen = set() if force else store.enriched_ids()
-        for doc_id, content, _meta in documents(source=source, account=account):
+        for doc_id, content, meta in documents(source=source, account=account):
             if limit and scanned >= limit:
                 break
             scanned += 1
             if doc_id in seen:
                 continue
-            enrichment = enricher.enrich(content or "")
+            text = _model_text(meta, content)
+            enrichment = enricher.enrich(text)
             store.save_enrichment(
                 doc_id, msgspec.to_builtins(enrichment), enricher.model, SCHEMA_VERSION
             )
             enriched += 1
             candidates = scan.audit_candidates(content)
             if candidates:
-                result = audit(content or "", candidates, model=enricher.model)
+                result = audit(text, candidates, model=enricher.model)
                 store.save_audit(
                     doc_id, candidates, msgspec.to_builtins(result), enricher.model, scan.SCAN_VERSION
                 )
@@ -88,14 +97,14 @@ def run_audit(
     if not model:
         raise ValueError("no model configured (set CORPUS_ENRICH_MODEL)")
     scanned = audited = 0
-    for doc_id, content, _meta in documents(source=source, account=account):
+    for doc_id, content, meta in documents(source=source, account=account):
         if limit and scanned >= limit:
             break
         scanned += 1
         candidates = scan.audit_candidates(content)
         if not candidates:
             continue
-        result = audit(content or "", candidates, model=model)
+        result = audit(_model_text(meta, content), candidates, model=model)
         store.save_audit(doc_id, candidates, msgspec.to_builtins(result), model, scan.SCAN_VERSION)
         audited += 1
     log.info("audited %d of %d scanned", audited, scanned)

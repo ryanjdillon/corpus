@@ -188,9 +188,32 @@ class SecretAudit(msgspec.Struct):
     findings: list[ConfirmedSecret] = msgspec.field(default_factory=list)
 
 
+#: Classification axes the model must always decide. They carry struct defaults so
+#: non-LLM construction stays convenient, but if they are left OPTIONAL in the
+#: guided-decoding schema the model simply omits them and every record collapses to
+#: the default (domain -> "other", transactional_type -> "none", …). Marking them
+#: required forces a real choice per message.
+_REQUIRED_AXES = (
+    "domain",
+    "transactional_type",
+    "unsubscribe_available",
+    "requires_action",
+    "action_type",
+    "waiting_on",
+    "importance",
+    "time_sensitive",
+    "sensitivity_level",
+    "suggested_disposition",
+)
+
+
 def json_schema() -> dict:
-    """Render the Enrichment struct to a JSON Schema for guided decoding."""
-    return msgspec.json.schema(Enrichment)
+    """Render the Enrichment struct to a JSON Schema for guided decoding, with the
+    classification axes forced required (see ``_REQUIRED_AXES``)."""
+    schema = msgspec.json.schema(Enrichment)
+    target = schema["$defs"]["Enrichment"] if "$defs" in schema else schema
+    target["required"] = sorted(set(target.get("required", ())) | set(_REQUIRED_AXES))
+    return schema
 
 
 def secret_audit_schema() -> dict:
