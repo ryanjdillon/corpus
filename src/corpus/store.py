@@ -103,7 +103,12 @@ def iter_documents(
         clauses.append("meta->>'account' = %s")
         params.append(account)
     where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
-    sql = f"SELECT id, content, meta FROM {table}{where}"
+    # Newest-first and deterministic: recent mail is enriched/exported first, and a
+    # resumed run covers documents in a stable order. sent_at is an ISO-8601 string,
+    # so it sorts correctly as text; id breaks ties. (For a much larger archive, a
+    # functional index on (meta->>'sent_at') would let this scan avoid the sort.)
+    order = " ORDER BY meta->>'sent_at' DESC NULLS LAST, id"
+    sql = f"SELECT id, content, meta FROM {table}{where}{order}"
     with psycopg.connect(_dsn()) as conn:
         with conn.cursor() as check:
             check.execute("SELECT to_regclass(%s)", (table,))

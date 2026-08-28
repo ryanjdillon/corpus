@@ -15,8 +15,9 @@ the audit call are injectable, so the orchestration can be exercised without I/O
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable, Iterator
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Iterator
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from itertools import islice
 
 import msgspec
 
@@ -36,19 +37,6 @@ def _model_text(meta, content) -> str:
     detectors already run on the body separately."""
     subject = (meta or {}).get("subject") or ""
     return f"Subject: {subject}\n\n{content or ''}"
-
-
-def _chunked(items: Iterable, size: int) -> Iterator[list]:
-    """Yield lists of up to ``size`` items, streaming — so a run holds at most one
-    chunk of document bodies in memory at a time."""
-    chunk: list = []
-    for item in items:
-        chunk.append(item)
-        if len(chunk) >= size:
-            yield chunk
-            chunk = []
-    if chunk:
-        yield chunk
 
 
 def run_enrich(
@@ -97,23 +85,35 @@ def run_enrich(
         result = audit(text, candidates, model=enricher.model) if candidates else None
         return doc_id, enrichment, candidates, result
 
+    def persist(res: tuple) -> None:
+        doc_id, enrichment, candidates, result = res
+        if enrichment is None:  # a per-record EnrichError was skipped
+            counts["skipped"] += 1
+            return
+        store.save_enrichment(
+            doc_id, msgspec.to_builtins(enrichment), enricher.model, SCHEMA_VERSION
+        )
+        counts["enriched"] += 1
+        if candidates:
+            store.save_audit(
+                doc_id, candidates, msgspec.to_builtins(result), enricher.model, scan.SCAN_VERSION
+            )
+            counts["audited"] += 1
+
+    items = selected()
     try:
+        # Keep ``concurrency`` LLM calls in flight at all times: refill a slot the
+        # moment one finishes and persist its result on this thread (the store stays
+        # single-connection). Continuous streaming keeps the GPU saturated, unlike a
+        # per-chunk barrier that stalls on the slowest record and the serial writes
+        # between chunks.
         with ThreadPoolExecutor(max_workers=concurrency) as pool:
-            for chunk in _chunked(selected(), concurrency):
-                for doc_id, enrichment, candidates, result in pool.map(work, chunk):
-                    if enrichment is None:
-                        counts["skipped"] += 1
-                        continue
-                    store.save_enrichment(
-                        doc_id, msgspec.to_builtins(enrichment), enricher.model, SCHEMA_VERSION
-                    )
-                    counts["enriched"] += 1
-                    if candidates:
-                        store.save_audit(
-                            doc_id, candidates, msgspec.to_builtins(result), enricher.model,
-                            scan.SCAN_VERSION,
-                        )
-                        counts["audited"] += 1
+            inflight = {pool.submit(work, item) for item in islice(items, concurrency)}
+            while inflight:
+                done, inflight = wait(inflight, return_when=FIRST_COMPLETED)
+                for fut in done:
+                    persist(fut.result())
+                inflight.update(pool.submit(work, item) for item in islice(items, len(done)))
     finally:
         if own:
             enricher.close()

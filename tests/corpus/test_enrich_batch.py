@@ -91,6 +91,15 @@ def test_concurrency_one_enriches_all(store, enricher, audit, documents, key_doc
     assert r["enriched"] == 2
 
 
+def test_streaming_refills_beyond_concurrency(store, enricher, audit, documents):
+    # more documents than the pool width: every one is still enriched as slots refill
+    docs = tuple((f"d{i}", "are we on for lunch?", {}) for i in range(7))
+    r = run_enrich(store, documents=documents(*docs), enricher=enricher, audit=audit, concurrency=2)
+
+    assert r["enriched"] == 7
+    assert store.save_enrichment.call_count == 7
+
+
 def test_force_reenriches_seen(store, enricher, audit, documents, key_doc):
     store.enriched_ids.return_value = {"d1"}
 
