@@ -33,6 +33,18 @@ CI, so a green `just check` means green CI. Do not rely on CI to surface lint or
 coverage-regression failures — catch them locally first. (ruff is pinned in the
 `dev` extra and in the CI workflow to the same version so results match.)
 
+**Architecture-gate gotcha (adding/removing a top-level `src/corpus/*.py` module).**
+The gate (`just arch`) diffs the **committed** module set against `origin/main`, so
+it sees a new/removed module only **after you commit** — run `just check` (or
+`just arch`) once **more after committing**, or it passes on an uncommitted new
+module and then fails in CI. And when the module set changes you must describe it in
+**both** artifacts (the gate checks each): add it to the `docs/architecture.md`
+module table **and** to `docs/architecture.json` (a node, or a `sources` entry citing
+`src/corpus/<module>.py` on the nearest node). After editing the JSON, bump
+`meta.repository.revision` to a commit that contains the file and re-run
+`archify deliver … docs/architecture.html` so the rendered diagram stays in sync
+(the archify skill lives in the fornybar agent-skills bundle).
+
 ## Governance roadmap (do not drift)
 
 `GOVERNANCE.md` defines the target access-control model and a staged roadmap
