@@ -68,13 +68,14 @@ the CI workflow to the same version so results match.)
 The gate (`just arch`) diffs the **committed** module set against `origin/main`, so
 it sees a new/removed module only **after you commit** — run `just check` (or
 `just arch`) once **more after committing**, or it passes on an uncommitted new
-module and then fails in CI. And when the module set changes you must describe it in
-**both** artifacts (the gate checks each): add it to the `docs/architecture.md`
-module table **and** to `docs/architecture.json` (a node, or a `sources` entry citing
-`src/corpus/<module>.py` on the nearest node). After editing the JSON, bump
+module and then fails in CI. When the module set changes, describe it in
+`docs/architecture.json` — the single maintained artifact (a node, or a `sources`
+entry citing `src/corpus/<module>.py` on the nearest node); the gate checks that
+file. After editing the JSON, bump
 `meta.repository.revision` to a commit that contains the file and re-run
-`archify deliver … docs/architecture.html` so the rendered diagram stays in sync
-(the archify skill lives in the fornybar agent-skills bundle).
+`archify deliver … docs/architecture.html` so the rendered diagram — the
+published Architecture page — stays in sync (the archify skill lives in the
+fornybar agent-skills bundle).
 
 ## Governance roadmap (do not drift)
 

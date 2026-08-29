@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Architecture drift gate.
 
-`docs/architecture.md` describes the pipeline as a set of deep modules. Nothing
-forces it to change when the module set does, so it silently goes stale: the
-enrichment and secret-scanning stacks both landed without it being touched.
+`docs/architecture.json` (the Archify specification the diagram renders from)
+describes the pipeline as a set of deep modules. Nothing forces it to change
+when the module set does, so it silently goes stale: the enrichment and
+secret-scanning stacks both landed without it being touched.
 
 This gate fails a change that adds or removes a top-level `corpus` module
 without naming it in (or removing it from) the architecture artifacts. It
@@ -29,9 +30,9 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 MODULE_DIR = "src/corpus"
-# Every artifact that claims to describe the module set. The JSON is optional so
-# an Archify specification can be added later without touching this gate.
-ARTIFACTS = ("docs/architecture.md", "docs/architecture.json")
+# The artifact that claims to describe the module set: the Archify specification
+# the rendered diagram is generated from.
+ARTIFACTS = ("docs/architecture.json",)
 EXEMPT_STEMS = frozenset({"__init__", "__main__"})
 
 

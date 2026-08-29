@@ -17,7 +17,7 @@ Both are served over a REST API and an MCP server.
 
 ## Where to go next
 
-- [Architecture](architecture.md) — how the pipeline fits together, module by module.
+- [Architecture](architecture.html) — the rendered module diagram of the pipeline.
 - [Configuration](configuration.md) — every `CORPUS_` setting.
 - [Sources](fetchers/index.md) — the fetcher protocol, plus [IMAP](fetchers/imap.md) and [Gmail](fetchers/gmail.md).
 - [Database](database.md) — the pgvector store and sync state.

@@ -11,5 +11,5 @@ source_uid)`, so re-ingesting a message overwrites its row rather than adding a
 duplicate.
 
 The derived enrichment and secret-audit records live in a separate `enrichments`
-table, created lazily on first write. The [Architecture](architecture.md) page
-covers how the derived branches relate to the source-of-truth documents.
+table, created lazily on first write. The [architecture diagram](architecture.html)
+shows how the derived branches relate to the source-of-truth documents.

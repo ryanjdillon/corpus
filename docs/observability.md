@@ -13,5 +13,5 @@ It is a no-op when the endpoint is unset. Heavy SDK imports are deferred until
 telemetry is configured, and a one-shot process (an ingest run) flushes the
 exporters on exit so its metrics are not lost.
 
-See [Architecture → Observability](architecture.md#observability) for where the
-instruments sit in the pipeline.
+See the [architecture diagram](architecture.html) for where the instruments sit
+in the pipeline.
