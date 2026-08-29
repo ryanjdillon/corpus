@@ -22,9 +22,10 @@ corpus answers three kinds of question, over a REST API and an MCP server:
   what's due or time-sensitive, what you're waiting on, what's happening in a
   domain like banking, health, or work.
 
-The full surface (search, structured query, whole-document fetch, stats) is for
-you and your local tools; the priority signal, free of raw content, is what a
-governed cloud agent reads on the sanitized tier.
+The full surface (search, structured query, whole-document fetch, stats) is open
+to callers you trust with the raw items; the priority signal, free of raw
+content, is what a lower-trust caller — a cloud-model agent — reads on the
+sanitized tier.
 
 ## Where to go next
 

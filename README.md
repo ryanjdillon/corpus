@@ -21,12 +21,12 @@ in Postgres/pgvector. Then query it by meaning or by fact.
 </p>
 
 Everything starts from a raw markdown layer that keeps each item verbatim. From
-it, corpus derives a **configurable set of storage tiers**: you define each
-tier's projection, the tool that exposes it, and who may read it. A sensitive
-tier keeps raw plus enrichment for you and your local tools; a one-way sanitize
-projects only cloud-safe fields into a tier that governed agents may query. Add
-as many tiers as your trust boundaries need — access is a property of each tier,
-not bolted on afterward.
+it, corpus derives a **configurable set of storage tiers**: each tier declares
+its projection, the tool that exposes it, and an access rule naming who may read
+it. A sensitive tier serves raw plus enrichment to callers you trust with the
+originals; a one-way sanitize projects only cloud-safe fields into a tier a
+lower-trust caller — a cloud-model agent — may query. Add as many tiers as your
+trust boundaries need; access is a property of each tier, not bolted on afterward.
 
 The embedding endpoint is any OpenAI-compatible API. Run a local model and
 nothing leaves your network; use a hosted provider and the pipeline is the same.
@@ -48,11 +48,11 @@ corpus answers three kinds of question, over a REST API and an MCP server:
   query directly: what needs an action, what's due or time-sensitive, what you're
   waiting on, what's happening in a domain like banking, health, or work.
 
-You and your local tools get the full surface — search, structured query,
-whole-document fetch, and stats. The priority signal, projected free of raw
-content, is what a governed cloud agent reads on the sanitized tier: an assistant
-can plan your day from *what needs action* and *what's due soon* without ever
-touching the underlying documents.
+Callers you trust with the raw items get the full surface — search, structured
+query, whole-document fetch, and stats. A lower-trust caller sees only the
+sanitized tier's priority signal, projected free of raw content: a cloud-model
+assistant can plan your day from *what needs action* and *what's due soon*
+without ever touching the underlying documents.
 
 ## Quickstart
 
