@@ -47,7 +47,7 @@ markdown_extensions:
 
 nav:
   - Home: index.md
-  - Architecture: architecture.md
+  - Architecture: architecture.html
   - Configuration: configuration.md
   - Sources:
       - Overview: fetchers/index.md
