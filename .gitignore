@@ -14,3 +14,6 @@ build/
 coverage.xml
 htmlcov/
 uv.lock
+
+# MkDocs build output
+site/
