@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/logos/logo_crest.svg" alt="corpus" width="220">
+  <img src="docs/assets/logos/logo_crest.svg" alt="corpus" width="440">
 </p>
 
 <p align="center">Semantic search and structured query over your own content.</p>
@@ -11,46 +11,35 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MPL--2.0-blue" alt="License: MPL-2.0"></a>
 </p>
 
-corpus turns your own content into something you can search by meaning and query
-by fact. It ingests items from pluggable sources, classifies each with cheap
-header and rule heuristics, embeds it through an OpenAI-compatible endpoint, and
-stores the vectors and metadata in Postgres/pgvector.
+corpus is a knowledge base for your own content. Point it at markdown, documents,
+or structured records — corpus classifies each item, embeds it through an
+OpenAI-compatible endpoint, and stores the vectors alongside structured metadata
+in Postgres/pgvector. Then query it by meaning or by fact.
 
-```mermaid
-flowchart TD
-  src["Email and documents"] --> raw["Raw markdown layer<br/>one verbatim file per item"]
-  raw --> enr["Enrich<br/>summarize, classify, flag secrets"]
+<p align="center">
+  <img src="docs/assets/diagrams/overview.svg" width="900" alt="Content sources feed a raw markdown layer, projected into a configurable set of access-controlled storage tiers read by humans and agents.">
+</p>
 
-  subgraph gov["Tiered storage with access governance"]
-    sens["Sensitive tier<br/>raw + enrichment"]
-    san["Sanitized tier<br/>cloud-safe fields only"]
-    sens -->|one-way sanitize| san
-  end
-
-  raw --> sens
-  enr --> sens
-
-  sens -->|"local tools · full access"| human["Humans"]
-  san -->|"governed, sanitized access"| agent["Cloud agents"]
-```
-
-The raw markdown layer keeps every item verbatim. Enrichment and the tiered
-stores are derived from it: a **sensitive** tier holds raw plus enrichment for
-you and your local tools, and a one-way sanitize projects only cloud-safe fields
-into a **sanitized** tier that governed agents may read. Access is a property of
-the tier, not an afterthought.
+Everything starts from a raw markdown layer that keeps each item verbatim. From
+it, corpus derives a **configurable set of storage tiers**: you define each
+tier's projection, the tool that exposes it, and who may read it. A sensitive
+tier keeps raw plus enrichment for you and your local tools; a one-way sanitize
+projects only cloud-safe fields into a tier that governed agents may query. Add
+as many tiers as your trust boundaries need — access is a property of each tier,
+not bolted on afterward.
 
 The embedding endpoint is any OpenAI-compatible API. Run a local model and
 nothing leaves your network; use a hosted provider and the pipeline is the same.
 
-Email ships today over IMAP and Gmail. A source is anything that yields records,
-so other document types fit the same model — see the [sources guide][sources].
+A *source* is anything that yields records, so one pipeline covers many content
+types. Email lands first, over IMAP and Gmail; files, notes, and exports fit the
+same shape — see the [sources guide][sources].
 
 ## Two ways to query
 
 - **Semantic search** — vector similarity with optional metadata filters.
 - **Structured query** — analytical metadata queries that return every match
-  (say, every message with a given label before a date) as plain SQL.
+  (say, every item with a given tag before a date) as plain SQL.
 
 Both are served over a REST API and an MCP server.
 

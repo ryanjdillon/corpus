@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 480" role="img"
+     aria-label="corpus overview: content sources feed a raw markdown layer, which is projected into a configurable set of access-controlled storage tiers read by humans and agents"
+     font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#857449"/>
+    </marker>
+    <marker id="arrowRed" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#C73F2C"/>
+    </marker>
+  </defs>
+
+  <rect x="8" y="8" width="1104" height="464" rx="18" fill="#FBEBC9" stroke="#E4CF95" stroke-width="2"/>
+
+  <!-- Content sources -->
+  <rect x="48" y="196" width="196" height="96" rx="12" fill="#FFFDF7" stroke="#3D65A3" stroke-width="2"/>
+  <text x="146" y="228" text-anchor="middle" font-size="16" font-weight="700" fill="#161208">Content</text>
+  <text x="146" y="250" text-anchor="middle" font-size="12" fill="#161208">markdown · docs · records</text>
+  <text x="146" y="270" text-anchor="middle" font-size="11" fill="#7A6B34">email · files · notes · exports</text>
+
+  <line x1="244" y1="244" x2="298" y2="244" stroke="#857449" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- Raw markdown layer -->
+  <rect x="300" y="176" width="232" height="136" rx="12" fill="#FFFDF7" stroke="#3D65A3" stroke-width="2.5"/>
+  <text x="416" y="210" text-anchor="middle" font-size="16" font-weight="700" fill="#161208">Raw markdown layer</text>
+  <text x="416" y="234" text-anchor="middle" font-size="12" fill="#161208">verbatim — source of truth</text>
+  <text x="416" y="254" text-anchor="middle" font-size="12" fill="#161208">embeddings + structured data</text>
+  <text x="416" y="274" text-anchor="middle" font-size="11" fill="#7A6B34">Postgres · pgvector</text>
+
+  <line x1="532" y1="244" x2="594" y2="244" stroke="#857449" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="563" y="236" text-anchor="middle" font-size="11" fill="#7A6B34">project</text>
+
+  <!-- Configurable tiers -->
+  <rect x="596" y="64" width="268" height="360" rx="14" fill="#FCF3DA" stroke="#DB9619" stroke-width="1.5" stroke-dasharray="6 5"/>
+  <text x="730" y="92" text-anchor="middle" font-size="14" font-weight="700" fill="#B87A15">Configurable tiers</text>
+  <text x="730" y="110" text-anchor="middle" font-size="11" fill="#7A6B34">per-tier access control</text>
+
+  <rect x="620" y="126" width="220" height="80" rx="10" fill="#FFFDF7" stroke="#3D65A3" stroke-width="2"/>
+  <text x="730" y="153" text-anchor="middle" font-size="14" font-weight="700" fill="#161208">Sensitive tier</text>
+  <text x="730" y="173" text-anchor="middle" font-size="11" fill="#7A6B34">raw + enrichment</text>
+  <text x="730" y="192" text-anchor="middle" font-size="10" font-weight="700" fill="#C73F2C">access-controlled</text>
+
+  <line x1="730" y1="208" x2="730" y2="236" stroke="#C73F2C" stroke-width="2" marker-end="url(#arrowRed)"/>
+  <text x="742" y="226" text-anchor="start" font-size="10" fill="#C73F2C">one-way sanitize</text>
+
+  <rect x="620" y="238" width="220" height="80" rx="10" fill="#FFFDF7" stroke="#DB9619" stroke-width="2"/>
+  <text x="730" y="265" text-anchor="middle" font-size="14" font-weight="700" fill="#161208">Sanitized tier</text>
+  <text x="730" y="285" text-anchor="middle" font-size="11" fill="#7A6B34">cloud-safe fields only</text>
+  <text x="730" y="304" text-anchor="middle" font-size="10" font-weight="700" fill="#C73F2C">access-controlled</text>
+
+  <rect x="620" y="336" width="220" height="68" rx="10" fill="none" stroke="#908D4B" stroke-width="1.5" stroke-dasharray="5 5"/>
+  <text x="730" y="366" text-anchor="middle" font-size="13" font-weight="700" fill="#6E6A38">+ more tiers</text>
+  <text x="730" y="386" text-anchor="middle" font-size="10" fill="#6E6A38">your projections &amp; rules</text>
+
+  <!-- Consumers -->
+  <line x1="840" y1="166" x2="900" y2="186" stroke="#857449" stroke-width="2" marker-end="url(#arrow)"/>
+  <rect x="904" y="150" width="196" height="72" rx="12" fill="#E7EEF7" stroke="#3D65A3" stroke-width="2"/>
+  <text x="1002" y="182" text-anchor="middle" font-size="14" font-weight="700" fill="#161208">You + local tools</text>
+  <text x="1002" y="202" text-anchor="middle" font-size="11" fill="#3D65A3" font-weight="700">full access</text>
+
+  <line x1="840" y1="278" x2="900" y2="306" stroke="#857449" stroke-width="2" marker-end="url(#arrow)"/>
+  <rect x="904" y="270" width="196" height="72" rx="12" fill="#FBEACB" stroke="#DB9619" stroke-width="2"/>
+  <text x="1002" y="302" text-anchor="middle" font-size="14" font-weight="700" fill="#161208">Cloud agents</text>
+  <text x="1002" y="322" text-anchor="middle" font-size="11" fill="#B87A15" font-weight="700">governed access</text>
+
+  <text x="560" y="452" text-anchor="middle" font-size="12" font-style="italic" fill="#6E6A38">Each tier defines its projection, the tool that exposes it, and who may read it — human or agent.</text>
+</svg>

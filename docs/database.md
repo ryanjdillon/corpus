@@ -7,7 +7,7 @@ the schema.
 A small `sync_state` table (source, cursor, updated_at) tracks per-source
 progress. The cursor is opaque — each fetcher encodes whatever it needs to resume
 incrementally (see [Sources](fetchers/index.md)). Identity is `(source,
-source_uid)`, so re-ingesting a message overwrites its row rather than adding a
+source_uid)`, so re-ingesting an item overwrites its row rather than adding a
 duplicate.
 
 The derived enrichment and secret-audit records live in a separate `enrichments`
