@@ -13,6 +13,32 @@ rationale — nothing else.
 - When you change code, update the comments and docs it touches so they stay
   true; delete comments describing things that no longer exist.
 
+## Docs & writing
+
+`docs/` is published to GitHub Pages by `.github/workflows/docs.yml` (MkDocs
+Material). The `README.md` is the landing page only — a short orientation that
+links into `docs/`, not a manual. Deep detail lives in `docs/`.
+
+**Structure — one page per module or concern, following the deep-module
+principle.** A topic that has parts becomes a directory of focused pages, not one
+long page: `docs/fetchers/gmail.md`, not a `Gmail` section buried in
+`docs/fetchers.md`. When you add a page, add it to the `nav` in `mkdocs.yml`.
+
+**README voice.** Direct and spoken-word. Welcoming without being cutesy, and
+confident without selling. Say what the project does and how to run it; let the
+quality show rather than asserting it.
+
+**Docs voice.** Concise — never verbose. Lead with the point, order sections the
+way a reader meets the topic, and stop when the point is made. One clear framing
+beats three restatements.
+
+**Deslop — cut the tells of machine-written prose.** No marketing adjectives
+(`powerful`, `seamless`, `robust`, `blazing-fast`, `elegant`); no
+`simply`/`just`/`of course` filler; no "it's not just X, it's Y" or
+"whether you're… or…" constructions; no rule-of-three padding, throat-clearing
+intros, or "in summary" outros; no emoji bullets. Prefer concrete nouns and
+verbs over hedging.
+
 ## Commits
 
 Use Conventional Commit messages (`feat:`, `fix:`, `docs:`, `refactor:`,
