@@ -27,8 +27,14 @@ cov:
 arch BASE="origin/main":
     python3 scripts/architecture_gate.py {{BASE}}
 
+# Lint this branch's commit messages against Conventional Commits, mirroring the
+# wagoid/commitlint CI. Checks commits not yet on origin/main (auto-discovers
+# commitlint.config.mjs).
+commitlint BASE="origin/main":
+    commitlint --from {{BASE}} --to HEAD
+
 # All pre-PR checks, mirroring CI. Run this (and fix any failures) before pushing.
-check: lint cov arch
+check: lint cov arch commitlint
 
 # One-time Gmail OAuth to mint a refresh token.
 # Usage: just gmail-auth path/to/client_secret.json
