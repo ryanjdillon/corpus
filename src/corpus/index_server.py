@@ -1,8 +1,9 @@
 """corpus-index MCP surface: sanitized, whitelisted tools for a downgraded consumer.
 
 These are the tools a trust-downgraded consumer (Hermes, on a cloud model) may
-call. Every tool is backed only by the ``sanitized_documents`` view read as
-``corpus_index_ro`` — summaries + priority signal, never a raw body or secret.
+call. Every tool is backed only by the sanitized ``messages`` table (the separate
+``ai_sanitized`` database) read as ``corpus_index_ro`` — summaries + priority
+signal, never a raw body or secret.
 """
 
 from __future__ import annotations

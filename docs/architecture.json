@@ -286,7 +286,7 @@
       "sources": [
         {
           "path": "src/corpus/index_query.py",
-          "label": "sanitized_documents view + whitelisted queries"
+          "label": "whitelisted queries over sanitized messages"
         },
         {
           "path": "src/corpus/index_server.py",

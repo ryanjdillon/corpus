@@ -1,15 +1,14 @@
 """corpus-index: the sanitized query surface.
 
-The trust gate for a cloud-model consumer (Hermes). It reads only the
-``sanitized_documents`` view — documents ⨝ enrichments projected down to safe
-metadata + the enrichment priority signal + secret-free ``one_line`` — as the
-restricted ``corpus_index_ro`` role, which has no privilege on ``content`` or any
-raw table. Summaries are secret-free by construction (see ``enrichment.py``); this
-adds a topic-sensitivity floor by withholding richer detail at high sensitivity.
+The trust gate for a cloud-model consumer (Hermes). It reads only the sanitized
+``messages`` table in the separate ``ai_sanitized`` database — cloud-safe fields
+plus the enrichment priority signal, never raw content, subject, sender, or secret
+material — as the restricted ``corpus_index_ro`` role. That table is written by the
+one-way sync (``corpus sync`` → ``SanitizedStore``); nothing here writes.
 
-The view is created by the schema owner via ``ensure_view`` (``corpus index-init``,
-connecting as ``corpus_app``); queries connect as the restricted role via
-``CORPUS_INDEX_DATABASE_URL``.
+Queries connect via ``CORPUS_INDEX_DATABASE_URL`` (the sanitized DB, read-only
+role). ``COLS`` from ``sanitized_store`` is the single projection contract, so the
+returned columns track the tier's schema and never include the embedding.
 """
 
 from __future__ import annotations
@@ -20,82 +19,16 @@ import psycopg
 from psycopg.rows import dict_row
 
 from .config import settings
+from .sanitized_store import COLS
 
-_INDEX_ROLE = "corpus_index_ro"
-_RANK = {"none": 0, "low": 1, "medium": 2, "high": 3}
+# The safe columns to return: the sanitized projection, never the embedding.
+_SELECT = ", ".join(COLS)
 
 Connect = Callable[..., psycopg.Connection]
 
 
-def _view() -> str:
-    return f"{settings.db_schema}.sanitized_documents"
-
-
-def view_ddl() -> str:
-    """Build the DDL for the sanitized view.
-
-    Projects safe metadata + the enrichment priority signal + one_line, with
-    abstract/key_points withheld at/above the sensitivity gate. Never exposes
-    ``content``, ``embedding``, ``secret_audit`` or ``secret_candidates``.
-    """
-    docs = f"{settings.db_schema}.{settings.documents_table}"
-    enr = f"{settings.db_schema}.enrichments"
-    gate = _RANK.get(settings.index_sensitivity_gate, 3)
-    sens = (
-        "(CASE e.enrichment->>'sensitivity_level' "
-        "WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END)"
-    )
-    return f"""
-    CREATE OR REPLACE VIEW {_view()} AS
-    SELECT
-        d.id,
-        d.meta->>'source'    AS source,
-        d.meta->>'account'   AS account,
-        d.meta->>'from_addr' AS from_addr,
-        d.meta->>'subject'   AS subject,
-        d.meta->>'sent_at'   AS sent_at,
-        d.meta->'labels'     AS labels,
-        d.meta->>'thread_id' AS thread_id,
-        e.enrichment->>'one_line'                   AS one_line,
-        e.enrichment->>'category'                   AS category,
-        e.enrichment->>'domain'                     AS domain,
-        e.enrichment->>'transactional_type'         AS transactional_type,
-        (e.enrichment->>'requires_action')::boolean AS requires_action,
-        e.enrichment->>'action_type'                AS action_type,
-        e.enrichment->>'action_summary'             AS action_summary,
-        e.enrichment->>'deadline'                   AS deadline,
-        e.enrichment->>'waiting_on'                 AS waiting_on,
-        e.enrichment->>'importance'                 AS importance,
-        (e.enrichment->>'time_sensitive')::boolean  AS time_sensitive,
-        e.enrichment->>'sensitivity_level'          AS sensitivity_level,
-        e.enrichment->>'suggested_disposition'      AS suggested_disposition,
-        CASE WHEN {sens} >= {gate} THEN NULL ELSE e.enrichment->>'abstract' END AS abstract,
-        CASE WHEN {sens} >= {gate} THEN NULL ELSE e.enrichment->'key_points' END AS key_points
-    FROM {docs} d
-    JOIN {enr} e ON e.doc_id = d.id
-    """
-
-
-def ensure_view(admin_url: str | None = None, *, connect: Connect = psycopg.connect) -> None:
-    """Create/refresh the sanitized view and grant SELECT to ``corpus_index_ro``.
-
-    Run as the schema owner (``corpus_app`` via ``CORPUS_DATABASE_URL``) — the app
-    role can create the view and grant, but not create the role (a DB bootstrap).
-    The grant is skipped if the role does not yet exist, so this is safe to run
-    before the deploy provisions it.
-    """
-    grants = f"""
-    DO $do$ BEGIN
-      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{_INDEX_ROLE}') THEN
-        GRANT USAGE ON SCHEMA {settings.db_schema} TO {_INDEX_ROLE};
-        GRANT SELECT ON {_view()} TO {_INDEX_ROLE};
-      END IF;
-    END $do$;
-    """
-    with connect(admin_url or settings.database_url) as conn, conn.cursor() as cur:
-        cur.execute(view_ddl())
-        cur.execute(grants)
-        conn.commit()
+def _table() -> str:
+    return f"{settings.db_schema}.messages"
 
 
 def _rows(sql: str, params: list, *, connect: Connect = psycopg.connect) -> list[dict]:
@@ -122,7 +55,7 @@ Rows = Callable[[str, list], list[dict]]
 def action_items(
     limit: int = 50, domain: str | None = None, importance: str | None = None, *, rows: Rows = _rows
 ) -> list[dict]:
-    """Messages that need an action from the owner, ranked by importance + urgency."""
+    """Items that need an action from the owner, ranked by importance + urgency."""
     clauses, params = ["requires_action = true"], []
     if domain:
         clauses.append("domain = %s")
@@ -132,43 +65,49 @@ def action_items(
         params.append(importance)
     params.append(limit)
     where = " AND ".join(clauses)
-    return rows(f"SELECT * FROM {_view()} WHERE {where} ORDER BY {_ORDER} LIMIT %s", params)
+    return rows(f"SELECT {_SELECT} FROM {_table()} WHERE {where} ORDER BY {_ORDER} LIMIT %s", params)
 
 
 def due_soon(limit: int = 50, *, rows: Rows = _rows) -> list[dict]:
     """Time-sensitive items, or items carrying a deadline."""
     return rows(
-        f"SELECT * FROM {_view()} WHERE time_sensitive = true OR deadline IS NOT NULL "
+        f"SELECT {_SELECT} FROM {_table()} WHERE time_sensitive = true OR deadline IS NOT NULL "
         f"ORDER BY deadline NULLS LAST, {_ORDER} LIMIT %s",
         [limit],
     )
 
 
 def waiting_on(who: str = "them", limit: int = 50, *, rows: Rows = _rows) -> list[dict]:
-    """Threads flagged as awaiting a reply.
+    """Items flagged as awaiting a reply.
 
     'them' = owner is waiting on someone, 'me' = someone is waiting on the owner.
     """
-    return rows(f"SELECT * FROM {_view()} WHERE waiting_on = %s ORDER BY {_ORDER} LIMIT %s", [who, limit])
+    return rows(
+        f"SELECT {_SELECT} FROM {_table()} WHERE waiting_on = %s ORDER BY {_ORDER} LIMIT %s",
+        [who, limit],
+    )
 
 
 def by_domain(domain: str, limit: int = 50, *, rows: Rows = _rows) -> list[dict]:
     """Recent sanitized items in a life-area domain (banking, health, work…)."""
-    return rows(f"SELECT * FROM {_view()} WHERE domain = %s ORDER BY {_ORDER} LIMIT %s", [domain, limit])
+    return rows(
+        f"SELECT {_SELECT} FROM {_table()} WHERE domain = %s ORDER BY {_ORDER} LIMIT %s",
+        [domain, limit],
+    )
 
 
 def summary(doc_id: str, *, rows: Rows = _rows) -> dict | None:
-    """The sanitized summary + priority signal for one message id."""
-    got = rows(f"SELECT * FROM {_view()} WHERE id = %s", [doc_id])
+    """The sanitized summary + priority signal for one item id."""
+    got = rows(f"SELECT {_SELECT} FROM {_table()} WHERE id = %s", [doc_id])
     return got[0] if got else None
 
 
 def stats(*, rows: Rows = _rows) -> dict:
     """Counts of sanitized items by domain and suggested disposition."""
-    total = rows(f"SELECT count(*) AS total FROM {_view()}", [])[0]["total"]
-    by_dom = {r["domain"]: r["n"] for r in rows(f"SELECT domain, count(*) AS n FROM {_view()} GROUP BY 1", [])}
+    total = rows(f"SELECT count(*) AS total FROM {_table()}", [])[0]["total"]
+    by_dom = {r["domain"]: r["n"] for r in rows(f"SELECT domain, count(*) AS n FROM {_table()} GROUP BY 1", [])}
     by_disp = {
         r["d"]: r["n"]
-        for r in rows(f"SELECT suggested_disposition AS d, count(*) AS n FROM {_view()} GROUP BY 1", [])
+        for r in rows(f"SELECT suggested_disposition AS d, count(*) AS n FROM {_table()} GROUP BY 1", [])
     }
     return {"total": total, "by_domain": by_dom, "by_disposition": by_disp}
