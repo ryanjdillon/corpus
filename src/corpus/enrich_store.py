@@ -43,6 +43,7 @@ class EnrichStore(Store):
         super().__init__(settings.database_url)
 
     def schema_ddl(self) -> str:
+        """Return the idempotent DDL that lazily creates the enrichments table."""
         return _DDL.format(table=self._table)
 
     def enriched_ids(self) -> set[str]:

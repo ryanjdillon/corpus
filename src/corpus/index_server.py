@@ -1,7 +1,9 @@
-"""corpus-index MCP surface: the sanitized, whitelisted tools a trust-downgraded
-consumer (Hermes, on a cloud model) may call. Every tool is backed only by the
-``sanitized_documents`` view read as ``corpus_index_ro`` — summaries + priority
-signal, never a raw body or secret."""
+"""corpus-index MCP surface: sanitized, whitelisted tools for a downgraded consumer.
+
+These are the tools a trust-downgraded consumer (Hermes, on a cloud model) may
+call. Every tool is backed only by the ``sanitized_documents`` view read as
+``corpus_index_ro`` — summaries + priority signal, never a raw body or secret.
+"""
 
 from __future__ import annotations
 
@@ -68,4 +70,5 @@ def index_stats() -> dict:
 
 
 def run() -> None:
+    """Serve the corpus-index MCP tools over streamable HTTP."""
     mcp.run(transport="streamable-http")

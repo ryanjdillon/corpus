@@ -1,3 +1,5 @@
+"""Tests for the normalized Record and Classification types."""
+
 from datetime import UTC, datetime
 
 from corpus.models import Classification, Record

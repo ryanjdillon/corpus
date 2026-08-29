@@ -1,10 +1,10 @@
-"""The canonical raw vault: one markdown file per document — source-fact YAML
-frontmatter + the body — on a local-only volume.
+"""Store the canonical raw vault: one markdown file per document.
 
-The vault is (becoming) the source of truth; the DB is a derived index rebuildable
-from it. So the frontmatter carries only **source facts** (from/to/subject/date/
-labels/ids), never corpus-derived classification (label/confidence/signals), which
-is re-computed into the DB.
+Each file is source-fact YAML frontmatter + the body, on a local-only volume.
+The vault is (becoming) the source of truth; the DB is a derived index
+rebuildable from it. So the frontmatter carries only **source facts** (from/to/
+subject/date/labels/ids), never corpus-derived classification (label/confidence/
+signals), which is re-computed into the DB.
 """
 
 from __future__ import annotations
@@ -23,9 +23,11 @@ _SAFE_UID = re.compile(r"[A-Za-z0-9._-]{1,120}")
 
 
 def vault_path(doc_id: str, root: str | Path | None = None) -> Path:
-    """Deterministic file path for a document id, e.g.
-    ``gmail:personal::15ab…`` -> ``<root>/gmail/personal/15/15ab….md``. A uid with
-    filesystem-unsafe characters falls back to a stable hash of the full id."""
+    """Return the deterministic file path for a document id.
+
+    E.g. ``gmail:personal::15ab…`` -> ``<root>/gmail/personal/15/15ab….md``. A uid
+    with filesystem-unsafe characters falls back to a stable hash of the full id.
+    """
     base = Path(root if root is not None else settings.vault_path)
     source, _, uid = doc_id.partition("::")
     stem = uid if _SAFE_UID.fullmatch(uid or "") else hashlib.sha1(doc_id.encode()).hexdigest()[:24]
@@ -33,11 +35,12 @@ def vault_path(doc_id: str, root: str | Path | None = None) -> Path:
 
 
 def render(doc_id: str, content: str | None, meta: dict | None) -> str:
-    """The markdown file text: source-fact frontmatter (+ the doc id) then the body.
+    """Render the markdown file text: source-fact frontmatter (+ doc id) then body.
 
     The body is normalized to LF: bodies arrive with CRLF (email/MIME), but
     ``Path.read_text`` reads back universal-LF, so an un-normalized CRLF body would
-    never match on re-write and defeat ``write``'s skip-if-identical."""
+    never match on re-write and defeat ``write``'s skip-if-identical.
+    """
     front = {"id": doc_id, **{k: v for k, v in (meta or {}).items() if k not in _DERIVED}}
     fm = yaml.safe_dump(front, sort_keys=True, allow_unicode=True, default_flow_style=False).rstrip()
     body = (content or "").replace("\r\n", "\n").replace("\r", "\n")
@@ -45,8 +48,11 @@ def render(doc_id: str, content: str | None, meta: dict | None) -> str:
 
 
 def write(doc_id: str, content: str | None, meta: dict | None, root=None, force: bool = False) -> bool:
-    """Write the vault file. Idempotent: returns False (no write) when the file is
-    already byte-identical, unless ``force``. Returns True when created or changed."""
+    """Write the vault file idempotently.
+
+    Returns False (no write) when the file is already byte-identical, unless
+    ``force``. Returns True when created or changed.
+    """
     path = vault_path(doc_id, root)
     text = render(doc_id, content, meta)
     if not force and path.exists() and path.read_text(encoding="utf-8") == text:

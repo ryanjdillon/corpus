@@ -1,6 +1,9 @@
-"""The batch runner enriches every document and audits only flagged ones, with the
-real candidate gate. Collaborators are spec-bound mocks injected via fixtures, so
-the doubles can't drift from the real interfaces and no I/O is touched."""
+"""Exercise the batch runner with spec-bound, injected collaborators.
+
+The runner enriches every document and audits only flagged ones, with the real
+candidate gate. Collaborators are spec-bound mocks injected via fixtures, so the
+doubles can't drift from the real interfaces and no I/O is touched.
+"""
 
 from __future__ import annotations
 

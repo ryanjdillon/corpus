@@ -27,6 +27,11 @@ def _h(record: Record, name: str) -> str:
 
 
 def classify(record: Record) -> Classification:
+    """Classify a record using cheap header/rule heuristics.
+
+    Non-email records are labelled ``document``; emails fall through the
+    promotional/newsletter/notification/bulk gates and default to ``personal``.
+    """
     if record.kind != "email":
         return Classification(label="document", confidence=1.0)
 

@@ -1,10 +1,12 @@
 """The enricher sends the schema + fixed frame and parses guided-decoding output.
 
-The endpoint is a MockTransport, so no network or model is involved."""
+The httpx client is a spec-bound mock, so no network or model is involved.
+"""
 
 from __future__ import annotations
 
 import json
+from unittest.mock import create_autospec
 
 import httpx
 import pytest
@@ -26,21 +28,24 @@ _COMPLETION = {
 }
 
 
-def _client(handler) -> httpx.Client:
-    return httpx.Client(transport=httpx.MockTransport(handler), base_url="http://gw/v1")
+def _response(status: int, *, json_body=None, text: str | None = None) -> httpx.Response:
+    request = httpx.Request("POST", "http://gw/v1/chat/completions")
+    return httpx.Response(status, json=json_body, text=text, request=request)
 
 
-def test_enrich_sends_schema_and_frame_and_parses(monkeypatch):
-    captured = {}
+@pytest.fixture
+def client() -> httpx.Client:
+    mock = create_autospec(httpx.Client, instance=True)
+    mock.post.return_value = _response(200, json_body=_COMPLETION)
+    return mock
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        captured["body"] = json.loads(request.content)
-        return httpx.Response(200, json=_COMPLETION)
 
-    doc = Enricher(model="local", client=_client(handler)).enrich("Hello there")
+def test_enrich_sends_schema_and_frame_and_parses(client):
+    doc = Enricher(model="local", client=client).enrich("Hello there")
 
     assert doc.category is Category.personal
-    body = captured["body"]
+    assert client.post.call_args.args[0] == "/chat/completions"
+    body = client.post.call_args.kwargs["json"]
     assert body["model"] == "local"
     assert body["response_format"]["json_schema"]["schema"] == json_schema()
     assert body["messages"][0]["role"] == "system"
@@ -48,40 +53,32 @@ def test_enrich_sends_schema_and_frame_and_parses(monkeypatch):
     assert body["messages"][1]["content"] == "Hello there"
 
 
-def test_client_error_is_non_retryable(monkeypatch):
-    monkeypatch.setattr(enricher_mod.time, "sleep", lambda *_: None)
-    calls = {"n": 0}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        calls["n"] += 1
-        return httpx.Response(400, text="too long")
+def test_client_error_is_non_retryable(client):
+    client.post.return_value = _response(400, text="too long")
 
     with pytest.raises(EnrichError):
-        Enricher(model="local", client=_client(handler)).enrich("x")
-    assert calls["n"] == 1  # not retried
+        Enricher(model="local", client=client).enrich("x")
+    assert client.post.call_count == 1  # not retried
 
 
-def test_server_error_retries_then_raises_unavailable(monkeypatch):
+def test_server_error_retries_then_raises_unavailable(client, monkeypatch):
     monkeypatch.setattr(enricher_mod.time, "sleep", lambda *_: None)
-    calls = {"n": 0}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        calls["n"] += 1
-        return httpx.Response(503, text="overloaded")
+    client.post.return_value = _response(503, text="overloaded")
 
     with pytest.raises(EnrichUnavailableError):
-        Enricher(model="local", client=_client(handler)).enrich("x")
-    assert calls["n"] == 4  # _RETRIES attempts
+        Enricher(model="local", client=client).enrich("x")
+    assert client.post.call_count == 4  # _RETRIES attempts
 
 
-def test_unparseable_output_is_enrich_error(monkeypatch):
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"choices": [{"message": {"content": "not json"}}]})
+def test_unparseable_output_is_enrich_error(client):
+    client.post.return_value = _response(
+        200, json_body={"choices": [{"message": {"content": "not json"}}]}
+    )
 
     with pytest.raises(EnrichError):
-        Enricher(model="local", client=_client(handler)).enrich("x")
+        Enricher(model="local", client=client).enrich("x")
 
 
-def test_missing_model_raises():
+def test_missing_model_raises(client):
     with pytest.raises(ValueError):
-        Enricher(model="", client=_client(lambda r: httpx.Response(200, json=_COMPLETION)))
+        Enricher(model="", client=client)

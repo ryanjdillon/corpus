@@ -13,12 +13,16 @@ app = FastAPI(title="corpus", version=__version__)
 
 
 class SearchRequest(BaseModel):
+    """Request body for the semantic ``/search`` endpoint."""
+
     query: str
     top_k: int = 10
     filters: dict[str, Any] | None = None
 
 
 class QueryRequest(BaseModel):
+    """Request body for the structured ``/query`` endpoint."""
+
     label: str | None = None
     account: str | None = None
     before: str | None = None
@@ -28,16 +32,19 @@ class QueryRequest(BaseModel):
 
 @app.get("/health")
 def health() -> dict[str, str]:
+    """Report liveness of the service."""
     return {"status": "ok"}
 
 
 @app.post("/search")
 def search_endpoint(req: SearchRequest) -> dict[str, Any]:
+    """Return semantic matches for the request query."""
     return {"results": search.semantic_search(req.query, req.top_k, req.filters)}
 
 
 @app.post("/query")
 def query_endpoint(req: QueryRequest) -> dict[str, Any]:
+    """Return structured metadata matches for the request filters."""
     results = search.structured_query(
         label=req.label,
         account=req.account,
@@ -50,4 +57,5 @@ def query_endpoint(req: QueryRequest) -> dict[str, Any]:
 
 @app.get("/stats")
 def stats_endpoint() -> dict[str, Any]:
+    """Return index totals and per-label document counts."""
     return search.stats()

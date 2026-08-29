@@ -23,6 +23,7 @@ import json
 import logging
 import re
 import subprocess
+from collections.abc import Callable
 
 from .config import settings
 
@@ -60,12 +61,19 @@ _RULE_MAP = {
 }
 
 
-def _run_betterleaks(text: str) -> dict[str, int]:
-    """Scan ``text`` with the external Betterleaks binary via stdin, returning
-    {rule_name: count}. Degrades to {} (with a warning) if the binary is missing or
-    its report can't be read — the local regexes remain the guaranteed baseline."""
+def _run_betterleaks(
+    text: str,
+    *,
+    run: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
+) -> dict[str, int]:
+    """Scan ``text`` with the external Betterleaks binary via stdin.
+
+    Returns ``{rule_name: count}``. Degrades to ``{}`` (with a warning) if the
+    binary is missing or its report can't be read — the local regexes remain the
+    guaranteed baseline.
+    """
     try:
-        proc = subprocess.run(
+        proc = run(
             [
                 settings.leaks_bin,
                 "stdin",
@@ -98,7 +106,11 @@ def _run_betterleaks(text: str) -> dict[str, int]:
     return counts
 
 
-def scan(text: str | None) -> dict[str, int]:
+def scan(
+    text: str | None,
+    *,
+    run: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
+) -> dict[str, int]:
     """Detect leaked credentials in ``text`` — {secret_name: count}, no values."""
     if not text:
         return {}
@@ -108,7 +120,7 @@ def scan(text: str | None) -> dict[str, int]:
         if n:
             counts[name] = counts.get(name, 0) + n
     if settings.leaks_bin:
-        for name, n in _run_betterleaks(text).items():
+        for name, n in _run_betterleaks(text, run=run).items():
             # Local regexes take precedence; the external scanner only adds rule
             # types the local layer doesn't already cover (avoids double counting).
             counts.setdefault(name, n)

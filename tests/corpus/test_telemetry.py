@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from corpus import telemetry
+from unittest.mock import create_autospec
+
+from corpus import search, telemetry
 
 
 def test_enabled_reflects_env(monkeypatch):
@@ -42,19 +44,16 @@ def test_instrumentation_views_prefix_all_names():
 
 
 def test_corpus_size_observations(monkeypatch):
-    monkeypatch.setattr(
-        "corpus.search.stats",
-        lambda: {"total": 3, "by_label": {"personal": 2, "bulk": 1}},
-    )
+    stats = create_autospec(search.stats)
+    stats.return_value = {"total": 3, "by_label": {"personal": 2, "bulk": 1}}
+    monkeypatch.setattr(search, "stats", stats)
     obs = telemetry._corpus_size_observations(None)
     assert {o.attributes["label"]: o.value for o in obs} == {"personal": 2, "bulk": 1}
 
 
 def test_corpus_size_observations_swallows_errors(monkeypatch):
-    def boom():
-        raise RuntimeError("db down")
-
-    monkeypatch.setattr("corpus.search.stats", boom)
+    stats = create_autospec(search.stats, side_effect=RuntimeError("db down"))
+    monkeypatch.setattr(search, "stats", stats)
     assert telemetry._corpus_size_observations(None) == []
 
 
@@ -65,7 +64,8 @@ def test_configure_sets_providers_and_is_idempotent(monkeypatch):
     from opentelemetry.sdk.metrics.export import ConsoleMetricExporter
     from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-    # Avoid any network: swap the OTLP exporters for local ones.
+    # Boundary: the OTLP exporters drive real SDK provider internals, so they
+    # cannot be autospec'd cleanly. Swap them for local SDK exporters instead.
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
     monkeypatch.setattr(te, "OTLPSpanExporter", InMemorySpanExporter)
     monkeypatch.setattr(me, "OTLPMetricExporter", ConsoleMetricExporter)

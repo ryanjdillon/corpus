@@ -1,5 +1,8 @@
-"""Command-line entrypoints: api | mcp | index | index-init | ingest | scan | enrich
-| sync | audit-secrets | export."""
+"""Command-line entrypoints for the corpus service.
+
+Subcommands: api, mcp, index, index-init, ingest, scan, enrich, sync,
+audit-secrets, export.
+"""
 
 from __future__ import annotations
 
@@ -14,6 +17,7 @@ from .config import settings
 
 @click.group()
 def main() -> None:
+    """Dispatch corpus subcommands."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 
 
@@ -39,8 +43,11 @@ def mcp() -> None:
 
 @main.command()
 def index() -> None:
-    """Run the corpus-index MCP server: the sanitized surface a trust-downgraded
-    consumer (Hermes) queries — summaries + priority signal, never raw bodies."""
+    """Run the corpus-index MCP server.
+
+    The sanitized surface a trust-downgraded consumer (Hermes) queries: summaries
+    and priority signal, never raw bodies.
+    """
     telemetry.configure("corpus-index")
     from .index_server import run
 
@@ -49,8 +56,10 @@ def index() -> None:
 
 @main.command(name="index-init")
 def index_init_cmd() -> None:
-    """Create/refresh the sanitized_documents view and grant it to corpus_index_ro.
-    Run as the schema owner (CORPUS_DATABASE_URL = corpus_app)."""
+    """Create or refresh the sanitized_documents view and grant it to corpus_index_ro.
+
+    Run as the schema owner (CORPUS_DATABASE_URL = corpus_app).
+    """
     from .index_query import ensure_view
 
     ensure_view()
@@ -78,8 +87,10 @@ def ingest(source: str, batch_size: int) -> None:
 @click.option("--limit", default=0, type=int, help="enrich at most N messages (0 = all)")
 @click.option("--force", is_flag=True, help="re-enrich documents already stored")
 def enrich(source: str | None, account: str | None, limit: int, force: bool) -> None:
-    """Batch-enrich stored documents: summary + classification, plus an LLM secret
-    audit on any with flagged candidates."""
+    """Batch-enrich stored documents with summary and classification.
+
+    Also runs an LLM secret audit on any document with flagged candidates.
+    """
     telemetry.configure("corpus-enrich")
     from .enrich_batch import run_enrich
     from .enrich_store import EnrichStore
@@ -97,9 +108,11 @@ def enrich(source: str | None, account: str | None, limit: int, force: bool) -> 
 @click.option("--limit", default=0, type=int, help="sync at most N documents (0 = all)")
 @click.option("--force", is_flag=True, help="re-project documents already synced")
 def sync(source: str | None, limit: int, force: bool) -> None:
-    """Project enriched documents into the sanitized DB — the trust-downgraded tier
-    a cloud consumer may query. Drops raw content/subject/sender; gates summaries by
-    sensitivity."""
+    """Project enriched documents into the sanitized DB.
+
+    The sanitized DB is the trust-downgraded tier a cloud consumer may query.
+    Drops raw content/subject/sender; gates summaries by sensitivity.
+    """
     telemetry.configure("corpus-sync")
     from .sanitize import run_sync
     from .sanitized_store import SanitizedStore
@@ -136,8 +149,10 @@ def export(source: str | None, account: str | None, limit: int, force: bool) -> 
 @click.option("--account", default=None, help="filter by account address")
 @click.option("--limit", default=0, type=int, help="scan at most N messages (0 = all)")
 def audit_secrets_cmd(source: str | None, account: str | None, limit: int) -> None:
-    """Re-run only the LLM secret confirmation over stored documents with
-    candidates -- no re-enrichment."""
+    """Re-run only the LLM secret confirmation over stored documents with candidates.
+
+    No re-enrichment is performed.
+    """
     telemetry.configure("corpus-audit")
     from .enrich_batch import run_audit
     from .enrich_store import EnrichStore

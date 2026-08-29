@@ -17,26 +17,33 @@ _RETRIES = 4
 
 
 class EmbedInputError(Exception):
-    """A non-retryable client error (4xx) from the embedding endpoint: the input
-    itself was rejected (e.g. too long). Callers can isolate and skip the
-    offending record rather than abort a whole batch."""
+    """A non-retryable client error (4xx) from the embedding endpoint.
+
+    The input itself was rejected (e.g. too long). Callers can isolate and skip the
+    offending record rather than abort a whole batch.
+    """
 
 
 class EmbedUnavailableError(Exception):
-    """The embedding endpoint is unavailable (5xx or transport error) after all
-    retries — a systemic failure, not a bad record. Callers should abort (and
-    resume later) rather than skip records."""
+    """The embedding endpoint is unavailable (5xx or transport error) after all retries.
+
+    A systemic failure, not a bad record. Callers should abort (and resume later)
+    rather than skip records.
+    """
 
 
 class Embedder:
-    def __init__(self) -> None:
-        self._client = httpx.Client(
+    """Embed text via an OpenAI-compatible endpoint."""
+
+    def __init__(self, client: httpx.Client | None = None) -> None:
+        self._client = client or httpx.Client(
             base_url=settings.openai_api_base,
             headers={"Authorization": f"Bearer {settings.openai_api_key}"},
             timeout=settings.embed_timeout,
         )
 
     def embed(self, texts: list[str]) -> list[list[float]]:
+        """Return an embedding vector for each input text."""
         if not texts:
             return []
         payload = {
@@ -65,7 +72,9 @@ class Embedder:
         raise EmbedUnavailableError(str(last)) from last
 
     def embed_one(self, text: str) -> list[float]:
+        """Return the embedding vector for a single text."""
         return self.embed([text])[0]
 
     def close(self) -> None:
+        """Close the underlying HTTP client."""
         self._client.close()

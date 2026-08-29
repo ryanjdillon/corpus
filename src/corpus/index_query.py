@@ -24,15 +24,20 @@ from .config import settings
 _INDEX_ROLE = "corpus_index_ro"
 _RANK = {"none": 0, "low": 1, "medium": 2, "high": 3}
 
+Connect = Callable[..., psycopg.Connection]
+
 
 def _view() -> str:
     return f"{settings.db_schema}.sanitized_documents"
 
 
 def view_ddl() -> str:
-    """The sanitized view: safe metadata + the enrichment priority signal + one_line,
-    with abstract/key_points withheld at/above the sensitivity gate. Never exposes
-    ``content``, ``embedding``, ``secret_audit`` or ``secret_candidates``."""
+    """Build the DDL for the sanitized view.
+
+    Projects safe metadata + the enrichment priority signal + one_line, with
+    abstract/key_points withheld at/above the sensitivity gate. Never exposes
+    ``content``, ``embedding``, ``secret_audit`` or ``secret_candidates``.
+    """
     docs = f"{settings.db_schema}.{settings.documents_table}"
     enr = f"{settings.db_schema}.enrichments"
     gate = _RANK.get(settings.index_sensitivity_gate, 3)
@@ -71,12 +76,14 @@ def view_ddl() -> str:
     """
 
 
-def ensure_view(admin_url: str | None = None) -> None:
+def ensure_view(admin_url: str | None = None, *, connect: Connect = psycopg.connect) -> None:
     """Create/refresh the sanitized view and grant SELECT to ``corpus_index_ro``.
+
     Run as the schema owner (``corpus_app`` via ``CORPUS_DATABASE_URL``) — the app
     role can create the view and grant, but not create the role (a DB bootstrap).
     The grant is skipped if the role does not yet exist, so this is safe to run
-    before the deploy provisions it."""
+    before the deploy provisions it.
+    """
     grants = f"""
     DO $do$ BEGIN
       IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{_INDEX_ROLE}') THEN
@@ -85,18 +92,18 @@ def ensure_view(admin_url: str | None = None) -> None:
       END IF;
     END $do$;
     """
-    with psycopg.connect(admin_url or settings.database_url) as conn, conn.cursor() as cur:
+    with connect(admin_url or settings.database_url) as conn, conn.cursor() as cur:
         cur.execute(view_ddl())
         cur.execute(grants)
         conn.commit()
 
 
-def _rows(sql: str, params: list) -> list[dict]:
+def _rows(sql: str, params: list, *, connect: Connect = psycopg.connect) -> list[dict]:
     """Run a query as the restricted index role; rows come back as dicts."""
     if not settings.index_database_url:
         raise RuntimeError("CORPUS_INDEX_DATABASE_URL not set (corpus-index disabled)")
     with (
-        psycopg.connect(settings.index_database_url, row_factory=dict_row) as conn,
+        connect(settings.index_database_url, row_factory=dict_row) as conn,
         conn.cursor() as cur,
     ):
         cur.execute(sql, params)
@@ -138,8 +145,10 @@ def due_soon(limit: int = 50, *, rows: Rows = _rows) -> list[dict]:
 
 
 def waiting_on(who: str = "them", limit: int = 50, *, rows: Rows = _rows) -> list[dict]:
-    """Threads flagged as awaiting a reply — 'them' = owner is waiting on someone,
-    'me' = someone is waiting on the owner."""
+    """Threads flagged as awaiting a reply.
+
+    'them' = owner is waiting on someone, 'me' = someone is waiting on the owner.
+    """
     return rows(f"SELECT * FROM {_view()} WHERE waiting_on = %s ORDER BY {_ORDER} LIMIT %s", [who, limit])
 
 

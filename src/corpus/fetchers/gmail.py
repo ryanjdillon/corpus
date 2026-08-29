@@ -1,5 +1,4 @@
-"""Gmail API fetcher (OAuth), used instead of IMAP so message labels are
-available.
+"""Gmail API fetcher (OAuth), used instead of IMAP so message labels are available.
 
 Credentials come from the environment, namespaced by fetcher name. For
 "gmail:personal":
@@ -45,6 +44,8 @@ def _env(name: str, key: str, default: str = "") -> str:
 
 
 class GmailFetcher:
+    """Catalog a Gmail account over the API, using historyId for incremental sync."""
+
     def __init__(self, name: str) -> None:
         self.name = name
         self.source = f"gmail:{name}"
@@ -60,6 +61,7 @@ class GmailFetcher:
         self._account: str | None = None
 
     def fetch(self, cursor: str | None) -> Iterator[Record]:
+        """Yield records for a full backfill or an incremental sync from the cursor."""
         api = httpx.Client(
             base_url=_API,
             headers={"Authorization": f"Bearer {self._access_token()}"},
@@ -92,6 +94,7 @@ class GmailFetcher:
             api.close()
 
     def next_cursor(self) -> str | None:
+        """Return the cursor to persist after a successful fetch pass."""
         return self._next_cursor
 
     def _access_token(self) -> str:

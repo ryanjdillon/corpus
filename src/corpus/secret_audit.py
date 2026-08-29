@@ -1,4 +1,4 @@
-"""LLM confirmation layer over the deterministic secret candidates.
+"""Confirm and grade the deterministic secret candidates with a local model.
 
 The deterministic scanners (``pii`` + ``leaks``) are a high-recall net that cannot
 tell a real disclosure from an incidental match — a 9-digit datalogger reading vs a
@@ -51,8 +51,10 @@ def audit_secrets(
     model: str | None = None,
     client: httpx.Client | None = None,
 ) -> SecretAudit:
-    """Ask the local model to confirm/grade the deterministic secret candidates for
-    one message. Returns a validated SecretAudit (values never included)."""
+    """Confirm and grade one message's deterministic secret candidates via the model.
+
+    Return a validated ``SecretAudit`` (secret values are never included).
+    """
     model = model or settings.enrich_model
     if not model:
         raise ValueError("no model configured (set CORPUS_ENRICH_MODEL)")

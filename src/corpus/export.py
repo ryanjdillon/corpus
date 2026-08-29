@@ -9,6 +9,7 @@ the vault is canonical and ingest writes it first; this command also re-runs saf
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable, Iterable
 
 from . import store, vault
 
@@ -16,16 +17,26 @@ log = logging.getLogger("corpus.export")
 
 
 def export_archive(
-    source: str | None = None, account: str | None = None, limit: int = 0, force: bool = False
+    source: str | None = None,
+    account: str | None = None,
+    limit: int = 0,
+    force: bool = False,
+    *,
+    document_source: Callable[..., Iterable[tuple[str, str, dict]]] = store.iter_documents,
+    writer: Callable[..., bool] = vault.write,
 ) -> dict[str, int]:
-    """Write every stored document to the vault. Returns ``{scanned, written,
-    unchanged}``; ``limit`` of 0 does all."""
+    """Write every stored document to the vault.
+
+    Returns ``{scanned, written, unchanged}``; ``limit`` of 0 does all. The
+    document source and vault writer are injectable for testing; the defaults
+    stream from the store and write real vault files.
+    """
     scanned = written = unchanged = 0
-    for doc_id, content, meta in store.iter_documents(source=source, account=account):
+    for doc_id, content, meta in document_source(source=source, account=account):
         if limit and scanned >= limit:
             break
         scanned += 1
-        if vault.write(doc_id, content, meta, force=force):
+        if writer(doc_id, content, meta, force=force):
             written += 1
         else:
             unchanged += 1

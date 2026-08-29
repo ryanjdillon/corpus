@@ -80,6 +80,7 @@ class SanitizedStore(Store):
         )
 
     def schema_ddl(self) -> str:
+        """Return the DDL for the sanitized ``messages`` table."""
         return _ddl(self._schema, settings.embedding_dimensions)
 
     def save_message(self, row: dict, embedding: list[float]) -> None:
@@ -89,4 +90,5 @@ class SanitizedStore(Store):
 
     def synced_versions(self) -> dict[str, object]:
         """Map id -> ``enriched_at`` already synced, so the sync skips unchanged rows."""
-        return {r[0]: r[1] for r in self._read(f"SELECT id, enriched_at FROM {self._schema}.messages")}
+        rows = self._read(f"SELECT id, enriched_at FROM {self._schema}.messages")
+        return {r[0]: r[1] for r in rows}

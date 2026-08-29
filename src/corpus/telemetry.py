@@ -22,6 +22,7 @@ _shutdown_done = False
 
 
 def enabled() -> bool:
+    """Report whether an OTLP endpoint is configured."""
     return bool(os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
 
 
@@ -40,14 +41,17 @@ _INSTRUMENTATION_METRICS = [
 
 
 def _instrumentation_views():
+    """Build views that rename auto-instrumentation metrics under ``corpus.``."""
     from opentelemetry.sdk.metrics.view import View
 
     return [View(instrument_name=n, name=f"corpus.{n}") for n in _INSTRUMENTATION_METRICS]
 
 
 def configure(default_service_name: str) -> None:
-    """Install OTLP trace + metric providers and instrument httpx. No-op unless
-    an OTLP endpoint is configured; safe to call more than once."""
+    """Install OTLP trace + metric providers and instrument httpx.
+
+    No-op unless an OTLP endpoint is configured; safe to call more than once.
+    """
     global _configured
     if _configured or not enabled():
         return
@@ -90,8 +94,10 @@ def instrument_fastapi(app) -> None:
 
 
 def _corpus_size_observations(_options):
-    """Callback for the corpus-size gauge: stored documents per data-class label.
-    Never raises — a DB blip must not break metric export."""
+    """Report stored documents per data-class label for the corpus-size gauge.
+
+    Never raises — a DB blip must not break metric export.
+    """
     from opentelemetry.metrics import Observation
 
     try:
@@ -105,8 +111,11 @@ def _corpus_size_observations(_options):
 
 
 def register_corpus_size_gauge() -> None:
-    """Register an observable gauge of stored documents by data-class. Intended
-    for a long-running process; the callback reads the store on each export."""
+    """Register an observable gauge of stored documents by data-class.
+
+    Intended for a long-running process; the callback reads the store on each
+    export.
+    """
     if not enabled():
         return
     _meter.create_observable_gauge(
@@ -118,8 +127,11 @@ def register_corpus_size_gauge() -> None:
 
 
 def shutdown() -> None:
-    """Flush + shut down providers. Essential for a short-lived process (e.g. a
-    one-shot ingest run); also runs at process exit via atexit."""
+    """Flush and shut down providers.
+
+    Essential for a short-lived process (e.g. a one-shot ingest run); also runs
+    at process exit via atexit.
+    """
     global _shutdown_done
     if not _configured or _shutdown_done:
         return

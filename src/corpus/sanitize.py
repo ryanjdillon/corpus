@@ -1,5 +1,6 @@
-"""The one-way sync: project the sensitive corpus (documents ⨝ enrichments) down
-to the sanitized DB, applying the per-field exposure policy.
+"""Project the sensitive corpus (documents ⨝ enrichments) into the sanitized DB.
+
+Applies the per-field exposure policy on the way down.
 
 **Included** (cloud-safe): opaque ids, timestamps, the enrichment classification
 signal, coarse sender-domain (org, never the person), LLM `one_line`,
@@ -28,9 +29,11 @@ _RANK = {"none": 0, "low": 1, "medium": 2, "high": 3}
 
 
 def _sender_domain(from_addr: str | None) -> str | None:
-    """The sending organization's domain (e.g. 'chase.com') — never the individual
-    address. Personal-provider senders (gmail.com) yield little; the descriptive
-    signal for those lives in one_line / organizations instead."""
+    """Return the sending organization's domain (e.g. 'chase.com'), never the person.
+
+    Personal-provider senders (gmail.com) yield little; the descriptive signal for
+    those lives in one_line / organizations instead.
+    """
     if not from_addr or "@" not in from_addr:
         return None
     dom = from_addr.rsplit("@", 1)[-1].strip().strip(">").lower()
@@ -38,8 +41,11 @@ def _sender_domain(from_addr: str | None) -> str | None:
 
 
 def project(doc_id: str, meta: dict | None, enr: dict | None, gate: str = "high") -> dict:
-    """Sanitized row for one enriched document. Free-text (one_line, action_summary,
-    organizations) is withheld at/above ``gate``; a stub keeps the item plannable."""
+    """Build the sanitized row for one enriched document.
+
+    Free-text (one_line, action_summary, organizations) is withheld at/above
+    ``gate``; a stub keeps the item plannable.
+    """
     meta = meta or {}
     enr = enr or {}
     sens = enr.get("sensitivity_level") or "none"
@@ -81,8 +87,10 @@ def project(doc_id: str, meta: dict | None, enr: dict | None, gate: str = "high"
 
 
 def iter_enriched(read_dsn: str, source: str | None = None):
-    """Stream (id, meta, enrichment, enriched_at) for enriched documents from the
-    sensitive DB, newest first, via a server-side cursor."""
+    """Stream (id, meta, enrichment, enriched_at) for enriched documents, newest first.
+
+    Reads from the sensitive DB via a server-side cursor.
+    """
     schema = settings.db_schema
     docs = f"{schema}.{settings.documents_table}"
     enr = f"{schema}.enrichments"
@@ -113,9 +121,11 @@ def run_sync(
     read_dsn: str | None = None,
     batch_size: int = 64,
 ) -> dict[str, int]:
-    """Project enriched documents into the sanitized store. Skips rows whose source
-    enrichment is unchanged since the last sync unless ``force``. ``store`` is an
-    open SanitizedStore whose lifecycle the caller owns."""
+    """Project enriched documents into the sanitized store.
+
+    Skips rows whose source enrichment is unchanged since the last sync unless
+    ``force``. ``store`` is an open SanitizedStore whose lifecycle the caller owns.
+    """
     read_dsn = read_dsn or settings.database_url
     embedder = embedder or Embedder()
     seen = {} if force else store.synced_versions()
@@ -144,5 +154,10 @@ def run_sync(
         if len(batch) >= batch_size:
             flush()
     flush()
-    log.info("synced %d, skipped %d of %d scanned", counts["synced"], counts["skipped"], counts["scanned"])
+    log.info(
+        "synced %d, skipped %d of %d scanned",
+        counts["synced"],
+        counts["skipped"],
+        counts["scanned"],
+    )
     return counts
