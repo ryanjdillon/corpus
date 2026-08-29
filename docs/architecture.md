@@ -34,7 +34,7 @@ is implementation.
 | Module | Interface | Hides |
 |---|---|---|
 | `models` | `Record`, `Classification` | The normalized item types every stage passes, with `(source, source_uid)` identity. |
-| `fetchers` | `build_fetcher(source) -> Fetcher`; `Fetcher.fetch(cursor)` yields Records | Per-source protocols (IMAP, Gmail API), auth, pagination, incremental cursors. See [extending-fetchers.md](extending-fetchers.md). |
+| `fetchers` | `build_fetcher(source) -> Fetcher`; `Fetcher.fetch(cursor)` yields Records | Per-source protocols (IMAP, Gmail API), auth, pagination, incremental cursors. See [fetchers/index.md](fetchers/index.md). |
 | `classify` | `classify(record) -> Classification` | Header/rule heuristics (and an optional model tie-breaker) that assign a data-class label + confidence. |
 | `embeddings` | `Embedder.embed(texts) -> vectors` | The OpenAI-compatible HTTP call, retries, and the typed `EmbedInputError` for rejected inputs. |
 | `store` | `get_document_store()`, `to_document(...)`, `iter_documents(...)`, cursor helpers | The pgvector document store, the `sync_state` cursor, and a server-side streaming read cursor. |

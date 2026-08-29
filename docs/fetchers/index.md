@@ -1,10 +1,10 @@
-# Adding a source
+# Sources
 
 A *source* is anything that yields `Record`s. Because the rest of the pipeline
 (classify → embed → store → search) only sees `Record`s, adding a source — a new
 mailbox protocol, a document store, a chat export — is self-contained: implement
-one small protocol and register it. Email (IMAP, Gmail) ships today; the same
-shape covers documents.
+one small protocol and register it. Email ships today over [IMAP](imap.md) and
+[Gmail](gmail.md); the same shape covers documents.
 
 ## The protocol
 
@@ -27,7 +27,7 @@ class Fetcher(Protocol):
   source has (subject, sender, timestamps, `labels`, `folder`, `uri`).
 - The **cursor is opaque** to the pipeline — encode whatever lets the source
   resume incrementally (a timestamp, a page token, a provider history id, a
-  per-folder map). It's persisted in `sync_state` and handed back on the next
+  per-folder map). It is persisted in `sync_state` and handed back on the next
   run. Return `None` to always do a full pass.
 
 ## Register it
@@ -52,7 +52,7 @@ lets several instances of one source type coexist.
 - **Keep it a source, nothing more.** Don't classify, embed, or write from a
   fetcher — just yield `Record`s. Ingestion handles batching, resilience, and
   storage uniformly for every source.
-- **Make `source_uid` stable.** It's how re-runs overwrite instead of duplicate.
+- **Make `source_uid` stable.** It is how re-runs overwrite instead of duplicate.
 - **Make the cursor cheap to resume from** so a partial run doesn't rescan the
   whole source.
 - **Test against the real dependency** where practical: the IMAP fetcher is
