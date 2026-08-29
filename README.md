@@ -35,13 +35,24 @@ A *source* is anything that yields records, so one pipeline covers many content
 types. Email lands first, over IMAP and Gmail; files, notes, and exports fit the
 same shape — see the [sources guide][sources].
 
-## Two ways to query
+## What you can ask
 
-- **Semantic search** — vector similarity with optional metadata filters.
-- **Structured query** — analytical metadata queries that return every match
-  (say, every item with a given tag before a date) as plain SQL.
+corpus answers three kinds of question, over a REST API and an MCP server:
 
-Both are served over a REST API and an MCP server.
+- **Find by meaning** — semantic search: vector similarity with optional metadata
+  filters, so the right item surfaces even when you don't recall a keyword.
+- **Filter by fact** — structured query: exhaustive metadata queries that return
+  *every* match (every item with a given tag, from an account, in a time window)
+  as plain SQL — not a ranked sample.
+- **Ask what matters** — enrichment distills each item into a priority signal you
+  query directly: what needs an action, what's due or time-sensitive, what you're
+  waiting on, what's happening in a domain like banking, health, or work.
+
+You and your local tools get the full surface — search, structured query,
+whole-document fetch, and stats. The priority signal, projected free of raw
+content, is what a governed cloud agent reads on the sanitized tier: an assistant
+can plan your day from *what needs action* and *what's due soon* without ever
+touching the underlying documents.
 
 ## Quickstart
 
