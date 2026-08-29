@@ -16,7 +16,11 @@ rationale — nothing else.
 ## Commits
 
 Use Conventional Commit messages (`feat:`, `fix:`, `docs:`, `refactor:`,
-`test:`, `build:`, `ci:`, `chore:`, `revert:`); the `main` branch enforces this.
+`test:`, `build:`, `ci:`, `chore:`, `revert:`). This is enforced against
+`@commitlint/config-conventional` (`commitlint.config.mjs`) both in CI (the
+`wagoid/commitlint-github-action` on every PR) and locally by `just commitlint`
+— part of `just check` — which lints the commits on your branch not yet on
+`origin/main`. Keep each commit atomic and its subject in the imperative mood.
 
 ## Tests
 
@@ -28,10 +32,11 @@ the baseline in the same change.
 ## Before opening a PR
 
 Run **`just check`** and fix everything it reports **before** pushing a branch or
-opening a PR. It runs the same lint (pinned ruff), tests, and coverage ratchet as
-CI, so a green `just check` means green CI. Do not rely on CI to surface lint or
-coverage-regression failures — catch them locally first. (ruff is pinned in the
-`dev` extra and in the CI workflow to the same version so results match.)
+opening a PR. It runs the same lint (pinned ruff), tests, coverage ratchet, and
+commit-message lint (commitlint) as CI, so a green `just check` means green CI.
+Do not rely on CI to surface lint, coverage-regression, or commit-message
+failures — catch them locally first. (ruff is pinned in the `dev` extra and in
+the CI workflow to the same version so results match.)
 
 **Architecture-gate gotcha (adding/removing a top-level `src/corpus/*.py` module).**
 The gate (`just arch`) diffs the **committed** module set against `origin/main`, so

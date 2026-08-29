@@ -22,6 +22,7 @@
             pkgs.uv
             pkgs.just
             pkgs.ruff
+            pkgs.commitlint
           ];
           shellHook = ''
             # manylinux wheels (numpy, psycopg, …) dynamically link libstdc++ etc.,
