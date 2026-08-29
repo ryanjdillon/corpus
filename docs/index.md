@@ -12,13 +12,19 @@ A raw markdown layer keeps each item verbatim, and corpus derives a configurable
 set of access-controlled storage tiers from it — you set each tier's projection,
 the tool that exposes it, and who may read it, human or agent.
 
-Query it two ways:
+corpus answers three kinds of question, over a REST API and an MCP server:
 
-- **Semantic search** — vector similarity with optional metadata filters.
-- **Structured query** — analytical metadata queries that return every match
-  (say, every item with a given tag before a date) as plain SQL.
+- **Find by meaning** — semantic search: vector similarity with optional metadata
+  filters.
+- **Filter by fact** — structured query: exhaustive metadata queries that return
+  every match (a given tag, an account, a time window) as plain SQL.
+- **Ask what matters** — the enrichment priority signal: what needs an action,
+  what's due or time-sensitive, what you're waiting on, what's happening in a
+  domain like banking, health, or work.
 
-Both are served over a REST API and an MCP server.
+The full surface (search, structured query, whole-document fetch, stats) is for
+you and your local tools; the priority signal, free of raw content, is what a
+governed cloud agent reads on the sanitized tier.
 
 ## Where to go next
 
