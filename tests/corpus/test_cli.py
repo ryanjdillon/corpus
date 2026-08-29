@@ -61,6 +61,9 @@ def test_sync_command(monkeypatch):
     from corpus import sanitized_store
 
     class _CM:
+        def __init__(self, *a):
+            pass
+
         def __enter__(self):
             return self
 

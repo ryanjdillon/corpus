@@ -166,6 +166,10 @@
         {
           "path": "src/corpus/vault.py",
           "label": "raw vault"
+        },
+        {
+          "path": "src/corpus/store_base.py",
+          "label": "Store base class"
         }
       ]
     },
@@ -302,6 +306,10 @@
         {
           "path": "src/corpus/sanitized_store.py",
           "label": "ai_sanitized messages store"
+        },
+        {
+          "path": "src/corpus/tiers.py",
+          "label": "declarative tier registry"
         }
       ]
     }
