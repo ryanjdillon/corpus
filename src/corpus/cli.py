@@ -1,7 +1,6 @@
 """Command-line entrypoints for the corpus service.
 
-Subcommands: api, mcp, index, index-init, ingest, scan, enrich, sync,
-audit-secrets, export.
+Subcommands: api, mcp, index, ingest, scan, enrich, sync, audit-secrets, export.
 """
 
 from __future__ import annotations
@@ -52,18 +51,6 @@ def index() -> None:
     from .index_server import run
 
     run()
-
-
-@main.command(name="index-init")
-def index_init_cmd() -> None:
-    """Create or refresh the sanitized_documents view and grant it to corpus_index_ro.
-
-    Run as the schema owner (CORPUS_DATABASE_URL = corpus_app).
-    """
-    from .index_query import ensure_view
-
-    ensure_view()
-    click.echo("sanitized_documents view ensured")
 
 
 @main.command()

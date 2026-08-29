@@ -1,5 +1,5 @@
 """The corpus-index query layer builds sanitized, parameterized queries over the
-sanitized_documents view, and the view never projects raw content or secrets."""
+sanitized ``messages`` table, and never selects raw content, sender, or secrets."""
 
 from __future__ import annotations
 
@@ -85,18 +85,17 @@ def test_summary_returns_first_or_none(rows):
     assert index_query.summary("x", rows=rows) is None
 
 
-def test_view_ddl_exposes_signal_and_never_raw_content():
-    ddl = index_query.view_ddl()
+def test_queries_target_the_sanitized_table_and_stay_cloud_safe(rows):
+    index_query.action_items(rows=rows)
+    sql = rows.call_args.args[0]
+    assert ".messages" in sql  # the sanitized tier's table, not a raw table or view
 
-    # the priority signal the planner needs is present
-    for col in ("one_line", "requires_action", "time_sensitive", "importance", "waiting_on", "sensitivity_level"):
-        assert col in ddl
-    # the trust boundary: the view must never select the raw body or secret material
-    assert "content" not in ddl
-    assert "secret_audit" not in ddl and "secret_candidates" not in ddl
-    assert "embedding" not in ddl
-    # richer detail is gated by the sensitivity floor
-    assert "abstract" in ddl and "THEN NULL" in ddl
+    # the priority signal the planner needs is in the projection…
+    for col in ("one_line", "requires_action", "time_sensitive", "importance", "waiting_on"):
+        assert col in index_query._SELECT
+    # …and raw content, sender, secrets, and the embedding are never selected
+    for banned in ("content", "subject", "from_addr", "summary_embedding", "secret"):
+        assert banned not in index_query._SELECT
 
 
 def test_due_soon_and_by_domain_shapes(rows):
@@ -131,19 +130,10 @@ def test_query_layer_raises_without_index_url(monkeypatch):
 
 
 def test_rows_executes_against_the_index_dsn(monkeypatch, connect, conn, cursor):
-    monkeypatch.setattr(index_query.settings, "index_database_url", "postgresql://ro@db/ai")
+    monkeypatch.setattr(index_query.settings, "index_database_url", "postgresql://ro@db/ai_sanitized")
     cursor.fetchall.return_value = [{"id": "1"}]
 
     assert index_query._rows("SELECT 1", [], connect=connect) == [{"id": "1"}]
 
-    connect.assert_called_once_with("postgresql://ro@db/ai", row_factory=index_query.dict_row)
+    connect.assert_called_once_with("postgresql://ro@db/ai_sanitized", row_factory=index_query.dict_row)
     assert cursor.execute.call_args.args == ("SELECT 1", [])
-
-
-def test_ensure_view_creates_view_and_grants(connect, conn, cursor):
-    index_query.ensure_view("postgresql://owner@db/ai", connect=connect)
-
-    executed = " ".join(call.args[0] for call in cursor.execute.call_args_list)
-    assert "CREATE OR REPLACE VIEW" in executed
-    assert "GRANT SELECT" in executed and "corpus_index_ro" in executed
-    conn.commit.assert_called_once()

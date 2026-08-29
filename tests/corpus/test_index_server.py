@@ -75,3 +75,10 @@ def test_summary_and_stats_delegate(summary, stats):
     assert summary.call_args.args == ("gmail:personal::1",)
     index_server.index_stats()
     stats.assert_called_once_with()
+
+
+def test_run_serves_streamable_http(monkeypatch):
+    run = create_autospec(index_server.mcp.run)
+    monkeypatch.setattr(index_server.mcp, "run", run)
+    index_server.run()
+    run.assert_called_once_with(transport="streamable-http")

@@ -18,7 +18,6 @@ from corpus import (
     enrich_batch,
     enrich_store,
     export,
-    index_query,
     index_server,
     ingest,
     mcp_server,
@@ -88,14 +87,6 @@ def index_run(monkeypatch):
     """Autospec the corpus-index server ``run``."""
     mock = create_autospec(index_server.run)
     monkeypatch.setattr(index_server, "run", mock)
-    return mock
-
-
-@pytest.fixture
-def ensure_view(monkeypatch):
-    """Autospec ``index_query.ensure_view``."""
-    mock = create_autospec(index_query.ensure_view)
-    monkeypatch.setattr(index_query, "ensure_view", mock)
     return mock
 
 
@@ -203,13 +194,6 @@ def test_index_command(runner, configure, index_run):
     assert result.exit_code == 0, result.output
     assert configure.call_args.args == ("corpus-index",)
     index_run.assert_called_once()
-
-
-def test_index_init_command(runner, ensure_view):
-    result = runner.invoke(cli.main, ["index-init"])
-    assert result.exit_code == 0, result.output
-    ensure_view.assert_called_once()
-    assert "ensured" in result.output
 
 
 def test_sync_command(runner, configure, shutdown, sanitized_store_cls, run_sync):
