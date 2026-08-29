@@ -42,8 +42,10 @@ is implementation.
 | `export` | `export_archive(...)` | Materializes the stored corpus into the vault (bootstrap; idempotent). |
 | `ingest` | `ingest(source, batch_size) -> count` | Orchestration of the ingest line: fetch → classify → embed → write, with per-record resilience (see below). |
 | `search` | `semantic_search(...)`, `structured_query(...)`, `stats()` | Vector similarity (HNSW) and analytical SQL over the store. |
-| `api` / `mcp_server` | REST endpoints / MCP tools | Thin adapters over `search`. |
-| `cli` | `main` — `api · mcp · ingest · scan · enrich · audit-secrets · export` | Click entrypoints that configure telemetry and launch each server or batch pipeline. |
+| `api` / `mcp_server` | REST endpoints / MCP tools | Thin adapters over `search` — the **local (raw)** surface. |
+| `index_query` | `action_items`, `due_soon`, `waiting_on`, `by_domain`, `summary`, `stats`; `ensure_view`, `view_ddl` | The **sanitized** query layer: whitelisted, parameterized reads of the `sanitized_documents` view (documents ⨝ enrichments, safe columns only) as the restricted `corpus_index_ro` role — the trust gate for downgraded consumers. |
+| `index_server` | corpus-index MCP tools | The sanitized MCP surface (summaries + priority signal, never raw bodies or secrets) a cloud-model consumer may call. |
+| `cli` | `main` — `api · mcp · index · index-init · ingest · scan · enrich · audit-secrets · export` | Click entrypoints that configure telemetry and launch each server or batch pipeline. |
 | `enrichment` | `Enrichment` / `SecretAudit` structs, `json_schema()`, `SCHEMA_VERSION` | The msgspec enrichment + secret-audit schema; version fingerprints derived from the schema itself. |
 | `enricher` | `Enricher.enrich(text) -> Enrichment` | The guided-decoding LLM call that produces structured, secret-free enrichment. |
 | `secret_audit` | `audit_secrets(text, candidates) -> SecretAudit` | The LLM confirmation + severity pass over deterministic secret candidates. |

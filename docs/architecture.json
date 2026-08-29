@@ -9,56 +9,429 @@
       "url": "https://github.com/ryanjdillon/corpus",
       "revision": "a8d69efac0523b7ae37acd2e4771c36fe74fe47d"
     },
-    "viewBox": [1320, 700]
+    "viewBox": [
+      1320,
+      700
+    ]
   },
   "components": [
-    { "id": "cli", "type": "backend", "label": "cli", "sublabel": "entrypoint (click)", "pos": [40, 90], "size": [150, 60],
-      "sources": [{ "path": "src/corpus/cli.py", "label": "api|mcp|ingest|scan|enrich" }, { "path": "src/corpus/export.py", "label": "export → vault" }] },
-    { "id": "mail", "type": "external", "label": "Gmail / IMAP", "sublabel": "mail sources", "pos": [280, 90], "size": [150, 60] },
-    { "id": "adapters", "type": "backend", "label": "api / mcp_server", "sublabel": "REST + MCP tools", "pos": [1140, 90], "size": [150, 66],
-      "sources": [{ "path": "src/corpus/api.py" }, { "path": "src/corpus/mcp_server.py" }] },
-    { "id": "fetchers", "type": "backend", "label": "fetchers", "sublabel": "build_fetcher → Record", "pos": [280, 320], "size": [150, 64],
-      "sources": [{ "path": "src/corpus/fetchers/__init__.py", "label": "build_fetcher" }, { "path": "src/corpus/fetchers/gmail.py" }, { "path": "src/corpus/fetchers/imap.py" }] },
-    { "id": "classify", "type": "backend", "label": "classify", "sublabel": "label + confidence", "pos": [490, 320], "size": [140, 64],
-      "sources": [{ "path": "src/corpus/classify.py", "label": "classify(record)" }] },
-    { "id": "embeddings", "type": "backend", "label": "embeddings", "sublabel": "Embedder (HTTP)", "pos": [660, 320], "size": [150, 64],
-      "sources": [{ "path": "src/corpus/embeddings.py", "label": "Embedder.embed" }] },
-    { "id": "store", "type": "database", "label": "store", "sublabel": "Postgres / pgvector", "pos": [860, 318], "size": [160, 68],
-      "sources": [{ "path": "src/corpus/store.py", "label": "pgvector + iter_documents" }, { "path": "src/corpus/enrich_store.py", "label": "enrichments table" }, { "path": "src/corpus/vault.py", "label": "raw vault" }] },
-    { "id": "search", "type": "backend", "label": "search", "sublabel": "vector + SQL", "pos": [1140, 320], "size": [150, 64],
-      "sources": [{ "path": "src/corpus/search.py", "label": "semantic / structured" }] },
-    { "id": "enrichment", "type": "backend", "label": "enrichment", "sublabel": "enrich_batch · enricher", "pos": [740, 470], "size": [180, 68],
-      "sources": [{ "path": "src/corpus/enrich_batch.py", "label": "run_enrich / run_audit" }, { "path": "src/corpus/enricher.py" }, { "path": "src/corpus/secret_audit.py" }] },
-    { "id": "scanning", "type": "backend", "label": "secret scan", "sublabel": "scan · pii · leaks", "pos": [990, 470], "size": [180, 68],
-      "sources": [{ "path": "src/corpus/scan.py", "label": "detect / audit_candidates" }, { "path": "src/corpus/pii.py" }, { "path": "src/corpus/leaks.py" }] },
-    { "id": "gateway", "type": "external", "label": "OpenAI-compatible gateway", "sublabel": "/v1 embeddings + chat", "pos": [540, 600], "size": [210, 66] },
-    { "id": "otlp", "type": "external", "label": "OTLP collector", "sublabel": "traces + metrics", "pos": [40, 560], "size": [150, 60],
-      "sources": [{ "path": "src/corpus/telemetry.py", "label": "OTLP exporters" }] }
+    {
+      "id": "cli",
+      "type": "backend",
+      "label": "cli",
+      "sublabel": "entrypoint (click)",
+      "pos": [
+        40,
+        90
+      ],
+      "size": [
+        150,
+        60
+      ],
+      "sources": [
+        {
+          "path": "src/corpus/cli.py",
+          "label": "api|mcp|index|ingest|scan|enrich"
+        },
+        {
+          "path": "src/corpus/export.py",
+          "label": "export → vault"
+        }
+      ]
+    },
+    {
+      "id": "mail",
+      "type": "external",
+      "label": "Gmail / IMAP",
+      "sublabel": "mail sources",
+      "pos": [
+        280,
+        90
+      ],
+      "size": [
+        150,
+        60
+      ]
+    },
+    {
+      "id": "adapters",
+      "type": "backend",
+      "label": "api / mcp_server",
+      "sublabel": "REST + MCP tools",
+      "pos": [
+        1140,
+        90
+      ],
+      "size": [
+        150,
+        66
+      ],
+      "sources": [
+        {
+          "path": "src/corpus/api.py"
+        },
+        {
+          "path": "src/corpus/mcp_server.py"
+        }
+      ]
+    },
+    {
+      "id": "fetchers",
+      "type": "backend",
+      "label": "fetchers",
+      "sublabel": "build_fetcher → Record",
+      "pos": [
+        280,
+        320
+      ],
+      "size": [
+        150,
+        64
+      ],
+      "sources": [
+        {
+          "path": "src/corpus/fetchers/__init__.py",
+          "label": "build_fetcher"
+        },
+        {
+          "path": "src/corpus/fetchers/gmail.py"
+        },
+        {
+          "path": "src/corpus/fetchers/imap.py"
+        }
+      ]
+    },
+    {
+      "id": "classify",
+      "type": "backend",
+      "label": "classify",
+      "sublabel": "label + confidence",
+      "pos": [
+        490,
+        320
+      ],
+      "size": [
+        140,
+        64
+      ],
+      "sources": [
+        {
+          "path": "src/corpus/classify.py",
+          "label": "classify(record)"
+        }
+      ]
+    },
+    {
+      "id": "embeddings",
+      "type": "backend",
+      "label": "embeddings",
+      "sublabel": "Embedder (HTTP)",
+      "pos": [
+        660,
+        320
+      ],
+      "size": [
+        150,
+        64
+      ],
+      "sources": [
+        {
+          "path": "src/corpus/embeddings.py",
+          "label": "Embedder.embed"
+        }
+      ]
+    },
+    {
+      "id": "store",
+      "type": "database",
+      "label": "store",
+      "sublabel": "Postgres / pgvector",
+      "pos": [
+        860,
+        318
+      ],
+      "size": [
+        160,
+        68
+      ],
+      "sources": [
+        {
+          "path": "src/corpus/store.py",
+          "label": "pgvector + iter_documents"
+        },
+        {
+          "path": "src/corpus/enrich_store.py",
+          "label": "enrichments table"
+        },
+        {
+          "path": "src/corpus/vault.py",
+          "label": "raw vault"
+        }
+      ]
+    },
+    {
+      "id": "search",
+      "type": "backend",
+      "label": "search",
+      "sublabel": "vector + SQL",
+      "pos": [
+        1140,
+        320
+      ],
+      "size": [
+        150,
+        64
+      ],
+      "sources": [
+        {
+          "path": "src/corpus/search.py",
+          "label": "semantic / structured"
+        }
+      ]
+    },
+    {
+      "id": "enrichment",
+      "type": "backend",
+      "label": "enrichment",
+      "sublabel": "enrich_batch · enricher",
+      "pos": [
+        740,
+        470
+      ],
+      "size": [
+        180,
+        68
+      ],
+      "sources": [
+        {
+          "path": "src/corpus/enrich_batch.py",
+          "label": "run_enrich / run_audit"
+        },
+        {
+          "path": "src/corpus/enricher.py"
+        },
+        {
+          "path": "src/corpus/secret_audit.py"
+        }
+      ]
+    },
+    {
+      "id": "scanning",
+      "type": "backend",
+      "label": "secret scan",
+      "sublabel": "scan · pii · leaks",
+      "pos": [
+        990,
+        470
+      ],
+      "size": [
+        180,
+        68
+      ],
+      "sources": [
+        {
+          "path": "src/corpus/scan.py",
+          "label": "detect / audit_candidates"
+        },
+        {
+          "path": "src/corpus/pii.py"
+        },
+        {
+          "path": "src/corpus/leaks.py"
+        }
+      ]
+    },
+    {
+      "id": "gateway",
+      "type": "external",
+      "label": "OpenAI-compatible gateway",
+      "sublabel": "/v1 embeddings + chat",
+      "pos": [
+        540,
+        600
+      ],
+      "size": [
+        210,
+        66
+      ]
+    },
+    {
+      "id": "otlp",
+      "type": "external",
+      "label": "OTLP collector",
+      "sublabel": "traces + metrics",
+      "pos": [
+        40,
+        560
+      ],
+      "size": [
+        150,
+        60
+      ],
+      "sources": [
+        {
+          "path": "src/corpus/telemetry.py",
+          "label": "OTLP exporters"
+        }
+      ]
+    },
+    {
+      "id": "corpus-index",
+      "name": "corpus-index (sanitized)",
+      "kind": null,
+      "sources": [
+        {
+          "path": "src/corpus/index_query.py",
+          "label": "sanitized_documents view + whitelisted queries"
+        },
+        {
+          "path": "src/corpus/index_server.py",
+          "label": "sanitized MCP surface"
+        }
+      ]
+    }
   ],
   "connections": [
-    { "id": "mail-fetch", "from": "mail", "to": "fetchers", "label": "IMAP / Gmail API", "labelAt": [355, 232] },
-    { "id": "fetch-classify", "from": "fetchers", "to": "classify", "label": "Record", "labelDy": -46 },
-    { "id": "classify-embed", "from": "classify", "to": "embeddings", "label": "labeled Record", "labelDy": -46 },
-    { "id": "embed-store", "from": "embeddings", "to": "store", "label": "Document (vector + meta)", "variant": "emphasis", "labelDy": -46 },
-    { "id": "search-store", "from": "search", "to": "store", "label": "HNSW kNN + SQL", "labelDy": -46 },
-    { "id": "adapters-search", "from": "adapters", "to": "search", "label": "semantic_search / query", "labelAt": [1215, 240] },
-    { "id": "embed-gw", "from": "embeddings", "to": "gateway", "label": "POST /embeddings (batch)", "variant": "dashed", "fromSide": "bottom", "toSide": "top", "labelAt": [600, 470] },
-    { "id": "store-enrich", "from": "store", "to": "enrichment", "label": "documents (cursor)", "fromSide": "bottom", "toSide": "top", "labelAt": [852, 452] },
-    { "id": "store-scan", "from": "store", "to": "scanning", "label": "documents (cursor)", "fromSide": "bottom", "toSide": "top", "labelAt": [1082, 452] },
-    { "id": "enrich-gw", "from": "enrichment", "to": "gateway", "label": "POST /chat/completions (guided JSON)", "variant": "dashed", "fromSide": "bottom", "toSide": "top", "labelAt": [800, 585] },
-    { "id": "cli-ingest", "from": "cli", "to": "fetchers", "label": "ingest (batch)", "labelDy": -30 },
-    { "id": "cli-otlp", "from": "cli", "to": "otlp", "label": "OTLP spans + metrics", "variant": "dashed", "labelAt": [116, 352] }
+    {
+      "id": "mail-fetch",
+      "from": "mail",
+      "to": "fetchers",
+      "label": "IMAP / Gmail API",
+      "labelAt": [
+        355,
+        232
+      ]
+    },
+    {
+      "id": "fetch-classify",
+      "from": "fetchers",
+      "to": "classify",
+      "label": "Record",
+      "labelDy": -46
+    },
+    {
+      "id": "classify-embed",
+      "from": "classify",
+      "to": "embeddings",
+      "label": "labeled Record",
+      "labelDy": -46
+    },
+    {
+      "id": "embed-store",
+      "from": "embeddings",
+      "to": "store",
+      "label": "Document (vector + meta)",
+      "variant": "emphasis",
+      "labelDy": -46
+    },
+    {
+      "id": "search-store",
+      "from": "search",
+      "to": "store",
+      "label": "HNSW kNN + SQL",
+      "labelDy": -46
+    },
+    {
+      "id": "adapters-search",
+      "from": "adapters",
+      "to": "search",
+      "label": "semantic_search / query",
+      "labelAt": [
+        1215,
+        240
+      ]
+    },
+    {
+      "id": "embed-gw",
+      "from": "embeddings",
+      "to": "gateway",
+      "label": "POST /embeddings (batch)",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [
+        600,
+        470
+      ]
+    },
+    {
+      "id": "store-enrich",
+      "from": "store",
+      "to": "enrichment",
+      "label": "documents (cursor)",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [
+        852,
+        452
+      ]
+    },
+    {
+      "id": "store-scan",
+      "from": "store",
+      "to": "scanning",
+      "label": "documents (cursor)",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [
+        1082,
+        452
+      ]
+    },
+    {
+      "id": "enrich-gw",
+      "from": "enrichment",
+      "to": "gateway",
+      "label": "POST /chat/completions (guided JSON)",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [
+        800,
+        585
+      ]
+    },
+    {
+      "id": "cli-ingest",
+      "from": "cli",
+      "to": "fetchers",
+      "label": "ingest (batch)",
+      "labelDy": -30
+    },
+    {
+      "id": "cli-otlp",
+      "from": "cli",
+      "to": "otlp",
+      "label": "OTLP spans + metrics",
+      "variant": "dashed",
+      "labelAt": [
+        116,
+        352
+      ]
+    }
   ],
   "cards": [
-    { "dot": "emerald", "title": "Ingest line", "items": [
-      "fetchers (IMAP / Gmail API) → classify → embeddings → pgvector store; ingest.py orchestrates, resumable via the sync_state cursor"
-    ] },
-    { "dot": "cyan", "title": "Derived branches", "items": [
-      "enrichment reads documents, calls the model (guided JSON), upserts a derived enrichments table in the same store",
-      "secret scan = deterministic pii + leaks (Betterleaks); enrich_batch has the model confirm flagged candidates"
-    ] },
-    { "dot": "violet", "title": "Query + entrypoints", "items": [
-      "search (HNSW + SQL) behind the api / mcp_server adapters; cli runs api, mcp, ingest, scan, enrich, audit-secrets"
-    ] }
+    {
+      "dot": "emerald",
+      "title": "Ingest line",
+      "items": [
+        "fetchers (IMAP / Gmail API) → classify → embeddings → pgvector store; ingest.py orchestrates, resumable via the sync_state cursor"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "Derived branches",
+      "items": [
+        "enrichment reads documents, calls the model (guided JSON), upserts a derived enrichments table in the same store",
+        "secret scan = deterministic pii + leaks (Betterleaks); enrich_batch has the model confirm flagged candidates"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "Query + entrypoints",
+      "items": [
+        "search (HNSW + SQL) behind the api / mcp_server adapters; cli runs api, mcp, ingest, scan, enrich, audit-secrets"
+      ]
+    }
   ]
 }

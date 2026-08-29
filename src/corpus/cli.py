@@ -1,4 +1,5 @@
-"""Command-line entrypoints: api | mcp | ingest | scan | enrich | audit-secrets | export."""
+"""Command-line entrypoints: api | mcp | index | index-init | ingest | scan | enrich
+| audit-secrets | export."""
 
 from __future__ import annotations
 
@@ -34,6 +35,26 @@ def mcp() -> None:
     from .mcp_server import run
 
     run()
+
+
+@main.command()
+def index() -> None:
+    """Run the corpus-index MCP server: the sanitized surface a trust-downgraded
+    consumer (Hermes) queries — summaries + priority signal, never raw bodies."""
+    telemetry.configure("corpus-index")
+    from .index_server import run
+
+    run()
+
+
+@main.command(name="index-init")
+def index_init_cmd() -> None:
+    """Create/refresh the sanitized_documents view and grant it to corpus_index_ro.
+    Run as the schema owner (CORPUS_DATABASE_URL = corpus_app)."""
+    from .index_query import ensure_view
+
+    ensure_view()
+    click.echo("sanitized_documents view ensured")
 
 
 @main.command()

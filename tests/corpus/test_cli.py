@@ -32,6 +32,30 @@ def test_mcp_command(monkeypatch):
     assert calls == {"cfg": "corpus-mcp", "run": True}
 
 
+def test_index_command(monkeypatch):
+    from corpus import index_server
+
+    calls = {}
+    monkeypatch.setattr(cli.telemetry, "configure", lambda n: calls.__setitem__("cfg", n))
+    monkeypatch.setattr(index_server, "run", lambda: calls.__setitem__("run", True))
+
+    result = CliRunner().invoke(cli.main, ["index"])
+    assert result.exit_code == 0, result.output
+    assert calls == {"cfg": "corpus-index", "run": True}
+
+
+def test_index_init_command(monkeypatch):
+    from corpus import index_query
+
+    calls = {}
+    monkeypatch.setattr(index_query, "ensure_view", lambda: calls.__setitem__("ensured", True))
+
+    result = CliRunner().invoke(cli.main, ["index-init"])
+    assert result.exit_code == 0, result.output
+    assert calls == {"ensured": True}
+    assert "ensured" in result.output
+
+
 def test_ingest_command(monkeypatch):
     import corpus.ingest as ingest_mod
 
