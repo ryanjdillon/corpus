@@ -56,6 +56,29 @@ def test_index_init_command(monkeypatch):
     assert "ensured" in result.output
 
 
+def test_sync_command(monkeypatch):
+    from corpus import sanitize as sanitize_mod
+    from corpus import sanitized_store
+
+    class _CM:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    calls = {}
+    monkeypatch.setattr(cli.telemetry, "configure", lambda n: calls.__setitem__("cfg", n))
+    monkeypatch.setattr(cli.telemetry, "shutdown", lambda: None)
+    monkeypatch.setattr(sanitized_store, "SanitizedStore", _CM)
+    monkeypatch.setattr(sanitize_mod, "run_sync", lambda store, **k: {"synced": 3, "skipped": 1, "scanned": 4})
+
+    result = CliRunner().invoke(cli.main, ["sync"])
+    assert result.exit_code == 0, result.output
+    assert calls["cfg"] == "corpus-sync"
+    assert "synced 3" in result.output
+
+
 def test_ingest_command(monkeypatch):
     import corpus.ingest as ingest_mod
 

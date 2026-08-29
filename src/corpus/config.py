@@ -51,9 +51,13 @@ class Settings(BaseSettings):
     mcp_port: int = 9000
 
     # corpus-index: the sanitized query surface. Connects as a restricted DB role
-    # (corpus_index_ro) that can read only the sanitized_documents view, never a
-    # raw body — the trust gate for cloud-model consumers. Empty => index disabled.
+    # (corpus_index_ro) that reads only the sanitized DB, never a raw body — the
+    # trust gate for cloud-model consumers. Empty => index disabled.
     index_database_url: str = ""
+    # The sanitized DB the one-way sync WRITES to (corpus_app @ ai_sanitized). The
+    # projection drops raw content/subject/sender; only cloud-safe fields land here.
+    # Empty => sync disabled.
+    sanitized_database_url: str = ""
     # sensitivity_level at/above which richer summary detail (abstract, key_points)
     # is withheld from the sanitized surface. one_line + classification still shown.
     index_sensitivity_gate: str = "high"
