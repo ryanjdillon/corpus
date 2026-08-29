@@ -1,5 +1,8 @@
-"""Ingestion pipeline: a length-capping unit test, plus integration tests
-against real Postgres with a stubbed fetcher (no mail server needed)."""
+"""Ingestion pipeline tests.
+
+A length-capping unit test plus Postgres-backed integration tests driven by an
+injected, spec-bound fetcher (no mail server needed).
+"""
 
 from __future__ import annotations
 
@@ -8,29 +11,30 @@ import json
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
+from unittest.mock import create_autospec
 
 import pytest
 
-from corpus import ingest as ingest_mod
-from corpus.ingest import _MAX_EMBED_CHARS, _embed_text
+from corpus.fetchers import Fetcher
+from corpus.ingest import _MAX_EMBED_CHARS, _embed_text, ingest
 from corpus.models import Record
 
 _TEST_DIM = 16
 _POISON = "POISON"
 
 
-class _FakeFetcher:
-    source = "imap:test"
+@pytest.fixture
+def make_fetcher():
+    """Build a spec-bound Fetcher yielding fixed records and a fixed next cursor."""
 
-    def __init__(self, records, cursor="1:2"):
-        self._records = records
-        self._cursor = cursor
+    def _make(records: list[Record], cursor: str | None = "1:2") -> Fetcher:
+        fetcher = create_autospec(Fetcher, instance=True)
+        fetcher.source = "imap:test"
+        fetcher.fetch.side_effect = lambda _cursor: iter(records)
+        fetcher.next_cursor.return_value = cursor
+        return fetcher
 
-    def fetch(self, cursor):
-        yield from self._records
-
-    def next_cursor(self):
-        return self._cursor
+    return _make
 
 
 def _records(n: int, bad_index: int | None = None) -> list[Record]:
@@ -124,11 +128,10 @@ def rejecting_embeddings(monkeypatch):
 
 
 @pytest.mark.integration
-def test_ingest_writes_and_advances_cursor(pg, fake_embeddings, monkeypatch):
-    fetcher = _FakeFetcher(_records(3), cursor="1:3")
-    monkeypatch.setattr(ingest_mod, "build_fetcher", lambda source: fetcher)
+def test_ingest_writes_and_advances_cursor(pg, fake_embeddings, make_fetcher):
+    fetcher = make_fetcher(_records(3), cursor="1:3")
 
-    count = ingest_mod.ingest("imap:test", batch_size=2)
+    count = ingest("imap:test", batch_size=2, fetcher=fetcher)
     assert count == 3
 
     from corpus.store import get_cursor, get_document_store
@@ -138,10 +141,9 @@ def test_ingest_writes_and_advances_cursor(pg, fake_embeddings, monkeypatch):
 
 
 @pytest.mark.integration
-def test_ingest_applies_classification(pg, fake_embeddings, monkeypatch):
-    fetcher = _FakeFetcher(_records(1), cursor="1:1")
-    monkeypatch.setattr(ingest_mod, "build_fetcher", lambda source: fetcher)
-    ingest_mod.ingest("imap:test")
+def test_ingest_applies_classification(pg, fake_embeddings, make_fetcher):
+    fetcher = make_fetcher(_records(1), cursor="1:1")
+    ingest("imap:test", fetcher=fetcher)
 
     from corpus.store import get_document_store
 
@@ -150,12 +152,10 @@ def test_ingest_applies_classification(pg, fake_embeddings, monkeypatch):
 
 
 @pytest.mark.integration
-def test_ingest_is_idempotent(pg, fake_embeddings, monkeypatch):
-    monkeypatch.setattr(
-        ingest_mod, "build_fetcher", lambda source: _FakeFetcher(_records(2), "1:2")
-    )
-    ingest_mod.ingest("imap:test")
-    ingest_mod.ingest("imap:test")  # same ids overwrite, not duplicate
+def test_ingest_is_idempotent(pg, fake_embeddings, make_fetcher):
+    fetcher = make_fetcher(_records(2), cursor="1:2")
+    ingest("imap:test", fetcher=fetcher)
+    ingest("imap:test", fetcher=fetcher)  # same ids overwrite, not duplicate
 
     from corpus.store import get_document_store
 
@@ -163,13 +163,12 @@ def test_ingest_is_idempotent(pg, fake_embeddings, monkeypatch):
 
 
 @pytest.mark.integration
-def test_ingest_skips_bad_record_and_stores_rest(pg, rejecting_embeddings, monkeypatch):
+def test_ingest_skips_bad_record_and_stores_rest(pg, rejecting_embeddings, make_fetcher):
     # Record #2 is poisoned: the embedder 400s any batch containing it. The good
     # records must still be stored; only the offending one is skipped.
-    fetcher = _FakeFetcher(_records(4, bad_index=2), cursor="1:4")
-    monkeypatch.setattr(ingest_mod, "build_fetcher", lambda source: fetcher)
+    fetcher = make_fetcher(_records(4, bad_index=2), cursor="1:4")
 
-    count = ingest_mod.ingest("imap:test", batch_size=4)
+    count = ingest("imap:test", batch_size=4, fetcher=fetcher)
     assert count == 3
 
     from corpus.store import get_document_store
@@ -208,16 +207,14 @@ def _serve_status(status, monkeypatch):
 
 
 @pytest.mark.integration
-def test_ingest_aborts_when_embedder_unavailable(pg, monkeypatch):
+def test_ingest_aborts_when_embedder_unavailable(pg, monkeypatch, make_fetcher):
     from corpus.embeddings import EmbedUnavailableError
 
     server = _serve_status(503, monkeypatch)  # 5xx after retries -> unavailable
     try:
-        monkeypatch.setattr(
-            ingest_mod, "build_fetcher", lambda source: _FakeFetcher(_records(4), "1:4")
-        )
+        fetcher = make_fetcher(_records(4), cursor="1:4")
         with pytest.raises(EmbedUnavailableError):
-            ingest_mod.ingest("imap:test", batch_size=4)
+            ingest("imap:test", batch_size=4, fetcher=fetcher)
         from corpus.store import get_document_store
 
         assert get_document_store().count_documents() == 0  # aborted, nothing stored
@@ -227,14 +224,12 @@ def test_ingest_aborts_when_embedder_unavailable(pg, monkeypatch):
 
 
 @pytest.mark.integration
-def test_ingest_aborts_after_too_many_consecutive_skips(pg, monkeypatch):
+def test_ingest_aborts_after_too_many_consecutive_skips(pg, monkeypatch, make_fetcher):
     server = _serve_status(400, monkeypatch)  # every record rejected as bad input
     try:
-        monkeypatch.setattr(
-            ingest_mod, "build_fetcher", lambda source: _FakeFetcher(_records(30), "1:30")
-        )
+        fetcher = make_fetcher(_records(30), cursor="1:30")
         with pytest.raises(RuntimeError):  # the consecutive-skip guard trips
-            ingest_mod.ingest("imap:test", batch_size=8)
+            ingest("imap:test", batch_size=8, fetcher=fetcher)
     finally:
         server.shutdown()
         server.server_close()

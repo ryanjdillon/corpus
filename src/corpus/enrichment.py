@@ -1,5 +1,6 @@
-"""The v1 enrichment schema: the structured metadata a local model produces for
-each message, expressed as ``msgspec`` structs.
+"""Define the v1 enrichment schema as ``msgspec`` structs.
+
+The structured metadata a local model produces for each message.
 
 The struct set is the source of truth. ``json_schema()`` renders it to a JSON
 Schema, which is what vLLM guided decoding constrains generation against, so the
@@ -53,6 +54,8 @@ class Domain(enum.Enum):
 
 
 class TransactionalType(enum.Enum):
+    """Specific kind of a transactional message."""
+
     receipt = "receipt"
     order_confirmation = "order_confirmation"
     shipping = "shipping"
@@ -68,6 +71,8 @@ class TransactionalType(enum.Enum):
 
 
 class ActionType(enum.Enum):
+    """Action the message asks the reader to take."""
+
     reply = "reply"
     pay = "pay"
     schedule = "schedule"
@@ -78,18 +83,24 @@ class ActionType(enum.Enum):
 
 
 class WaitingOn(enum.Enum):
+    """Who a pending action is waiting on."""
+
     me = "me"
     them = "them"
     none = "none"
 
 
 class Importance(enum.Enum):
+    """Relative importance of the message."""
+
     high = "high"
     medium = "medium"
     low = "low"
 
 
 class SensitivityLevel(enum.Enum):
+    """How sensitive the message content is."""
+
     none = "none"
     low = "low"
     medium = "medium"
@@ -97,6 +108,8 @@ class SensitivityLevel(enum.Enum):
 
 
 class Disposition(enum.Enum):
+    """Suggested triage disposition for the message."""
+
     keep = "keep"
     archive = "archive"
     trash = "trash"
@@ -104,24 +117,32 @@ class Disposition(enum.Enum):
 
 
 class Person(msgspec.Struct):
+    """A person referenced by the message."""
+
     name: str
     role: str | None = None  # best-effort: "classmate", "colleague", "vendor"
 
 
 class Appointment(msgspec.Struct):
+    """An appointment or event referenced by the message."""
+
     who: str | None = None
     where: str | None = None
     when: str | None = None  # ISO if parseable, else natural ("next Tue 3pm")
 
 
 class Money(msgspec.Struct):
+    """A monetary amount with its currency."""
+
     amount: float
     currency: str
 
 
 class Enrichment(msgspec.Struct):
-    """Per-message structured metadata. Verbose by design so the index can answer
-    many queries without re-enrichment."""
+    """Per-message structured metadata.
+
+    Verbose by design so the index can answer many queries without re-enrichment.
+    """
 
     # --- summary (free text, secret-free) ---
     one_line: str  # <=120 chars
@@ -173,7 +194,9 @@ class SecretSeverity(enum.Enum):
 
 class ConfirmedSecret(msgspec.Struct):
     """One secret the LLM confirmed (or rejected) among the deterministic candidates.
-    ``note`` describes it in words and MUST NOT contain the value itself."""
+
+    ``note`` describes it in words and MUST NOT contain the value itself.
+    """
 
     type: str
     severity: SecretSeverity
@@ -181,8 +204,10 @@ class ConfirmedSecret(msgspec.Struct):
 
 
 class SecretAudit(msgspec.Struct):
-    """LLM verdict over a message's deterministic secret candidates: the precision
-    layer that separates a real disclosure from an incidental match."""
+    """LLM verdict over a message's deterministic secret candidates.
+
+    The precision layer that separates a real disclosure from an incidental match.
+    """
 
     contains_secret: bool
     findings: list[ConfirmedSecret] = msgspec.field(default_factory=list)
@@ -208,8 +233,10 @@ _REQUIRED_AXES = (
 
 
 def json_schema() -> dict:
-    """Render the Enrichment struct to a JSON Schema for guided decoding, with the
-    classification axes forced required (see ``_REQUIRED_AXES``)."""
+    """Render the Enrichment struct to a JSON Schema for guided decoding.
+
+    The classification axes are forced required (see ``_REQUIRED_AXES``).
+    """
     schema = msgspec.json.schema(Enrichment)
     target = schema["$defs"]["Enrichment"] if "$defs" in schema else schema
     target["required"] = sorted(set(target.get("required", ())) | set(_REQUIRED_AXES))
@@ -228,8 +255,10 @@ SCHEMA_VERSION = hashlib.sha1(msgspec.json.encode(json_schema())).hexdigest()[:1
 
 
 def decode(data: bytes | str) -> Enrichment:
-    """Parse a model's JSON output into an Enrichment (raises on malformed JSON or
-    a value outside the schema)."""
+    """Parse a model's JSON output into an ``Enrichment``.
+
+    Raise on malformed JSON or a value outside the schema.
+    """
     if isinstance(data, str):
         data = data.encode()
     return msgspec.json.decode(data, type=Enrichment)

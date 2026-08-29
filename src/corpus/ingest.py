@@ -10,7 +10,7 @@ from haystack.document_stores.types import DuplicatePolicy
 from .classify import classify
 from .config import settings
 from .embeddings import Embedder, EmbedUnavailableError
-from .fetchers import build_fetcher
+from .fetchers import Fetcher, build_fetcher
 from .models import Record
 from .store import existing_ids, get_cursor, get_document_store, set_cursor, to_document
 from .telemetry import documents_counter, embed_batch_size, embed_duration
@@ -45,8 +45,13 @@ def _embed_text(record: Record) -> str:
     return f"{record.subject or ''}\n\n{_chunk(record.body_text)[0]}"[:_MAX_EMBED_CHARS]
 
 
-def ingest(source: str, batch_size: int = 50) -> int:
-    fetcher = build_fetcher(source)
+def ingest(source: str, batch_size: int = 50, *, fetcher: Fetcher | None = None) -> int:
+    """Ingest one source: fetch, classify, embed, and upsert its records.
+
+    Returns the number of documents written. `fetcher` defaults to the fetcher
+    built for `source`; inject one to drive ingestion from an alternate source.
+    """
+    fetcher = build_fetcher(source) if fetcher is None else fetcher
     store = get_document_store()
     embedder = Embedder()
     cursor = get_cursor(source)
@@ -75,11 +80,14 @@ def ingest(source: str, batch_size: int = 50) -> int:
         log.info("ingest %s: wrote %d (%d total)", source, len(docs), total)
 
     def _process(records: list[Record]) -> None:
-        """Embed + store a group. On a record-level error (bad input, unparseable
-        content, a value the store rejects), bisect to isolate and skip only the
-        offending record(s) so one bad message can't abort the whole backfill. A
-        genuinely unavailable embedder aborts immediately; too many consecutive
-        skips (another systemic failure) also aborts. The run is resumable."""
+        """Embed and store a group, isolating record-level failures by bisection.
+
+        On a record-level error (bad input, unparseable content, a value the
+        store rejects), bisect to isolate and skip only the offending record(s)
+        so one bad message can't abort the whole backfill. A genuinely
+        unavailable embedder aborts immediately; too many consecutive skips
+        (another systemic failure) also aborts. The run is resumable.
+        """
         nonlocal skipped, consecutive_skips
         if not records:
             return

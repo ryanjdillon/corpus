@@ -1,8 +1,9 @@
-"""Storage: a Haystack PgvectorDocumentStore for the documents/embeddings, plus
-small direct-SQL helpers for the per-source sync cursor.
+"""Store documents and embeddings, with helpers for the per-source sync cursor.
 
-The document table lives in a dedicated schema (settings.db_schema); the DB role
-owns that schema, so Haystack can create and manage its table there.
+Documents and embeddings live in a Haystack PgvectorDocumentStore; small
+direct-SQL helpers track the per-source sync cursor. The document table lives in
+a dedicated schema (settings.db_schema); the DB role owns that schema, so
+Haystack can create and manage its table there.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ def _dsn() -> str:
 
 
 def get_document_store() -> PgvectorDocumentStore:
+    """Build the Haystack PgvectorDocumentStore for the corpus documents."""
     return PgvectorDocumentStore(
         connection_string=Secret.from_token(_dsn()),
         schema_name=settings.db_schema,
@@ -34,8 +36,10 @@ def get_document_store() -> PgvectorDocumentStore:
 
 
 def _strip_nul(value):
-    """Postgres text/jsonb cannot store NUL (\\u0000); strip it from any string,
-    recursing into lists and dicts so no metadata value can break a write."""
+    """Strip NUL (\\u0000) from any string, recursing into lists and dicts.
+
+    Postgres text/jsonb cannot store NUL, so no metadata value can break a write.
+    """
     if isinstance(value, str):
         return value.replace("\x00", "")
     if isinstance(value, list):
@@ -76,8 +80,10 @@ def to_document(record, classification, embedding) -> Document:
 
 
 def existing_ids(source: str) -> set[str]:
-    """Document ids already stored for a source, so ingestion can resume after a
-    partial run instead of re-embedding everything."""
+    """Return document ids already stored for a source.
+
+    Lets ingestion resume after a partial run instead of re-embedding everything.
+    """
     table = f"{settings.db_schema}.{settings.documents_table}"
     with psycopg.connect(_dsn()) as conn, conn.cursor() as cur:
         cur.execute("SELECT to_regclass(%s)", (table,))
@@ -90,9 +96,10 @@ def existing_ids(source: str) -> set[str]:
 def iter_documents(
     source: str | None = None, account: str | None = None
 ) -> Iterator[tuple[str, str, dict]]:
-    """Stream (id, content, meta) for stored documents, optionally filtered by
-    source/account. Uses a server-side cursor so the whole archive need not be held
-    in memory."""
+    """Stream (id, content, meta) for stored documents, filtered by source/account.
+
+    Uses a server-side cursor so the whole archive need not be held in memory.
+    """
     table = f"{settings.db_schema}.{settings.documents_table}"
     clauses: list[str] = []
     params: list[str] = []
@@ -121,6 +128,7 @@ def iter_documents(
 
 
 def get_cursor(source: str) -> str | None:
+    """Return the stored sync cursor for a source, or None if unset."""
     with psycopg.connect(_dsn()) as conn, conn.cursor() as cur:
         cur.execute(
             f"SELECT cursor FROM {settings.db_schema}.sync_state WHERE source = %s",
@@ -131,6 +139,7 @@ def get_cursor(source: str) -> str | None:
 
 
 def set_cursor(source: str, cursor: str) -> None:
+    """Upsert the sync cursor for a source."""
     with psycopg.connect(_dsn()) as conn, conn.cursor() as cur:
         cur.execute(
             f"""

@@ -67,6 +67,7 @@ class ScanResult:
 
     @property
     def has_secrets(self) -> bool:
+        """Return True when any secret type was detected."""
         return bool(self.secret_types)
 
 
@@ -83,8 +84,11 @@ def _context_near(text: str, start: int, end: int, words: list[str]) -> bool:
 
 
 def scan(text: str | None) -> ScanResult:
-    """Detect identity/financial numbers in ``text``, returning types + per-type
-    counts. The matched values are never retained."""
+    """Detect identity/financial numbers in ``text``.
+
+    Returns the matched types and per-type counts; the matched values are never
+    retained.
+    """
     if not text:
         return ScanResult()
     counts: dict[str, int] = {}

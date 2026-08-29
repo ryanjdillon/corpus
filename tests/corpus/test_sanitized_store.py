@@ -1,71 +1,64 @@
-"""SanitizedStore lazily creates the messages table and upserts projected rows,
-formatting the summary embedding as a pgvector literal. psycopg is mocked."""
+"""Cover SanitizedStore table creation, projected-row upserts, and vector literals.
+
+The psycopg boundary is spec-mocked off psycopg.Connection / psycopg.Cursor and
+injected at ``store_base.psycopg.connect``; the store's own ``dsn`` argument carries
+the connection string.
+"""
 
 from __future__ import annotations
 
+from unittest.mock import create_autospec
+
+import psycopg
 import pytest
 
 from corpus import sanitized_store, store_base
 
-
-class _Cur:
-    def __init__(self, result=None):
-        self.result = result or []
-        self.executed: list[tuple] = []
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        return False
-
-    def execute(self, sql, params=None):
-        self.executed.append((sql, params))
-
-    def fetchall(self):
-        return self.result
+DSN = "postgresql://x@db/ai_sanitized"
 
 
-class _Conn:
-    def __init__(self, result=None):
-        self._cur = _Cur(result)
-        self.commits = 0
-
-    def cursor(self, name=None):
-        return self._cur
-
-    def commit(self):
-        self.commits += 1
-
-    def close(self):
-        pass
+@pytest.fixture
+def cursor():
+    cur = create_autospec(psycopg.Cursor, instance=True)
+    cur.fetchall.return_value = []
+    return cur
 
 
-def _store(monkeypatch, result=None):
-    monkeypatch.setattr(sanitized_store.settings, "sanitized_database_url", "postgresql://x@db/ai_sanitized")
-    conn = _Conn(result)
+@pytest.fixture
+def conn(cursor):
+    c = create_autospec(psycopg.Connection, instance=True)
+    # create_autospec does not spec method return values, so wire the
+    # ``with conn.cursor() as cur`` context manager to the spec-bound cursor.
+    c.cursor.return_value.__enter__.return_value = cursor
+    return c
+
+
+@pytest.fixture
+def store(monkeypatch, conn):
     monkeypatch.setattr(store_base.psycopg, "connect", lambda *a, **k: conn)
-    return sanitized_store.SanitizedStore(), conn
+    return sanitized_store.SanitizedStore(dsn=DSN)
 
 
-def test_creates_table_and_builds_upsert(monkeypatch):
-    store, conn = _store(monkeypatch)
-    assert any("CREATE TABLE" in sql and "messages" in sql for sql, _ in conn._cur.executed)
-    assert "ON CONFLICT (id)" in store._sql and "summary_embedding = EXCLUDED" in store._sql
+def test_creates_table_and_builds_upsert(store, cursor):
+    assert any(
+        "CREATE TABLE" in call.args[0] and "messages" in call.args[0]
+        for call in cursor.execute.call_args_list
+    )
+    assert "ON CONFLICT (id)" in store._sql
+    assert "summary_embedding = EXCLUDED" in store._sql
 
 
-def test_save_message_formats_vector_literal(monkeypatch):
-    store, conn = _store(monkeypatch)
-    conn._cur.executed.clear()
+def test_save_message_formats_vector_literal(store, cursor):
+    cursor.execute.reset_mock()
     store.save_message({"id": "d1", "one_line": "x"}, [0.1, 0.2])
-    sql, params = conn._cur.executed[0]
+    sql, params = cursor.execute.call_args.args
     assert "INSERT INTO" in sql and "%s::vector" in sql
     assert params[0] == "d1"          # first projection column
     assert params[-1] == "[0.100000,0.200000]"  # the vector literal, last param
 
 
-def test_synced_versions_maps_id_to_enriched_at(monkeypatch):
-    store, _ = _store(monkeypatch, result=[("d1", "v1"), ("d2", "v2")])
+def test_synced_versions_maps_id_to_enriched_at(store, cursor):
+    cursor.fetchall.return_value = [("d1", "v1"), ("d2", "v2")]
     assert store.synced_versions() == {"d1": "v1", "d2": "v2"}
 
 
@@ -75,13 +68,7 @@ def test_requires_dsn(monkeypatch):
         sanitized_store.SanitizedStore()
 
 
-def test_context_manager_closes(monkeypatch):
-    monkeypatch.setattr(sanitized_store.settings, "sanitized_database_url", "postgresql://x@db/ai_sanitized")
-    conn = _Conn()
-    closed = {"v": False}
-    conn.close = lambda: closed.__setitem__("v", True)
-    monkeypatch.setattr(store_base.psycopg, "connect", lambda *a, **k: conn)
-
-    with sanitized_store.SanitizedStore() as s:
+def test_context_manager_closes(store, conn):
+    with store as s:
         assert s is not None
-    assert closed["v"] is True
+    conn.close.assert_called_once()

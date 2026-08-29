@@ -32,10 +32,13 @@ class Record(BaseModel):
     body_text: str = ""
 
     def key(self) -> str:
+        """Return the globally-unique key "source::source_uid"."""
         return f"{self.source}::{self.source_uid}"
 
 
 class Classification(BaseModel):
+    """A classifier's verdict for a record: label, confidence, and signals."""
+
     label: str
     confidence: float
     signals: dict[str, object] = Field(default_factory=dict)

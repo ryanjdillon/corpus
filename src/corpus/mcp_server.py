@@ -107,4 +107,5 @@ def corpus_stats() -> dict[str, Any]:
 
 
 def run() -> None:
+    """Serve the MCP tools over streamable-HTTP."""
     mcp.run(transport="streamable-http")

@@ -1,6 +1,6 @@
-"""Batch enrichment client: turns one message body into a structured
-``Enrichment`` by asking a local model, with the schema enforced by guided
-decoding so the response always parses.
+"""Turn one message body into a structured ``Enrichment`` via a local model.
+
+The schema is enforced by guided decoding so the response always parses.
 
 The model runs against attacker-controlled email, so the system frame is fixed by
 us and treats the body as untrusted data (describe, never obey) and forbids
@@ -51,16 +51,22 @@ _SYSTEM = (
 
 
 class EnrichError(Exception):
-    """The endpoint rejected the input (4xx) or returned unparseable output — a
-    per-record failure the caller can skip rather than a systemic outage."""
+    """Raise when input is rejected (4xx) or output is unparseable.
+
+    A per-record failure the caller can skip rather than a systemic outage.
+    """
 
 
 class EnrichUnavailableError(Exception):
-    """The endpoint was unavailable (5xx / transport error) after all retries — a
-    systemic failure; the caller should abort and resume later."""
+    """Raise when the endpoint is unavailable (5xx / transport error) after all retries.
+
+    A systemic failure; the caller should abort and resume later.
+    """
 
 
 class Enricher:
+    """Enrich message text into a structured ``Enrichment`` using a local model."""
+
     def __init__(self, model: str | None = None, client: httpx.Client | None = None) -> None:
         self.model = model or settings.enrich_model
         if not self.model:
@@ -73,6 +79,7 @@ class Enricher:
         )
 
     def enrich(self, text: str) -> Enrichment:
+        """Return the ``Enrichment`` for ``text``, retrying transient endpoint failures."""
         payload = {
             "model": self.model,
             "temperature": 0,
@@ -110,4 +117,5 @@ class Enricher:
         raise EnrichUnavailableError(str(last)) from last
 
     def close(self) -> None:
+        """Close the underlying HTTP client."""
         self._client.close()

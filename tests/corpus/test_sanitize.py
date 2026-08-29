@@ -1,10 +1,13 @@
-"""The projection drops raw email and gates summaries by sensitivity; the sync
-loop projects, embeds, and upserts, skipping unchanged rows."""
+"""Cover the projection (raw-email drop, sensitivity gating) and the sync loop.
+
+The sync loop projects, embeds, and upserts, skipping rows unchanged since last sync.
+"""
 
 from __future__ import annotations
 
 from unittest.mock import create_autospec
 
+import psycopg
 import pytest
 
 from corpus import sanitize
@@ -111,52 +114,27 @@ def test_run_sync_force_reprojects(store, embedder, documents):
 
 def test_run_sync_default_embedder(monkeypatch, store, documents):
     # exercises the `embedder or Embedder()` default without a real gateway call
-    monkeypatch.setattr(sanitize, "Embedder", lambda: type("E", (), {"embed": lambda self, t: [[0.1] for _ in t]})())
+    default = create_autospec(Embedder, instance=True)
+    default.embed.side_effect = lambda texts: [[0.1] for _ in texts]
+    monkeypatch.setattr(sanitize, "Embedder", lambda: default)
     r = sanitize.run_sync(store, documents=documents(), read_dsn="x")
     assert r == {"scanned": 0, "synced": 0, "skipped": 0}
 
 
-class _ScanCur:
-    def __init__(self, rows):
-        self._rows = rows
-        self.itersize = 0
-        self.executed: list[tuple] = []
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        return False
-
-    def execute(self, sql, params):
-        self.executed.append((sql, params))
-
-    def __iter__(self):
-        return iter(self._rows)
-
-
-class _ScanConn:
-    def __init__(self, rows):
-        self.cur = _ScanCur(rows)
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        return False
-
-    def cursor(self, name=None):
-        return self.cur
-
-
 def test_iter_enriched_joins_documents_and_enrichments(monkeypatch):
     rows = [("d1", {"source": "gmail:personal"}, {"one_line": "x"}, "v1")]
-    conn = _ScanConn(rows)
+    cur = create_autospec(psycopg.Cursor, instance=True)
+    cur.__iter__.return_value = iter(rows)
+    conn = create_autospec(psycopg.Connection, instance=True)
+    # create_autospec does not spec method return values, so wire the two
+    # ``with`` context managers (connect() -> conn, conn.cursor(name=...) -> cur).
+    conn.__enter__.return_value = conn
+    conn.cursor.return_value.__enter__.return_value = cur
     monkeypatch.setattr(sanitize.psycopg, "connect", lambda dsn: conn)
 
     out = list(sanitize.iter_enriched("dsn", source="gmail:personal"))
 
     assert out == rows
-    sql, params = conn.cur.executed[0]
+    sql, params = cur.execute.call_args.args
     assert "JOIN" in sql and "enrichments" in sql and "e.enrichment IS NOT NULL" in sql
     assert params == ["gmail:personal"]

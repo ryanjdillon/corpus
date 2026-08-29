@@ -42,6 +42,8 @@ def _env(name: str, key: str, default: str = "") -> str:
 
 
 class ImapFetcher:
+    """Catalog an IMAP account, tracking incremental sync per folder by UID."""
+
     def __init__(self, name: str) -> None:
         self.name = name
         self.source = f"imap:{name}"
@@ -62,6 +64,7 @@ class ImapFetcher:
         self._next_cursor: str | None = None
 
     def fetch(self, cursor: str | None) -> Iterator[Record]:
+        """Yield records newer than the cursor across the account's folders."""
         state = self._load_cursor(cursor)
         new_state = dict(state)
         with IMAPClient(self.host, port=self.port, ssl=self.ssl) as client:
@@ -95,6 +98,7 @@ class ImapFetcher:
         self._next_cursor = json.dumps(new_state, sort_keys=True)
 
     def next_cursor(self) -> str | None:
+        """Return the cursor to persist after a successful fetch pass."""
         return self._next_cursor
 
     def _resolve_folders(self, client: IMAPClient) -> list[str]:

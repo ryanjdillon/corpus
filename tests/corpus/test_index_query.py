@@ -3,27 +3,51 @@ sanitized_documents view, and the view never projects raw content or secrets."""
 
 from __future__ import annotations
 
+from unittest.mock import create_autospec
+
+import psycopg
 import pytest
 
 from corpus import index_query
 
 
 @pytest.fixture
-def capture():
-    """An injectable `rows` that records (sql, params) and returns a canned row."""
-    calls: list[tuple[str, list]] = []
-
-    def rows(sql, params):
-        calls.append((sql, params))
-        return [{"id": "gmail:personal::1", "one_line": "x"}]
-
-    rows.calls = calls
-    return rows
+def rows():
+    """A spec-bound ``_rows`` double returning one canned sanitized row."""
+    m = create_autospec(index_query._rows)
+    m.return_value = [{"id": "gmail:personal::1", "one_line": "x"}]
+    return m
 
 
-def test_action_items_filters_and_orders(capture):
-    index_query.action_items(limit=10, domain="banking", importance="high", rows=capture)
-    sql, params = capture.calls[0]
+@pytest.fixture
+def cursor():
+    """A spec-bound psycopg cursor that behaves as its own context manager."""
+    cur = create_autospec(psycopg.Cursor, instance=True)
+    cur.__enter__.return_value = cur
+    cur.fetchall.return_value = []
+    return cur
+
+
+@pytest.fixture
+def conn(cursor):
+    """A spec-bound psycopg connection wrapping ``cursor``, as a context manager."""
+    c = create_autospec(psycopg.Connection, instance=True)
+    c.__enter__.return_value = c
+    c.cursor.return_value = cursor
+    return c
+
+
+@pytest.fixture
+def connect(conn):
+    """A spec-bound ``psycopg.connect`` double handing back ``conn``."""
+    f = create_autospec(psycopg.connect)
+    f.return_value = conn
+    return f
+
+
+def test_action_items_filters_and_orders(rows):
+    index_query.action_items(limit=10, domain="banking", importance="high", rows=rows)
+    sql, params = rows.call_args.args
 
     assert "requires_action = true" in sql
     assert "domain = %s" in sql and "importance = %s" in sql
@@ -31,32 +55,34 @@ def test_action_items_filters_and_orders(capture):
     assert params == ["banking", "high", 10]  # filters then limit, positionally bound
 
 
-def test_action_items_no_filters(capture):
-    index_query.action_items(rows=capture)
-    sql, params = capture.calls[0]
+def test_action_items_no_filters(rows):
+    index_query.action_items(rows=rows)
+    sql, params = rows.call_args.args
 
     assert "requires_action = true" in sql
     assert "domain = %s" not in sql and "importance = %s" not in sql
     assert params == [50]  # just the default limit
 
 
-def test_waiting_on_binds_who(capture):
-    index_query.waiting_on(who="me", limit=5, rows=capture)
-    sql, params = capture.calls[0]
+def test_waiting_on_binds_who(rows):
+    index_query.waiting_on(who="me", limit=5, rows=rows)
+    sql, params = rows.call_args.args
 
     assert "waiting_on = %s" in sql
     assert params == ["me", 5]
 
 
-def test_by_domain_binds_domain(capture):
-    index_query.by_domain("health", rows=capture)
-    _, params = capture.calls[0]
+def test_by_domain_binds_domain(rows):
+    index_query.by_domain("health", rows=rows)
+    _, params = rows.call_args.args
     assert params == ["health", 50]
 
 
-def test_summary_returns_first_or_none():
-    assert index_query.summary("x", rows=lambda s, p: [{"id": "x"}]) == {"id": "x"}
-    assert index_query.summary("x", rows=lambda s, p: []) is None
+def test_summary_returns_first_or_none(rows):
+    rows.return_value = [{"id": "x"}]
+    assert index_query.summary("x", rows=rows) == {"id": "x"}
+    rows.return_value = []
+    assert index_query.summary("x", rows=rows) is None
 
 
 def test_view_ddl_exposes_signal_and_never_raw_content():
@@ -73,20 +99,22 @@ def test_view_ddl_exposes_signal_and_never_raw_content():
     assert "abstract" in ddl and "THEN NULL" in ddl
 
 
-def test_due_soon_and_by_domain_shapes(capture):
-    index_query.due_soon(limit=7, rows=capture)
-    sql, params = capture.calls[0]
+def test_due_soon_and_by_domain_shapes(rows):
+    index_query.due_soon(limit=7, rows=rows)
+    sql, params = rows.call_args.args
     assert "time_sensitive = true OR deadline IS NOT NULL" in sql
     assert params == [7]
 
 
-def test_stats_aggregates():
-    def rows(sql, params):
+def test_stats_aggregates(rows):
+    def fake(sql, params):
         if "count(*) AS total" in sql:
             return [{"total": 3}]
         if "domain," in sql:
             return [{"domain": "banking", "n": 2}]
         return [{"d": "keep", "n": 3}]
+
+    rows.side_effect = fake
 
     assert index_query.stats(rows=rows) == {
         "total": 3,
@@ -102,58 +130,20 @@ def test_query_layer_raises_without_index_url(monkeypatch):
         index_query.action_items()
 
 
-class _FakeCursor:
-    def __init__(self, result):
-        self._result = result
-        self.executed: list[tuple] = []
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        return False
-
-    def execute(self, sql, params=None):
-        self.executed.append((sql, params))
-
-    def fetchall(self):
-        return self._result
-
-
-class _FakeConn:
-    def __init__(self, result):
-        self.cur = _FakeCursor(result)
-        self.committed = False
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        return False
-
-    def cursor(self):
-        return self.cur
-
-    def commit(self):
-        self.committed = True
-
-
-def test_rows_executes_against_the_index_dsn(monkeypatch):
+def test_rows_executes_against_the_index_dsn(monkeypatch, connect, conn, cursor):
     monkeypatch.setattr(index_query.settings, "index_database_url", "postgresql://ro@db/ai")
-    conn = _FakeConn([{"id": "1"}])
-    monkeypatch.setattr(index_query.psycopg, "connect", lambda *a, **k: conn)
+    cursor.fetchall.return_value = [{"id": "1"}]
 
-    assert index_query._rows("SELECT 1", []) == [{"id": "1"}]
-    assert conn.cur.executed[0][0] == "SELECT 1"
+    assert index_query._rows("SELECT 1", [], connect=connect) == [{"id": "1"}]
+
+    connect.assert_called_once_with("postgresql://ro@db/ai", row_factory=index_query.dict_row)
+    assert cursor.execute.call_args.args == ("SELECT 1", [])
 
 
-def test_ensure_view_creates_view_and_grants(monkeypatch):
-    conn = _FakeConn([])
-    monkeypatch.setattr(index_query.psycopg, "connect", lambda *a, **k: conn)
+def test_ensure_view_creates_view_and_grants(connect, conn, cursor):
+    index_query.ensure_view("postgresql://owner@db/ai", connect=connect)
 
-    index_query.ensure_view("postgresql://owner@db/ai")
-
-    executed = " ".join(sql for sql, _ in conn.cur.executed)
+    executed = " ".join(call.args[0] for call in cursor.execute.call_args_list)
     assert "CREATE OR REPLACE VIEW" in executed
     assert "GRANT SELECT" in executed and "corpus_index_ro" in executed
-    assert conn.committed
+    conn.commit.assert_called_once()

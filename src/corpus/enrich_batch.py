@@ -32,9 +32,11 @@ log = logging.getLogger("corpus.enrich")
 
 
 def _model_text(meta, content) -> str:
-    """What the model sees: the subject prepended to the body. The subject is
-    highly informative for classification (domain/category), and the deterministic
-    detectors already run on the body separately."""
+    """Return the model's input: the subject prepended to the body.
+
+    The subject is highly informative for classification (domain/category), and
+    the deterministic detectors already run on the body separately.
+    """
     subject = (meta or {}).get("subject") or ""
     return f"Subject: {subject}\n\n{content or ''}"
 
@@ -51,14 +53,16 @@ def run_enrich(
     audit=audit_secrets,
     concurrency: int | None = None,
 ) -> dict[str, int]:
-    """Enrich stored documents; audit only those with secret candidates. Resumable:
-    already-enriched docs are skipped unless ``force``. ``limit`` of 0 does all.
-    ``store`` is an open EnrichStore whose lifecycle the caller owns.
+    """Enrich stored documents; audit only those with secret candidates.
+
+    Resumable: already-enriched docs are skipped unless ``force``. ``limit`` of 0
+    does all. ``store`` is an open EnrichStore whose lifecycle the caller owns.
 
     Enrichment/audit LLM calls run ``concurrency`` at a time (the local server
     batches them); the store writes stay single-threaded on the caller's one
     connection. A per-record ``EnrichError`` (a bad message) is skipped so it can't
-    abort a long backfill; an ``EnrichUnavailableError`` still propagates."""
+    abort a long backfill; an ``EnrichUnavailableError`` still propagates.
+    """
     concurrency = concurrency or settings.enrich_concurrency
     own = enricher is None
     enricher = enricher or Enricher()
@@ -134,8 +138,10 @@ def run_audit(
     audit=audit_secrets,
     model: str | None = None,
 ) -> dict[str, int]:
-    """Re-run only the LLM secret confirmation over documents with candidates. Does
-    not enrich; upserts the audit idempotently."""
+    """Re-run only the LLM secret confirmation over documents with candidates.
+
+    Does not enrich; upserts the audit idempotently.
+    """
     model = model or settings.enrich_model
     if not model:
         raise ValueError("no model configured (set CORPUS_ENRICH_MODEL)")

@@ -18,15 +18,19 @@ from . import leaks, pii, store
 # value signature (that's why the noisy token regex was removed), but the wording
 # reliably marks a message worth an LLM look. Selection only — the LLM confirms.
 _RECOVERY_HINT = re.compile(
-    r"(?:recovery|backup)\s+code|one[-\s]?time\s+(?:pass|code)|two[-\s]?factor|\b2fa\b|verification\s+code",
+    r"(?:recovery|backup)\s+code|one[-\s]?time\s+(?:pass|code)|"
+    r"two[-\s]?factor|\b2fa\b|verification\s+code",
     re.IGNORECASE,
 )
 
 
 def _detector_fingerprint() -> str:
-    """A stable hash of what the deterministic detectors actually match — the pii
-    recognizers/entities/gates, the leaks rules, and the recovery hint. It changes
-    only when detection logic changes, so nothing needs manual bumping."""
+    """Return a stable hash of what the deterministic detectors actually match.
+
+    Covers the pii recognizers/entities/gates, the leaks rules, and the recovery
+    hint. It changes only when detection logic changes, so nothing needs manual
+    bumping.
+    """
     parts = (
         sorted(type(r).__name__ for r in pii._RECOGNIZERS),
         sorted(pii._ENTITY_NAMES.items()),
@@ -46,8 +50,10 @@ SCAN_VERSION = _detector_fingerprint()
 
 
 def detect(content: str | None) -> dict[str, int]:
-    """Merge the identity (``pii``) and credential (``leaks``) detectors into a
-    single {secret_type: count} map for one document."""
+    """Merge the identity (``pii``) and credential (``leaks``) detectors.
+
+    Returns a single ``{secret_type: count}`` map for one document.
+    """
     counts = dict(pii.scan(content).secret_counts)
     for name, count in leaks.scan(content).items():
         counts[name] = counts.get(name, 0) + count
@@ -55,9 +61,11 @@ def detect(content: str | None) -> dict[str, int]:
 
 
 def audit_candidates(content: str | None) -> list[str]:
-    """Secret types worth an LLM confirmation for this document: the deterministic
-    hits plus ``recovery_code`` when recovery wording is present. Empty means the
-    message is not worth auditing."""
+    """Return the secret types worth an LLM confirmation for this document.
+
+    The deterministic hits plus ``recovery_code`` when recovery wording is present.
+    Empty means the message is not worth auditing.
+    """
     if not content:
         return []
     candidates = sorted(detect(content))
@@ -69,10 +77,11 @@ def audit_candidates(content: str | None) -> list[str]:
 def scan_archive(
     source: str | None = None, account: str | None = None, limit: int = 0
 ) -> dict[str, Any]:
-    """Scan stored documents for secrets. Returns
-    ``{scanned, with_secrets, totals, hits}`` where ``totals`` is per-type counts
-    and each hit is ``{id, secret_types, from_addr, subject, sent_at}`` — no values.
-    ``limit`` of 0 scans everything.
+    """Scan stored documents for secrets.
+
+    Returns ``{scanned, with_secrets, totals, hits}`` where ``totals`` is per-type
+    counts and each hit is ``{id, secret_types, from_addr, subject, sent_at}`` — no
+    values. ``limit`` of 0 scans everything.
     """
     totals: dict[str, int] = {}
     hits: list[dict[str, Any]] = []

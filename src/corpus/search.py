@@ -47,9 +47,11 @@ _UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
 
 
 def _relative_cutoff(since: str) -> str:
-    """Turn a relative window like '24h', '7d', '30m' into an ISO cutoff timestamp
-    (now - window), so callers need not know the current time. Units: s, m
-    (minutes), h, d, w."""
+    """Convert a relative window like '24h', '7d', '30m' into an ISO cutoff timestamp.
+
+    Returns now - window, so callers need not know the current time. Units: s,
+    m (minutes), h, d, w.
+    """
     match = _DURATION_RE.match(since.lower())
     if not match:
         raise ValueError(f"invalid duration {since!r}; use e.g. '24h', '7d', '30m'")
@@ -66,10 +68,12 @@ def structured_query(
     since: str | None = None,
     limit: int = 500,
 ) -> list[dict[str, Any]]:
-    """Analytical, non-semantic query over metadata (e.g. 'all promotional older
-    than 2 weeks', or the last day's mail with since='1d'). Returns every match up
-    to `limit`, ordered newest first. `since` is a relative window (now - since),
-    applied as the lower bound when `after` is not given."""
+    """Query metadata analytically (non-semantic), newest first.
+
+    E.g. 'all promotional older than 2 weeks', or the last day's mail with
+    since='1d'. Returns every match up to `limit`. `since` is a relative window
+    (now - since), applied as the lower bound when `after` is not given.
+    """
     if since and not after:
         after = _relative_cutoff(since)
     clauses = []
@@ -120,6 +124,7 @@ def get_document(id: str) -> dict[str, Any] | None:
 
 
 def stats() -> dict[str, Any]:
+    """Return the total document count and the per-label counts."""
     table = f"{settings.db_schema}.{settings.documents_table}"
     with psycopg.connect(settings.database_url) as conn, conn.cursor() as cur:
         cur.execute(f"SELECT count(*) FROM {table}")
