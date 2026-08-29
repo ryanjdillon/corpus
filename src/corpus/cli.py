@@ -1,5 +1,5 @@
 """Command-line entrypoints: api | mcp | index | index-init | ingest | scan | enrich
-| audit-secrets | export."""
+| sync | audit-secrets | export."""
 
 from __future__ import annotations
 
@@ -88,6 +88,26 @@ def enrich(source: str | None, account: str | None, limit: int, force: bool) -> 
         with EnrichStore() as store:
             r = run_enrich(store, source=source, account=account, limit=limit, force=force)
         click.echo(f"enriched {r['enriched']}, audited {r['audited']} of {r['scanned']} scanned")
+    finally:
+        telemetry.shutdown()
+
+
+@main.command()
+@click.option("--source", default=None, help="filter by source id, e.g. gmail:personal")
+@click.option("--limit", default=0, type=int, help="sync at most N documents (0 = all)")
+@click.option("--force", is_flag=True, help="re-project documents already synced")
+def sync(source: str | None, limit: int, force: bool) -> None:
+    """Project enriched documents into the sanitized DB — the trust-downgraded tier
+    a cloud consumer may query. Drops raw content/subject/sender; gates summaries by
+    sensitivity."""
+    telemetry.configure("corpus-sync")
+    from .sanitize import run_sync
+    from .sanitized_store import SanitizedStore
+
+    try:
+        with SanitizedStore() as store:
+            r = run_sync(store, source=source, limit=limit, force=force)
+        click.echo(f"synced {r['synced']}, skipped {r['skipped']} of {r['scanned']} scanned")
     finally:
         telemetry.shutdown()
 

@@ -289,6 +289,21 @@
           "label": "sanitized MCP surface"
         }
       ]
+    },
+    {
+      "id": "sanitized-tier",
+      "name": "sanitized tier (downgraded)",
+      "kind": null,
+      "sources": [
+        {
+          "path": "src/corpus/sanitize.py",
+          "label": "one-way sync + projection"
+        },
+        {
+          "path": "src/corpus/sanitized_store.py",
+          "label": "ai_sanitized messages store"
+        }
+      ]
     }
   ],
   "connections": [
