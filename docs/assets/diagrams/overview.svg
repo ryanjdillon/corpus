@@ -55,7 +55,7 @@
   <!-- Consumers -->
   <line x1="840" y1="166" x2="900" y2="186" stroke="#857449" stroke-width="2" marker-end="url(#arrow)"/>
   <rect x="904" y="150" width="196" height="72" rx="12" fill="#E7EEF7" stroke="#3D65A3" stroke-width="2"/>
-  <text x="1002" y="182" text-anchor="middle" font-size="14" font-weight="700" fill="#161208">You + local tools</text>
+  <text x="1002" y="182" text-anchor="middle" font-size="14" font-weight="700" fill="#161208">Trusted readers</text>
   <text x="1002" y="202" text-anchor="middle" font-size="11" fill="#3D65A3" font-weight="700">full access</text>
 
   <line x1="840" y1="278" x2="900" y2="306" stroke="#857449" stroke-width="2" marker-end="url(#arrow)"/>
