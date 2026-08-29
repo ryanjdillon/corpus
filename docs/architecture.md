@@ -53,6 +53,8 @@ is implementation.
 | `enrich_store` | `EnrichStore` | The derived enrichments table — lazy DDL, upserts, resume ids, and per-stage provenance. |
 | `sanitized_store` | `SanitizedStore` | The sanitized (trust-downgraded) store — a *separate* `ai_sanitized` database, `messages` table, lazy DDL + upsert; the one place a cloud consumer reads. |
 | `sanitize` | `run_sync(store, …)`, `project(…)` | The one-way sync: projects `documents ⨝ enrichments` to cloud-safe fields (drops raw content/subject/sender, gates summaries by sensitivity), embeds `one_line`. |
+| `store_base` | `Store` | Base for a Postgres storage tier — connection, idempotent DDL, lifecycle; `EnrichStore` and `SanitizedStore` are implementations. |
+| `tiers` | `StorageTier`, `tiers()`, `tier(name)` | The declarative trust-tier registry: each tier's DSN, MCP tool, access principals, and projection — the single source of truth the sync, surfaces, and deploy read. |
 | `scan` | `detect(text)`, `audit_candidates(text)`, `scan_archive(…)`, `SCAN_VERSION` | Merges `pii` + `leaks`; the audit candidate gate; the whole-archive secret report. |
 | `pii` | `pii.scan(text) -> ScanResult` | Presidio identity/financial recognizers with adjacency-gated precision; types + counts, never values. |
 | `leaks` | `leaks.scan(text) -> dict` | Local credential regexes plus an optional Betterleaks subprocess; rule types + counts, never values. |

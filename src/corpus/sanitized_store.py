@@ -1,20 +1,19 @@
-"""The sanitized (trust-downgraded) store: one row per message projected down to
-cloud-safe fields, in a *separate* Postgres database (`ai_sanitized`). This is the
-write target of the one-way sync and the read source of corpus-index. It never
-holds raw content, raw subject, full sender addresses, or secret material — so a
-cloud-model consumer (Hermes) structurally cannot retrieve them.
+"""The sanitized (trust-downgraded) storage tier.
+
+One row per message, projected down to cloud-safe fields, in a *separate* Postgres
+database (``ai_sanitized``). This is the write target of the one-way sync and the
+read source of corpus-index. It never holds raw content, raw subject, full sender
+or recipient addresses, or secret material, so a cloud-model consumer structurally
+cannot retrieve them.
 """
 
 from __future__ import annotations
 
-from typing import Self
-
-import psycopg
-
 from .config import settings
+from .store_base import Store
 
-# Ordered projection columns (row dict keys). summary_embedding + synced_at are
-# handled separately (vector cast / server clock).
+# Ordered projection columns (row dict keys). ``summary_embedding`` and
+# ``synced_at`` are handled separately (vector cast / server clock).
 COLS = (
     "id", "source", "account", "thread_id", "sent_at", "sender_domain",
     "domain", "category", "transactional_type", "importance", "requires_action",
@@ -25,6 +24,7 @@ COLS = (
 
 
 def _ddl(schema: str, dim: int) -> str:
+    """Return the DDL for the sanitized ``messages`` table (with a *dim*-wide vector)."""
     return f"""
     CREATE EXTENSION IF NOT EXISTS vector;
     CREATE TABLE IF NOT EXISTS {schema}.messages (
@@ -55,49 +55,38 @@ def _ddl(schema: str, dim: int) -> str:
     """
 
 
-class SanitizedStore:
-    """Owns the sanitized DB connection + the `messages` table (lazy DDL, upserts).
-    The caller owns the lifecycle (context manager)."""
+class SanitizedStore(Store):
+    """The sanitized tier's store: the ``messages`` table in ``ai_sanitized``.
+
+    Lazily creates the table and upserts projected rows; ``synced_versions`` drives
+    incremental resume. Raw email columns do not exist here by construction.
+    """
 
     def __init__(self, dsn: str | None = None) -> None:
-        self._dsn = dsn or settings.sanitized_database_url
-        if not self._dsn:
+        """Open the sanitized DB (from *dsn* or ``CORPUS_SANITIZED_DATABASE_URL``)."""
+        dsn = dsn or settings.sanitized_database_url
+        if not dsn:
             raise RuntimeError("CORPUS_SANITIZED_DATABASE_URL not set (sync disabled)")
         self._schema = settings.db_schema
-        self._conn = psycopg.connect(self._dsn)
-        with self._conn.cursor() as cur:
-            cur.execute(_ddl(self._schema, settings.embedding_dimensions))
-        self._conn.commit()
-        # Prebuilt upsert: every column, plus the vector cast; refresh on conflict.
+        super().__init__(dsn)
         cols = ", ".join(COLS)
-        ph = ", ".join(["%s"] * len(COLS))
+        placeholders = ", ".join(["%s"] * len(COLS))
         updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in COLS if c != "id")
         self._sql = (
             f"INSERT INTO {self._schema}.messages ({cols}, summary_embedding) "
-            f"VALUES ({ph}, %s::vector) "
+            f"VALUES ({placeholders}, %s::vector) "
             f"ON CONFLICT (id) DO UPDATE SET {updates}, "
             "summary_embedding = EXCLUDED.summary_embedding, synced_at = now()"
         )
 
+    def schema_ddl(self) -> str:
+        return _ddl(self._schema, settings.embedding_dimensions)
+
     def save_message(self, row: dict, embedding: list[float]) -> None:
+        """Upsert one projected row and its summary embedding."""
         vec = "[" + ",".join(f"{x:.6f}" for x in embedding) + "]"
-        params = [row.get(c) for c in COLS] + [vec]
-        with self._conn.cursor() as cur:
-            cur.execute(self._sql, params)
-        self._conn.commit()
+        self._write(self._sql, [row.get(c) for c in COLS] + [vec])
 
     def synced_versions(self) -> dict[str, object]:
-        """id -> enriched_at already synced, so the sync skips unchanged rows and
-        re-projects a document only after it is re-enriched."""
-        with self._conn.cursor() as cur:
-            cur.execute(f"SELECT id, enriched_at FROM {self._schema}.messages")
-            return {r[0]: r[1] for r in cur.fetchall()}
-
-    def close(self) -> None:
-        self._conn.close()
-
-    def __enter__(self) -> Self:
-        return self
-
-    def __exit__(self, *exc) -> None:
-        self.close()
+        """Map id -> ``enriched_at`` already synced, so the sync skips unchanged rows."""
+        return {r[0]: r[1] for r in self._read(f"SELECT id, enriched_at FROM {self._schema}.messages")}

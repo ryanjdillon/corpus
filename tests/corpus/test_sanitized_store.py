@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from corpus import sanitized_store
+from corpus import sanitized_store, store_base
 
 
 class _Cur:
@@ -44,7 +44,7 @@ class _Conn:
 def _store(monkeypatch, result=None):
     monkeypatch.setattr(sanitized_store.settings, "sanitized_database_url", "postgresql://x@db/ai_sanitized")
     conn = _Conn(result)
-    monkeypatch.setattr(sanitized_store.psycopg, "connect", lambda *a, **k: conn)
+    monkeypatch.setattr(store_base.psycopg, "connect", lambda *a, **k: conn)
     return sanitized_store.SanitizedStore(), conn
 
 
@@ -80,7 +80,7 @@ def test_context_manager_closes(monkeypatch):
     conn = _Conn()
     closed = {"v": False}
     conn.close = lambda: closed.__setitem__("v", True)
-    monkeypatch.setattr(sanitized_store.psycopg, "connect", lambda *a, **k: conn)
+    monkeypatch.setattr(store_base.psycopg, "connect", lambda *a, **k: conn)
 
     with sanitized_store.SanitizedStore() as s:
         assert s is not None

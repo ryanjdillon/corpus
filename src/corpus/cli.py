@@ -103,10 +103,12 @@ def sync(source: str | None, limit: int, force: bool) -> None:
     telemetry.configure("corpus-sync")
     from .sanitize import run_sync
     from .sanitized_store import SanitizedStore
+    from .tiers import tier
 
+    src, dst = tier("sensitive"), tier("sanitized")
     try:
-        with SanitizedStore() as store:
-            r = run_sync(store, source=source, limit=limit, force=force)
+        with SanitizedStore(dst.dsn) as store:
+            r = run_sync(store, source=source, limit=limit, force=force, read_dsn=src.dsn)
         click.echo(f"synced {r['synced']}, skipped {r['skipped']} of {r['scanned']} scanned")
     finally:
         telemetry.shutdown()
