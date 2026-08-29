@@ -2,16 +2,21 @@
 
 Semantic search and structured query over your own content.
 
-corpus ingests items from pluggable sources, classifies each with cheap header
-and rule heuristics, embeds it through an OpenAI-compatible endpoint, and stores
-the vectors and metadata in Postgres/pgvector. Email ships today over IMAP and
-Gmail; anything that yields records fits the same pipeline.
+corpus is a knowledge base for your own content — markdown, documents, or
+structured records. It classifies each item, embeds it through an
+OpenAI-compatible endpoint, and stores the vectors alongside structured metadata
+in Postgres/pgvector. Email lands first (IMAP and Gmail); anything that yields
+records fits the same pipeline.
+
+A raw markdown layer keeps each item verbatim, and corpus derives a configurable
+set of access-controlled storage tiers from it — you set each tier's projection,
+the tool that exposes it, and who may read it, human or agent.
 
 Query it two ways:
 
 - **Semantic search** — vector similarity with optional metadata filters.
 - **Structured query** — analytical metadata queries that return every match
-  (say, every message with a given label before a date) as plain SQL.
+  (say, every item with a given tag before a date) as plain SQL.
 
 Both are served over a REST API and an MCP server.
 
