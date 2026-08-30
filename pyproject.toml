@@ -1,6 +1,6 @@
 [project]
 name = "corpus"
-version = "0.3.0"
+version = "0.3.1"
 description = "Semantic search and structured query over content from pluggable sources"
 requires-python = ">=3.12"
 license = "MPL-2.0"
