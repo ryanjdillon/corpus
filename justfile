@@ -1,3 +1,5 @@
+import 'agents.just'
+
 # corpus dev tasks. Enter the dev shell first: `nix develop`.
 
 # Create the uv venv (from the dev shell's Python) and install test + dev deps.
