@@ -24,6 +24,7 @@ from corpus import (
     sanitize,
     sanitized_store,
     scan,
+    scan_gate,
     telemetry,
 )
 
@@ -87,6 +88,14 @@ def index_run(monkeypatch):
     """Autospec the corpus-index server ``run``."""
     mock = create_autospec(index_server.run)
     monkeypatch.setattr(index_server, "run", mock)
+    return mock
+
+
+@pytest.fixture
+def scan_gate_serve(monkeypatch):
+    """Autospec the scan-gate ``serve`` so no gRPC server binds a port."""
+    mock = create_autospec(scan_gate.serve)
+    monkeypatch.setattr(scan_gate, "serve", mock)
     return mock
 
 
@@ -194,6 +203,14 @@ def test_index_command(runner, configure, index_run):
     assert result.exit_code == 0, result.output
     assert configure.call_args.args == ("corpus-index",)
     index_run.assert_called_once()
+
+
+def test_scan_gate_command(runner, configure, shutdown, scan_gate_serve):
+    result = runner.invoke(cli.main, ["scan-gate"])
+    assert result.exit_code == 0, result.output
+    assert configure.call_args.args == ("corpus-scan-gate",)
+    scan_gate_serve.assert_called_once()
+    shutdown.assert_called_once()
 
 
 def test_sync_command(runner, configure, shutdown, sanitized_store_cls, run_sync):
