@@ -91,3 +91,30 @@ def test_external_not_invoked_when_unconfigured(run, monkeypatch):
     monkeypatch.setattr(settings, "leaks_bin", "")
     leaks.scan("key AKIAIOSFODNN7EXAMPLE", run=run)
     run.assert_not_called()
+
+
+def test_scan_spans_masks_whole_private_key_block():
+    block = "-----BEGIN OPENSSH PRIVATE KEY-----\nQUJDREVG\n-----END OPENSSH PRIVATE KEY-----"
+    spans = leaks.scan_spans(f"before\n{block}\nafter")
+    block_spans = [s for s in spans if s.entity_type == "private_key"]
+    # the whole PEM block is spanned so redaction removes the key material
+    whole = max(block_spans, key=lambda s: s.end - s.start)
+    assert "QUJDREVG" in f"before\n{block}\nafter"[whole.start : whole.end]
+    assert whole.category == "secret"
+
+
+def test_scan_spans_truncated_block_falls_back_to_header():
+    # No END line: the block matcher can't fire, but the header rule still spans it.
+    spans = leaks.scan_spans("-----BEGIN RSA PRIVATE KEY-----\nQUJD\n(no end marker)")
+    assert any(s.entity_type == "private_key" for s in spans)
+
+
+def test_scan_spans_reports_key_offsets():
+    spans = leaks.scan_spans("deploy key AKIAIOSFODNN7EXAMPLE now")
+    aws = next(s for s in spans if s.entity_type == "aws_access_key")
+    assert aws.end > aws.start
+
+
+def test_scan_spans_empty_and_none():
+    assert leaks.scan_spans("") == []
+    assert leaks.scan_spans(None) == []

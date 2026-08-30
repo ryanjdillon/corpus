@@ -15,6 +15,11 @@ This complements ``pii`` (identity/financial numbers): a leaked API key is a
 different, higher-severity class than an SSN, and detectable with far better
 precision than any hand-rolled recovery-code heuristic — which is why recovery
 codes are left to the LLM confirmation stage instead.
+
+:func:`scan` returns counts (the archive audit). :func:`scan_spans` returns match
+offsets for redaction, from the local regexes only: Betterleaks reports counts
+over stdin without reliable character offsets, and the local rules already cover
+the high-severity credential types the egress gate redacts and blocks on.
 """
 
 from __future__ import annotations
@@ -26,6 +31,7 @@ import subprocess
 from collections.abc import Callable
 
 from .config import settings
+from .redact import Span
 
 log = logging.getLogger(__name__)
 
@@ -45,6 +51,16 @@ _RULES: list[tuple[str, re.Pattern[str]]] = [
     ("openai_key", re.compile(r"\bsk-[A-Za-z0-9]{20}T3BlbkFJ[A-Za-z0-9]{20}\b")),
     ("jwt", re.compile(r"\beyJ[A-Za-z0-9_\-]{10,}\.eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}")),
 ]
+
+# Redaction needs the secret's whole extent, not just its marker. The count rule
+# above matches a private key by its BEGIN line alone (enough to flag it); for
+# redaction we mask the entire PEM block so no key material survives. The header
+# rule still runs as a fallback for a truncated block missing its END line.
+_PRIVATE_KEY_BLOCK = re.compile(
+    r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----.*?"
+    r"-----END (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----",
+    re.DOTALL,
+)
 
 # Betterleaks/gitleaks rule id -> our stable name (best-effort; unmapped rule ids
 # are kept verbatim as ``leak_<ruleid>`` so nothing is silently dropped).
@@ -125,3 +141,23 @@ def scan(
             # types the local layer doesn't already cover (avoids double counting).
             counts.setdefault(name, n)
     return counts
+
+
+def scan_spans(text: str | None) -> list[Span]:
+    """Detect leaked credentials in ``text``, returning match offsets for redaction.
+
+    Local regexes only (see the module docstring). Private keys are matched as the
+    whole PEM block where possible so redaction removes the key material, not just
+    the BEGIN marker; the header rule adds a fallback span for a truncated block.
+    Overlapping spans are left for the caller's overlap resolution to dedupe.
+    """
+    if not text:
+        return []
+    spans: list[Span] = [
+        Span(m.start(), m.end(), "private_key", "secret")
+        for m in _PRIVATE_KEY_BLOCK.finditer(text)
+    ]
+    for name, pattern in _RULES:
+        for m in pattern.finditer(text):
+            spans.append(Span(m.start(), m.end(), name, "secret"))
+    return spans

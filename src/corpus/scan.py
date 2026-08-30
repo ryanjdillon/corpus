@@ -13,6 +13,7 @@ import re
 from typing import Any
 
 from . import leaks, pii, store
+from .redact import Span
 
 # Tight literal-phrase gate for recovery/backup codes: these have no deterministic
 # value signature (that's why the noisy token regex was removed), but the wording
@@ -58,6 +59,18 @@ def detect(content: str | None) -> dict[str, int]:
     for name, count in leaks.scan(content).items():
         counts[name] = counts.get(name, 0) + count
     return counts
+
+
+def detect_spans(content: str | None) -> list[Span]:
+    """Merge the identity and credential detectors' match offsets for redaction.
+
+    The span-level counterpart of :func:`detect`: the same two detectors, but each
+    match's ``[start, end)`` extent and type rather than a count. Values are never
+    included. Overlap resolution is the caller's concern (see ``redact``).
+    """
+    if not content:
+        return []
+    return pii.scan_spans(content) + leaks.scan_spans(content)
 
 
 def audit_candidates(content: str | None) -> list[str]:

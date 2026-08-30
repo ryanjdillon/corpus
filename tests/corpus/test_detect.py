@@ -16,6 +16,19 @@ def test_detect_empty():
     assert scan.detect(None) == {}
 
 
+def test_detect_spans_merges_pii_and_leaks():
+    spans = scan.detect_spans("SSN 900-12-3456 and deploy key AKIAIOSFODNN7EXAMPLE")
+    kinds = {s.entity_type for s in spans}
+    assert {"us_ssn", "aws_access_key"} <= kinds
+    # offsets bound real slices of the input, never the value itself is stored
+    assert all(0 <= s.start < s.end for s in spans)
+
+
+def test_detect_spans_empty():
+    assert scan.detect_spans("") == []
+    assert scan.detect_spans(None) == []
+
+
 def test_audit_candidates_unions_deterministic_and_recovery_hint():
     # deterministic credential hit
     assert "aws_access_key" in scan.audit_candidates("deploy key AKIAIOSFODNN7EXAMPLE")
