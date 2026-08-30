@@ -109,11 +109,20 @@ def _continue_body() -> ep.ProcessingResponse:
 
 
 def _replace_body(body: bytes) -> ep.ProcessingResponse:
-    """A response that swaps the request body for the redacted ``body``."""
+    """A response that swaps the request body for the redacted ``body``.
+
+    The ``content-length`` header is removed so Envoy recomputes it for the new
+    body. Redaction changes the body length, and leaving the request's original
+    ``content-length`` in place makes Envoy reject the mutated response with a 500
+    (``mismatch_between_content_length_and_the_length_of_the_mutated_body``). The
+    header mutation rides on the *same* ``CommonResponse`` as the body mutation so
+    Envoy applies both atomically.
+    """
     return ep.ProcessingResponse(
         request_body=ep.BodyResponse(
             response=ep.CommonResponse(
                 status=ep.CommonResponse.CONTINUE_AND_REPLACE,
+                header_mutation=ep.HeaderMutation(remove_headers=["content-length"]),
                 body_mutation=ep.BodyMutation(body=body),
             )
         )

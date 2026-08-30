@@ -77,12 +77,27 @@ def test_dirty_body_returns_body_mutation():
     assert "AKIAIOSFODNN7EXAMPLE" not in new_body["messages"][0]["content"]
 
 
+def test_mutation_removes_content_length_header():
+    # Redaction changes the body length; the response must drop content-length so
+    # Envoy recomputes it, else it rejects the mutated body with a 500
+    # (mismatch_between_content_length_and_the_length_of_the_mutated_body).
+    request = _body_request({"messages": [{"role": "user", "content": "key AKIAIOSFODNN7EXAMPLE"}]})
+    common = _drive(request).request_body.response
+    assert common.HasField("body_mutation")
+    assert common.HasField("header_mutation")
+    assert list(common.header_mutation.remove_headers) == ["content-length"]
+    # the header mutation rides the same CommonResponse as the body mutation
+    assert not common.header_mutation.set_headers
+
+
 def test_clean_body_continues_without_mutation():
     request = _body_request({"messages": [{"role": "user", "content": "lunch at noon?"}]})
     response = _drive(request)
     common = response.request_body.response
     assert common.status == ep.CommonResponse.CONTINUE
     assert not common.HasField("body_mutation")
+    # a clean body changes nothing, so no header mutation is emitted either
+    assert not common.HasField("header_mutation")
 
 
 def test_private_key_is_blocked_403():
