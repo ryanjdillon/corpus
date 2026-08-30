@@ -26,12 +26,14 @@ dependencies = [
     "pydantic-settings>=2.6",
     "pyyaml>=6.0",
     "click>=8.1",
-    # scan-gate ext_proc server. grpcio is the runtime; xds-protos is the gRPC
-    # project's own protoc-generated packaging of the Envoy/xDS data-plane-api
-    # protos (envoy.service.ext_proc.v3) — a maintained, versioned wheel over
-    # hand-vendored stubs or a build-time protoc step.
-    "grpcio>=1.66",
-    "xds-protos>=1.66",
+    # scan-gate ext_proc server. grpcio is the runtime; protobuf is the
+    # well-known-types runtime the vendored envoy/xds ext_proc stubs
+    # (corpus/_ext_proc/) were generated against. The stubs are vendored rather
+    # than pulled from xds-protos, whose wheel also ships a stale top-level
+    # opentelemetry/proto that shadows opentelemetry-proto and breaks OTLP export.
+    # Bounds track the gencode: grpcio>=1.74, protobuf 6.31+ (and <8 for otel).
+    "grpcio>=1.74,<2",
+    "protobuf>=6.31,<8",
     # OpenTelemetry: traces + metrics over OTLP to the cluster collector.
     "opentelemetry-sdk>=1.27",
     "opentelemetry-exporter-otlp-proto-grpc>=1.27",
@@ -65,6 +67,12 @@ packages = ["src/corpus"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# Vendored, protoc-generated ext_proc stubs — not hand-maintained source.
+extend-exclude = ["src/corpus/_ext_proc"]
+
+[tool.coverage.run]
+# The vendored generated stubs are executed on import but are not our code.
+omit = ["src/corpus/_ext_proc/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

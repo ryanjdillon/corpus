@@ -9,9 +9,8 @@ from __future__ import annotations
 import json
 from unittest.mock import Mock
 
-from envoy.service.ext_proc.v3 import external_processor_pb2 as ep
-
 from corpus import scan_gate
+from corpus._ext_proc.envoy.service.ext_proc.v3 import external_processor_pb2 as ep
 from corpus.config import settings
 
 _FAKE_PRIVATE_KEY = (
