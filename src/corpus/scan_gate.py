@@ -9,12 +9,14 @@ carrying the redacted body — redact-by-default. A small, config-driven policy
 (``settings.scan_gate_block_types``) escalates the highest-confidence classes
 (private keys by default) to an outright ``403`` instead of redaction.
 
-The ext_proc gRPC stubs come from **xds-protos** — the gRPC project's own
-protoc-generated Python packaging of the Envoy/xDS ``data-plane-api`` protos
-(``envoy.service.ext_proc.v3``). It is chosen over hand-vendored stubs or a
-build-time ``protoc`` step because it is a maintained, versioned wheel that tracks
-the Envoy protos and depends only on ``grpcio`` + ``protobuf``, both already in
-the tree via the OTLP exporter.
+The ext_proc gRPC stubs are vendored under ``corpus._ext_proc`` — the minimal
+protoc-generated closure of ``envoy.service.ext_proc.v3`` (19 files across
+``envoy``/``xds``/``udpa``/``validate``), with their imports rewritten to that
+private namespace. The published ``xds-protos`` wheel would supply the same stubs
+but also ships a stale top-level ``opentelemetry/proto`` package that shadows the
+real ``opentelemetry-proto`` and breaks OTLP export; vendoring the ext_proc subset
+keeps the stubs while touching no shared namespace, and depends only on the
+already-present ``grpcio`` + ``protobuf``.
 
 Only detection *types and counts* are ever logged — never a matched value, and
 never the request body (raw or redacted). ``settings.scan_gate_fail_open`` selects
@@ -31,10 +33,10 @@ from concurrent import futures
 from typing import Any
 
 import grpc
-from envoy.service.ext_proc.v3 import external_processor_pb2 as ep
-from envoy.service.ext_proc.v3 import external_processor_pb2_grpc as epg
-from envoy.type.v3 import http_status_pb2 as hs
 
+from ._ext_proc.envoy.service.ext_proc.v3 import external_processor_pb2 as ep
+from ._ext_proc.envoy.service.ext_proc.v3 import external_processor_pb2_grpc as epg
+from ._ext_proc.envoy.type.v3 import http_status_pb2 as hs
 from .config import settings
 from .redact import Span, redact
 
