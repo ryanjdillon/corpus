@@ -52,6 +52,18 @@ class Settings(BaseSettings):
     port: int = 8000
     mcp_port: int = 9000
 
+    # scan-gate: the Envoy ext_proc redaction service. Sits inline on the egress
+    # path to untrusted providers, stripping PII/secrets from request bodies.
+    scan_gate_port: int = 9002
+    scan_gate_workers: int = 8
+    # Fail-open passes an unredactable body through unchanged (log-only, for a
+    # Phase-2 shadow rollout); the default fails closed — an unparseable or
+    # erroring body is blocked rather than leaked.
+    scan_gate_fail_open: bool = False
+    # Comma-separated secret types that force an outright 403 block instead of
+    # redaction. Kept small and high-confidence; see ``scan_gate.block_types``.
+    scan_gate_block_types: str = "private_key"
+
     # corpus-index: the sanitized query surface. Connects as a restricted DB role
     # (corpus_index_ro) that reads only the sanitized DB, never a raw body — the
     # trust gate for cloud-model consumers. Empty => index disabled.

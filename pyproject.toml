@@ -26,6 +26,12 @@ dependencies = [
     "pydantic-settings>=2.6",
     "pyyaml>=6.0",
     "click>=8.1",
+    # scan-gate ext_proc server. grpcio is the runtime; xds-protos is the gRPC
+    # project's own protoc-generated packaging of the Envoy/xDS data-plane-api
+    # protos (envoy.service.ext_proc.v3) — a maintained, versioned wheel over
+    # hand-vendored stubs or a build-time protoc step.
+    "grpcio>=1.66",
+    "xds-protos>=1.66",
     # OpenTelemetry: traces + metrics over OTLP to the cluster collector.
     "opentelemetry-sdk>=1.27",
     "opentelemetry-exporter-otlp-proto-grpc>=1.27",

@@ -31,7 +31,7 @@
       "sources": [
         {
           "path": "src/corpus/cli.py",
-          "label": "api|mcp|index|ingest|scan|enrich"
+          "label": "api|mcp|index|ingest|scan|scan-gate|enrich"
         },
         {
           "path": "src/corpus/export.py",
@@ -235,13 +235,37 @@
       "sources": [
         {
           "path": "src/corpus/scan.py",
-          "label": "detect / audit_candidates"
+          "label": "detect / detect_spans / audit_candidates"
         },
         {
           "path": "src/corpus/pii.py"
         },
         {
           "path": "src/corpus/leaks.py"
+        }
+      ]
+    },
+    {
+      "id": "egress-gate",
+      "type": "backend",
+      "label": "scan-gate",
+      "sublabel": "ext_proc egress redaction",
+      "pos": [
+        280,
+        470
+      ],
+      "size": [
+        200,
+        68
+      ],
+      "sources": [
+        {
+          "path": "src/corpus/scan_gate.py",
+          "label": "ExternalProcessor (redact / block)"
+        },
+        {
+          "path": "src/corpus/redact.py",
+          "label": "detect_spans → masked text"
         }
       ]
     },
@@ -415,6 +439,27 @@
       ]
     },
     {
+      "id": "gate-detectors",
+      "from": "egress-gate",
+      "to": "scanning",
+      "label": "reuses detect_spans / redact",
+      "variant": "dashed",
+      "labelDy": -46
+    },
+    {
+      "id": "gate-gw",
+      "from": "egress-gate",
+      "to": "gateway",
+      "label": "redacted body → untrusted provider",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "left",
+      "labelAt": [
+        380,
+        585
+      ]
+    },
+    {
       "id": "cli-ingest",
       "from": "cli",
       "to": "fetchers",
@@ -446,14 +491,15 @@
       "title": "Derived branches",
       "items": [
         "enrichment reads documents, calls the model (guided JSON), upserts a derived enrichments table in the same store",
-        "secret scan = deterministic pii + leaks (Betterleaks); enrich_batch has the model confirm flagged candidates"
+        "secret scan = deterministic pii + leaks (Betterleaks); enrich_batch has the model confirm flagged candidates",
+        "scan-gate reuses the same pii + leaks detectors as an Envoy ext_proc filter, redacting (or blocking) chat bodies before they egress to an untrusted provider"
       ]
     },
     {
       "dot": "violet",
       "title": "Query + entrypoints",
       "items": [
-        "search (HNSW + SQL) behind the api / mcp_server adapters; cli runs api, mcp, ingest, scan, enrich, audit-secrets"
+        "search (HNSW + SQL) behind the api / mcp_server adapters; cli runs api, mcp, ingest, scan, scan-gate, enrich, audit-secrets"
       ]
     }
   ]

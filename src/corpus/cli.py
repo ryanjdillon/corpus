@@ -1,6 +1,7 @@
 """Command-line entrypoints for the corpus service.
 
-Subcommands: api, mcp, index, ingest, scan, enrich, sync, audit-secrets, export.
+Subcommands: api, mcp, index, ingest, scan, scan-gate, enrich, sync,
+audit-secrets, export.
 """
 
 from __future__ import annotations
@@ -181,6 +182,23 @@ def scan(source: str | None, account: str | None, limit: int, json_out: str | No
 
         Path(json_out).write_text(json.dumps(report, indent=2))
         click.echo(f"wrote {json_out}")
+
+
+@main.command(name="scan-gate")
+def scan_gate_cmd() -> None:
+    """Run the ext_proc egress redaction gate (gRPC).
+
+    Envoy streams request bodies here on the path to untrusted providers; the gate
+    redacts PII/secrets (redact-by-default) and blocks the highest-confidence
+    classes outright. Reports types + counts, never values.
+    """
+    telemetry.configure("corpus-scan-gate")
+    from .scan_gate import serve
+
+    try:
+        serve()
+    finally:
+        telemetry.shutdown()
 
 
 if __name__ == "__main__":
