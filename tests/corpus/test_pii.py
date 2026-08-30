@@ -55,3 +55,23 @@ def test_empty_and_none():
 def test_context_near_requires_words():
     # A recognizer with no context words can never satisfy the adjacency gate.
     assert pii._context_near("some 900-12-3456 text", 5, 15, []) is False
+
+
+def test_email_is_counted_only_in_the_span_view():
+    # Email is ubiquitous in mail, so it stays out of the archive count scan, but the
+    # egress redactor (span view) must catch it.
+    text = "reach me at alice@example.org please"
+    assert "email" not in pii.scan(text).secret_counts
+    assert any(s.entity_type == "email" for s in pii.scan_spans(text))
+
+
+def test_scan_spans_reports_gated_offsets():
+    spans = pii.scan_spans("card on file: 4111 1111 1111 1111")
+    card = next(s for s in spans if s.entity_type == "credit_card")
+    assert card.category == "pii"
+    assert card.end > card.start
+
+
+def test_scan_spans_empty_and_none():
+    assert pii.scan_spans("") == []
+    assert pii.scan_spans(None) == []

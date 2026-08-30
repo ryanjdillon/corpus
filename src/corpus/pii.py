@@ -15,20 +15,30 @@ omitted entirely, and the ambiguous numeric types (SSN, credit card, bank routin
 are only counted when a matching context word sits *next to* the match, not merely
 somewhere in the message. IBAN and crypto addresses carry their own checksum and
 are specific enough to count on format alone.
+
+Two views share one detection pass. :func:`scan` returns counts for the archive
+audit; :func:`scan_spans` returns match offsets for redaction. Email addresses are
+surfaced by :func:`scan_spans` only — they are ubiquitous in mail (every sender,
+every signature) so flagging them in the archive audit is noise, but they must not
+egress to an untrusted model, so the egress redactor strips them.
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 
 from presidio_analyzer.predefined_recognizers import (
     CreditCardRecognizer,
     CryptoRecognizer,
+    EmailRecognizer,
     IbanRecognizer,
     UsBankRecognizer,
     UsSsnRecognizer,
 )
+
+from .redact import Span
 
 # Presidio entity type -> our short, stable secret name.
 _ENTITY_NAMES = {
@@ -57,6 +67,12 @@ _RECOGNIZERS = [
     CryptoRecognizer(),
 ]
 
+# Redaction-only: email is high-precision on format but far too common to flag in
+# the archive audit, so it is scanned solely for the egress redactor. Kept out of
+# _RECOGNIZERS/_ENTITY_NAMES so the audit counts (and SCAN_VERSION) are unchanged.
+_EMAIL_RECOGNIZER = EmailRecognizer()
+_EMAIL_ENTITY = "email"
+
 
 @dataclass(frozen=True)
 class ScanResult:
@@ -71,16 +87,40 @@ class ScanResult:
         return bool(self.secret_types)
 
 
-def _bump(counts: dict[str, int], name: str, n: int = 1) -> None:
-    counts[name] = counts.get(name, 0) + n
-
-
 def _context_near(text: str, start: int, end: int, words: list[str]) -> bool:
     """True if any of ``words`` appears within _CONTEXT_WINDOW chars of the match."""
     if not words:
         return False
     window = text[max(0, start - _CONTEXT_WINDOW) : min(len(text), end + _CONTEXT_WINDOW)]
     return any(re.search(rf"\b{re.escape(w)}\b", window, re.IGNORECASE) for w in words)
+
+
+def _iter_spans(text: str, *, include_email: bool) -> Iterator[Span]:
+    """Yield gated PII spans; the single detection pass behind both public views.
+
+    Applies the same precision gates as before: ``_CONTEXT_REQUIRED`` types need a
+    context word beside the match, the rest need ``_MIN_SCORE``. Email is yielded
+    only when ``include_email`` (the redaction path).
+    """
+    for rec in _RECOGNIZERS:
+        ctx_words = getattr(rec, "context", None) or []
+        for res in rec.analyze(text=text, entities=rec.supported_entities, nlp_artifacts=None):
+            name = _ENTITY_NAMES.get(res.entity_type)
+            if not name:
+                continue
+            if name in _CONTEXT_REQUIRED:
+                # A plausible match AND a context word right beside it — this is what
+                # separates a real disclosure from an incidental number.
+                if res.score >= 0.05 and _context_near(text, res.start, res.end, ctx_words):
+                    yield Span(res.start, res.end, name, "pii")
+            elif res.score >= _MIN_SCORE:
+                yield Span(res.start, res.end, name, "pii")
+    if include_email:
+        for res in _EMAIL_RECOGNIZER.analyze(
+            text=text, entities=["EMAIL_ADDRESS"], nlp_artifacts=None
+        ):
+            if res.score >= _MIN_SCORE:
+                yield Span(res.start, res.end, _EMAIL_ENTITY, "pii")
 
 
 def scan(text: str | None) -> ScanResult:
@@ -92,21 +132,17 @@ def scan(text: str | None) -> ScanResult:
     if not text:
         return ScanResult()
     counts: dict[str, int] = {}
-
-    for rec in _RECOGNIZERS:
-        ctx_words = getattr(rec, "context", None) or []
-        for res in rec.analyze(
-            text=text, entities=rec.supported_entities, nlp_artifacts=None
-        ):
-            name = _ENTITY_NAMES.get(res.entity_type)
-            if not name:
-                continue
-            if name in _CONTEXT_REQUIRED:
-                # A plausible match AND a context word right beside it — this is what
-                # separates a real disclosure from an incidental number.
-                if res.score >= 0.05 and _context_near(text, res.start, res.end, ctx_words):
-                    _bump(counts, name)
-            elif res.score >= _MIN_SCORE:
-                _bump(counts, name)
-
+    for span in _iter_spans(text, include_email=False):
+        counts[span.entity_type] = counts.get(span.entity_type, 0) + 1
     return ScanResult(secret_types=tuple(sorted(counts)), secret_counts=counts)
+
+
+def scan_spans(text: str | None) -> list[Span]:
+    """Detect identity/financial numbers and emails, returning match offsets.
+
+    The redaction view: same identity/financial gates as :func:`scan`, plus email
+    (egress-only). Offsets, not counts — the values are never returned.
+    """
+    if not text:
+        return []
+    return list(_iter_spans(text, include_email=True))
