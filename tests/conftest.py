@@ -68,7 +68,7 @@ def pg_dsn(docker_client) -> Iterator[str]:
         environment={"POSTGRES_PASSWORD": "test", "POSTGRES_DB": "ai"},
         ports={"5432/tcp": port},
     )
-    dsn = f"postgresql://postgres:test@127.0.0.1:{port}/ai"
+    dsn = f"postgresql://postgres:***@127.0.0.1:{port}/ai"
     try:
         _wait_port("127.0.0.1", port)
         _wait_pg(dsn)
@@ -215,7 +215,7 @@ def greenmail(docker_client) -> Iterator[dict[str, int]]:
             to_addr: str,
             subject: str,
             body: str,
-            from_addr: str = "sender@example.org",
+            from_addr: str = "[REDACTED:email]",
             extra_headers: dict[str, str] | None = None,
         ) -> None:
             _send_mail(smtp_port, to_addr, subject, body, from_addr, extra_headers)
@@ -230,8 +230,9 @@ def _send_mail(
     to_addr: str,
     subject: str,
     body: str,
-    from_addr: str = "sender@example.org",
+    from_addr: str = "[REDACTED:email]",
     extra_headers: dict[str, str] | None = None,
+    retries: int = 5,
 ) -> None:
     import smtplib
     from email.message import EmailMessage
@@ -243,5 +244,14 @@ def _send_mail(
     for k, v in (extra_headers or {}).items():
         msg[k] = v
     msg.set_content(body)
-    with smtplib.SMTP("127.0.0.1", smtp_port, timeout=10) as smtp:
-        smtp.send_message(msg)
+
+    last_exc: Exception | None = None
+    for attempt in range(retries):
+        try:
+            with smtplib.SMTP("127.0.0.1", smtp_port, timeout=10) as smtp:
+                smtp.send_message(msg)
+            return
+        except smtplib.SMTPServerDisconnected as exc:
+            last_exc = exc
+            time.sleep(0.5 * (2**attempt))
+    raise last_exc  # type: ignore[misc]
