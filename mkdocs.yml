@@ -53,6 +53,7 @@ nav:
       - Overview: fetchers/index.md
       - IMAP: fetchers/imap.md
       - Gmail: fetchers/gmail.md
+      - Enrichment policy: fetchers/policy.md
   - Database: database.md
   - Observability: observability.md
   - Development: development.md
