@@ -8,6 +8,12 @@ falling on the small flagged subset rather than a second run over everything.
 run_audit re-runs only the secret confirmation over the flagged documents,
 without re-enriching -- for when the detectors or the model improve.
 
+Enrichment is gated on per-source policy (``fetchers.policy``), which is
+default-deny: a document whose source is not declared enrichable is passed over
+and counted, never sent to the model. The gate is applied here rather than in
+``iter_documents`` because that reader is shared with export and audit, and
+enrichment policy has no business narrowing what they see.
+
 The caller owns the store (opens and closes it); the LLM, the document source, and
 the audit call are injectable, so the orchestration can be exercised without I/O.
 """
@@ -25,6 +31,7 @@ from . import scan
 from .config import settings
 from .enricher import Enricher, EnrichError
 from .enrichment import SCHEMA_VERSION
+from .fetchers.policy import enrichable_kinds, may_enrich
 from .secret_audit import audit_secrets
 from .store import iter_documents
 
@@ -63,10 +70,18 @@ def run_enrich(
     connection. A per-record ``EnrichError`` (a bad message) is skipped so it can't
     abort a long backfill; an ``EnrichUnavailableError`` still propagates.
     """
+    if source is not None and not may_enrich(source):
+        raise ValueError(
+            f"source {source!r} is not declared enrichable; "
+            f"enrichable kinds are {', '.join(enrichable_kinds()) or '(none)'}. "
+            "Declare it in corpus.fetchers.policy.POLICIES to enable enrichment."
+        )
+
     concurrency = concurrency or settings.enrich_concurrency
     own = enricher is None
     enricher = enricher or Enricher()
-    counts = {"scanned": 0, "enriched": 0, "audited": 0, "skipped": 0}
+    counts = {"scanned": 0, "enriched": 0, "audited": 0, "skipped": 0, "ineligible": 0}
+    excluded: set[str] = set()
 
     def selected() -> Iterator[tuple]:
         seen = set() if force else store.enriched_ids()
@@ -74,6 +89,13 @@ def run_enrich(
             if limit and counts["scanned"] >= limit:
                 return
             counts["scanned"] += 1
+            doc_source = (meta or {}).get("source")
+            if not may_enrich(doc_source):
+                # Counted apart from ``skipped``, which means a record that
+                # failed: a backfill that enriches nothing must say why.
+                counts["ineligible"] += 1
+                excluded.add(doc_source or "<unset>")
+                continue
             if doc_id not in seen:
                 yield doc_id, content, meta
 
@@ -122,9 +144,15 @@ def run_enrich(
         if own:
             enricher.close()
     log.info(
-        "enriched %d, audited %d, skipped %d of %d scanned",
-        counts["enriched"], counts["audited"], counts["skipped"], counts["scanned"],
+        "enriched %d, audited %d, skipped %d, ineligible %d of %d scanned",
+        counts["enriched"], counts["audited"], counts["skipped"],
+        counts["ineligible"], counts["scanned"],
     )
+    if excluded:
+        log.info(
+            "not enrichable (no policy declaring enrich=True): %s",
+            ", ".join(sorted(excluded)),
+        )
     return counts
 
 
@@ -141,6 +169,12 @@ def run_audit(
     """Re-run only the LLM secret confirmation over documents with candidates.
 
     Does not enrich; upserts the audit idempotently.
+
+    Deliberately *not* gated on enrichment policy. This is a credential scan, and
+    a secret pasted into a document is worth finding whatever the document is;
+    narrowing it to enrichable sources would create blind spots exactly where
+    nobody is looking. It already runs the model only on documents the
+    deterministic detectors flagged, so the cost of the wider net is small.
     """
     model = model or settings.enrich_model
     if not model:

@@ -86,7 +86,13 @@ def enrich(source: str | None, account: str | None, limit: int, force: bool) -> 
     try:
         with EnrichStore() as store:
             r = run_enrich(store, source=source, account=account, limit=limit, force=force)
-        click.echo(f"enriched {r['enriched']}, audited {r['audited']} of {r['scanned']} scanned")
+        msg = f"enriched {r['enriched']}, audited {r['audited']} of {r['scanned']} scanned"
+        if r["ineligible"]:
+            msg += f" ({r['ineligible']} not enrichable by source policy)"
+        click.echo(msg)
+    except ValueError as exc:
+        # Policy refusal: a clear message beats a traceback.
+        raise click.ClickException(str(exc)) from exc
     finally:
         telemetry.shutdown()
 

@@ -266,13 +266,34 @@ def test_ingest_flushes_telemetry_on_error(runner, configure, shutdown, ingest_f
 
 
 def test_enrich_command(runner, configure, shutdown, enrich_store_cls, run_enrich):
-    run_enrich.return_value = {"scanned": 5, "enriched": 4, "audited": 1}
+    run_enrich.return_value = {"scanned": 5, "enriched": 4, "audited": 1, "ineligible": 0}
     result = runner.invoke(cli.main, ["enrich", "--limit", "5"])
     assert result.exit_code == 0, result.output
     assert "enriched 4, audited 1 of 5 scanned" in result.output
+    assert "not enrichable" not in result.output  # nothing excluded, nothing said
     assert configure.call_args.args == ("corpus-enrich",)
     assert run_enrich.call_args.kwargs["limit"] == 5
     shutdown.assert_called_once()
+
+
+def test_enrich_command_reports_ineligible_documents(
+    runner, configure, shutdown, enrich_store_cls, run_enrich
+):
+    run_enrich.return_value = {"scanned": 5, "enriched": 1, "audited": 0, "ineligible": 4}
+    result = runner.invoke(cli.main, ["enrich"])
+    assert result.exit_code == 0, result.output
+    assert "4 not enrichable by source policy" in result.output
+
+
+def test_enrich_command_reports_a_policy_refusal_without_a_traceback(
+    runner, configure, shutdown, enrich_store_cls, run_enrich
+):
+    run_enrich.side_effect = ValueError("source 'youtube:@chan' is not declared enrichable")
+    result = runner.invoke(cli.main, ["enrich", "--source", "youtube:@chan"])
+    assert result.exit_code != 0
+    assert "not declared enrichable" in result.output
+    assert "Traceback" not in result.output
+    shutdown.assert_called_once()  # telemetry still flushed on refusal
 
 
 def test_audit_secrets_command(runner, configure, shutdown, enrich_store_cls, run_audit):
