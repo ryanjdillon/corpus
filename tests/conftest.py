@@ -43,6 +43,26 @@ def _wait_port(host: str, port: int, timeout: float = 60.0) -> None:
     raise TimeoutError(f"{host}:{port} not reachable within {timeout}s")
 
 
+def _wait_smtp_ready(host: str, port: int, timeout: float = 60.0) -> None:
+    """Wait until GreenMail's SMTP can complete a handshake, not just accept a
+    connection. The listening port opens before the service is ready to service
+    a session, so a plain port check races the first send into
+    SMTPServerDisconnected — the source of the IMAP-suite flake."""
+    import smtplib
+
+    deadline = time.time() + timeout
+    last: Exception | None = None
+    while time.time() < deadline:
+        try:
+            with smtplib.SMTP(host, port, timeout=5) as smtp:
+                smtp.ehlo()
+            return
+        except (OSError, smtplib.SMTPException) as exc:
+            last = exc
+            time.sleep(0.5)
+    raise TimeoutError(f"SMTP not ready on {host}:{port} within {timeout}s: {last!r}")
+
+
 @pytest.fixture(scope="session")
 def docker_client():
     try:
@@ -209,7 +229,9 @@ def greenmail(docker_client) -> Iterator[dict[str, int]]:
     try:
         _wait_port("127.0.0.1", imap_port)
         _wait_port("127.0.0.1", smtp_port)
-        time.sleep(1.0)  # let the IMAP service finish binding
+        # The ports open before GreenMail can service a session; wait for a real
+        # SMTP handshake so the first send doesn't race into a disconnect.
+        _wait_smtp_ready("127.0.0.1", smtp_port)
 
         def send(
             to_addr: str,
@@ -243,5 +265,15 @@ def _send_mail(
     for k, v in (extra_headers or {}).items():
         msg[k] = v
     msg.set_content(body)
-    with smtplib.SMTP("127.0.0.1", smtp_port, timeout=10) as smtp:
-        smtp.send_message(msg)
+    # GreenMail occasionally drops an SMTP connection mid-session under load;
+    # retry the send rather than fail the test on a transient disconnect.
+    last: Exception | None = None
+    for attempt in range(5):
+        try:
+            with smtplib.SMTP("127.0.0.1", smtp_port, timeout=10) as smtp:
+                smtp.send_message(msg)
+            return
+        except smtplib.SMTPServerDisconnected as exc:
+            last = exc
+            time.sleep(0.5 * (2**attempt))
+    raise last  # type: ignore[misc]
