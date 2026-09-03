@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from typing import Any
 
+import msgspec
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
-from . import search
+from . import scan, search
 from .config import settings
+from .enrich_store import EnrichStore
+from .secret_audit import audit_secrets
 
 mcp = FastMCP(
     "corpus",
@@ -104,6 +107,62 @@ def corpus_stats() -> dict[str, Any]:
         A dict with ``total`` and ``by_label`` (label -> count).
     """
     return search.stats()
+
+
+def _model_text(meta: dict | None, content: str | None) -> str:
+    """Build model input: subject prepended to body."""
+    subject = (meta or {}).get("subject") or ""
+    return f"Subject: {subject}\n\n{content or ''}"
+
+
+@mcp.tool()
+def audit_secret(
+    id: str = Field(description="Document id from a corpus_search / corpus_query result."),
+) -> dict[str, Any] | None:
+    """Run LLM secret audit on one document, confirming deterministic candidates.
+
+    Re-scans with the current detectors and model, saves the result to the
+    enrichments table, and returns the verdict. Use when the detectors or
+    model have improved and you want to re-confirm a specific document.
+
+    Returns:
+        A dict with ``id``, ``candidates`` (types flagged), ``audit`` (the
+        verdict with severity and notes), ``model``, and ``scan_version``;
+        or ``None`` if no document has that id.
+    """
+    doc = search.get_document(id)
+    if doc is None:
+        return None
+
+    content = doc.get("content")
+    meta = doc.get("meta")
+    candidates = scan.audit_candidates(content)
+
+    model = settings.enrich_model
+    if not model:
+        raise ValueError("no model configured (set CORPUS_ENRICH_MODEL)")
+
+    audit_result = None
+    if candidates:
+        text = _model_text(meta, content)
+        audit_result = audit_secrets(text, candidates, model=model)
+
+    with EnrichStore() as store:
+        store.save_audit(
+            id,
+            candidates,
+            msgspec.to_builtins(audit_result) if audit_result else {"contains_secret": False, "findings": []},
+            model,
+            scan.SCAN_VERSION,
+        )
+
+    return {
+        "id": id,
+        "candidates": candidates,
+        "audit": msgspec.to_builtins(audit_result) if audit_result else {"contains_secret": False, "findings": []},
+        "model": model,
+        "scan_version": scan.SCAN_VERSION,
+    }
 
 
 def run() -> None:
