@@ -23,7 +23,7 @@ lint:
 cov:
     uv run coverage run --source=corpus -m pytest -o addopts= tests
     uv run coverage report --precision=2
-    uv run python scripts/coverage_gate.py "$(uv run coverage report --format=total --precision=2)" .github/coverage-baseline.txt
+    uv run python scripts/coverage_gate.py "$(uv run coverage report --format=total --precision=2)" .github/coverage-baseline.txt .docker-skip-count
 
 # Fail if this branch changes the module set without updating docs/architecture.*.
 arch BASE="origin/main":

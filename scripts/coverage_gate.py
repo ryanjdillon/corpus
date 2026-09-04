@@ -10,7 +10,10 @@ fixed minimum:
 
 Equal coverage passes. Usage:
 
-    coverage_gate.py <current-percent> <baseline-file>
+    coverage_gate.py <current-percent> <baseline-file> [docker-skip-file]
+
+When docker-skip-file exists and contains a non-zero count, the ratchet is
+skipped (Docker-backed tests were not run, so coverage is expected to drop).
 """
 
 from __future__ import annotations
@@ -20,12 +23,31 @@ from pathlib import Path
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 3:
-        print("usage: coverage_gate.py <current-percent> <baseline-file>", file=sys.stderr)
+    if len(argv) < 3 or len(argv) > 4:
+        print(
+            "usage: coverage_gate.py <current-percent> <baseline-file> [docker-skip-file]",
+            file=sys.stderr,
+        )
         return 2
     current = round(float(argv[1]), 2)
     baseline_file = Path(argv[2])
     baseline = round(float(baseline_file.read_text().strip()), 2)
+
+    docker_skip_file = Path(argv[3]) if len(argv) == 4 else None
+    docker_skips = 0
+    if docker_skip_file and docker_skip_file.exists():
+        try:
+            docker_skips = int(docker_skip_file.read_text().strip())
+        except ValueError:
+            pass
+
+    if docker_skips > 0:
+        print(f"Coverage {current}% (baseline {baseline}%).")
+        print(
+            f"coverage ratchet skipped: {docker_skips} tests skipped "
+            "(Docker unavailable); full ratchet runs in CI"
+        )
+        return 0
 
     if current < baseline:
         print(f"::error::Coverage regressed: {current}% < baseline {baseline}%")
