@@ -11,7 +11,6 @@ from fastapi.testclient import TestClient
 
 from corpus import api, scan, search
 from corpus import secret_audit as audit_mod
-from corpus.enrich_store import EnrichStore
 
 
 @pytest.fixture
@@ -188,5 +187,5 @@ def test_audit_endpoint_no_candidates_still_saves(
 def test_audit_endpoint_raises_without_model(client, get_document, audit_candidates, monkeypatch):
     monkeypatch.setattr(api.settings, "enrich_model", "")
 
-    resp = client.post("/audit", json={"id": "test::1"})
-    assert resp.status_code == 500
+    with pytest.raises(ValueError, match="no model configured"):
+        client.post("/audit", json={"id": "test::1"})
