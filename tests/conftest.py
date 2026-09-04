@@ -13,9 +13,44 @@ import socket
 import time
 from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from threading import Thread
 
 import pytest
+
+# Tracks tests skipped due to Docker unavailability for the coverage gate.
+DOCKER_SKIP_FILE = Path(".docker-skip-count")
+_docker_skip_count = 0
+
+
+@pytest.hookimpl
+def pytest_configure(config):
+    """Clean up stale skip marker from previous runs."""
+    if DOCKER_SKIP_FILE.exists():
+        DOCKER_SKIP_FILE.unlink()
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    """Count tests skipped due to Docker unavailability."""
+    global _docker_skip_count
+    outcome = yield
+    report = outcome.get_result()
+    if (
+        report.skipped
+        and call.when == "setup"
+        and hasattr(report, "longrepr")
+        and report.longrepr
+        and "Docker unavailable" in str(report.longrepr)
+    ):
+        _docker_skip_count += 1
+
+
+@pytest.hookimpl
+def pytest_sessionfinish(session, exitstatus):
+    """Write Docker-skip count so coverage_gate.py can detect partial runs."""
+    if _docker_skip_count > 0:
+        DOCKER_SKIP_FILE.write_text(str(_docker_skip_count))
 
 PG_IMAGE = "pgvector/pgvector:pg17"
 GREENMAIL_IMAGE = "greenmail/standalone:2.1.3"
