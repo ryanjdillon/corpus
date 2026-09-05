@@ -9,6 +9,8 @@ from pydantic import Field
 
 from . import search
 from .config import settings
+from .enrich_batch import audit_one
+from .enrich_store import EnrichStore
 
 mcp = FastMCP(
     "corpus",
@@ -104,6 +106,30 @@ def corpus_stats() -> dict[str, Any]:
         A dict with ``total`` and ``by_label`` (label -> count).
     """
     return search.stats()
+
+
+@mcp.tool()
+def audit_secret(
+    id: str = Field(description="Document id from a corpus_search / corpus_query result."),
+) -> dict[str, Any] | None:
+    """Re-run the LLM secret audit on one document, confirming its candidates.
+
+    Re-scans with the current detectors and model and upserts the verdict. Use
+    to re-confirm a single message once either has improved, rather than
+    replaying the whole ``corpus audit-secrets`` job.
+
+    Returns:
+        A dict with ``id``, ``candidates`` (the types the detectors flagged),
+        ``audit`` (the verdict with severity and notes), ``model``, and
+        ``scan_version``; or ``None`` if no document has that id. ``audit`` is
+        ``None`` when nothing was flagged -- the model is not consulted and no
+        verdict is stored.
+    """
+    doc = search.get_document(id)
+    if doc is None:
+        return None
+    with EnrichStore() as store:
+        return audit_one(store, id, doc.get("content"), doc.get("meta"))
 
 
 def run() -> None:

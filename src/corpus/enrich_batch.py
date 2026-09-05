@@ -192,3 +192,42 @@ def run_audit(
         audited += 1
     log.info("audited %d of %d scanned", audited, scanned)
     return {"scanned": scanned, "audited": audited}
+
+
+def audit_one(
+    store,
+    doc_id: str,
+    content: str | None,
+    meta: dict | None,
+    *,
+    audit=audit_secrets,
+    model: str | None = None,
+) -> dict:
+    """Re-confirm the secret audit for a single document, for interactive callers.
+
+    The per-id counterpart to :func:`run_audit`, kept here so both share one
+    definition of what an audit is: the same model input, the same detectors,
+    and the same rule that the model is consulted only for documents the
+    deterministic detectors flagged.
+
+    A document with no candidates is reported with ``audit`` of ``None`` and
+    leaves the stored row untouched. Persisting a synthetic "nothing found"
+    would attribute a verdict to a model that was never called, and the stored
+    audit is defined as the model's own verdict.
+    """
+    model = model or settings.enrich_model
+    if not model:
+        raise ValueError("no model configured (set CORPUS_ENRICH_MODEL)")
+    candidates = scan.audit_candidates(content)
+    verdict = None
+    if candidates:
+        result = audit(_model_text(meta, content), candidates, model=model)
+        verdict = msgspec.to_builtins(result)
+        store.save_audit(doc_id, candidates, verdict, model, scan.SCAN_VERSION)
+    return {
+        "id": doc_id,
+        "candidates": candidates,
+        "audit": verdict,
+        "model": model,
+        "scan_version": scan.SCAN_VERSION,
+    }

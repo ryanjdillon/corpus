@@ -8,6 +8,8 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 
 from . import __version__, search
+from .enrich_batch import audit_one
+from .enrich_store import EnrichStore
 
 app = FastAPI(title="corpus", version=__version__)
 
@@ -28,6 +30,12 @@ class QueryRequest(BaseModel):
     before: str | None = None
     after: str | None = None
     limit: int = 500
+
+
+class AuditRequest(BaseModel):
+    """Request body for the secret audit ``/audit`` endpoint."""
+
+    id: str
 
 
 @app.get("/health")
@@ -59,3 +67,22 @@ def query_endpoint(req: QueryRequest) -> dict[str, Any]:
 def stats_endpoint() -> dict[str, Any]:
     """Return index totals and per-label document counts."""
     return search.stats()
+
+
+@app.post("/audit")
+def audit_endpoint(req: AuditRequest) -> dict[str, Any] | None:
+    """Re-run the LLM secret audit on one document, confirming its candidates.
+
+    Re-scans with the current detectors and model and upserts the verdict, so a
+    single message can be re-confirmed once either has improved without
+    replaying the whole ``corpus audit-secrets`` job.
+
+    Returns ``None`` if no document has that id, and an ``audit`` of ``null``
+    when the detectors flag nothing (the model is not consulted, and no verdict
+    is stored).
+    """
+    doc = search.get_document(req.id)
+    if doc is None:
+        return None
+    with EnrichStore() as store:
+        return audit_one(store, req.id, doc.get("content"), doc.get("meta"))
