@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, create_autospec
 import httpx
 import pytest
 
-from corpus import mcp_server, scan, search
+from corpus import enrich_batch, mcp_server, scan, search
 from corpus import secret_audit as audit_mod
 
 
@@ -99,8 +99,8 @@ def audit_secrets_mock(monkeypatch):
 
 @pytest.fixture
 def enrich_model(monkeypatch):
-    """Set the enrich_model setting."""
-    monkeypatch.setattr(mcp_server.settings, "enrich_model", "test-model")
+    """Set the enrich_model setting the audit resolves its model from."""
+    monkeypatch.setattr(enrich_batch.settings, "enrich_model", "test-model")
 
 
 def test_audit_secret_returns_none_for_missing_doc(monkeypatch):
@@ -125,9 +125,10 @@ def test_audit_secret_runs_audit_and_saves(
     enrich_store.save_audit.assert_called_once()
 
 
-def test_audit_secret_no_candidates_still_saves(
+def test_audit_secret_no_candidates_does_not_store_a_verdict(
     get_document, enrich_store, enrich_model, monkeypatch
 ):
+    """No candidates means no model call, so no verdict may be attributed to one."""
     mock = create_autospec(scan.audit_candidates)
     mock.return_value = []
     monkeypatch.setattr(scan, "audit_candidates", mock)
@@ -136,13 +137,14 @@ def test_audit_secret_no_candidates_still_saves(
 
     assert result is not None
     assert result["candidates"] == []
-    data = result["audit"]
-    assert data["contains_secret"] is False
-    enrich_store.save_audit.assert_called_once()
+    assert result["audit"] is None
+    enrich_store.save_audit.assert_not_called()
 
 
-def test_audit_secret_raises_without_model(get_document, audit_candidates, monkeypatch):
-    monkeypatch.setattr(mcp_server.settings, "enrich_model", "")
+def test_audit_secret_raises_without_model(
+    get_document, audit_candidates, enrich_store, monkeypatch
+):
+    monkeypatch.setattr(enrich_batch.settings, "enrich_model", "")
 
     with pytest.raises(ValueError, match="no model configured"):
         mcp_server.audit_secret(id="test::1")

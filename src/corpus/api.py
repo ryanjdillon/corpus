@@ -4,14 +4,12 @@ from __future__ import annotations
 
 from typing import Any
 
-import msgspec
 from fastapi import FastAPI
 from pydantic import BaseModel
 
-from . import __version__, scan, search
-from .config import settings
+from . import __version__, search
+from .enrich_batch import audit_one
 from .enrich_store import EnrichStore
-from .secret_audit import audit_secrets
 
 app = FastAPI(title="corpus", version=__version__)
 
@@ -71,50 +69,20 @@ def stats_endpoint() -> dict[str, Any]:
     return search.stats()
 
 
-def _model_text(meta: dict | None, content: str | None) -> str:
-    """Build model input: subject prepended to body."""
-    subject = (meta or {}).get("subject") or ""
-    return f"Subject: {subject}\n\n{content or ''}"
-
-
 @app.post("/audit")
 def audit_endpoint(req: AuditRequest) -> dict[str, Any] | None:
-    """Run LLM secret audit on one document, confirming deterministic candidates.
+    """Re-run the LLM secret audit on one document, confirming its candidates.
 
-    Re-scans with the current detectors and model, saves the result to the
-    enrichments table, and returns the verdict. Use when the detectors or
-    model have improved and you want to re-confirm a specific document.
+    Re-scans with the current detectors and model and upserts the verdict, so a
+    single message can be re-confirmed once either has improved without
+    replaying the whole ``corpus audit-secrets`` job.
+
+    Returns ``None`` if no document has that id, and an ``audit`` of ``null``
+    when the detectors flag nothing (the model is not consulted, and no verdict
+    is stored).
     """
     doc = search.get_document(req.id)
     if doc is None:
         return None
-
-    content = doc.get("content")
-    meta = doc.get("meta")
-    candidates = scan.audit_candidates(content)
-
-    model = settings.enrich_model
-    if not model:
-        raise ValueError("no model configured (set CORPUS_ENRICH_MODEL)")
-
-    audit_result = None
-    if candidates:
-        text = _model_text(meta, content)
-        audit_result = audit_secrets(text, candidates, model=model)
-
     with EnrichStore() as store:
-        store.save_audit(
-            req.id,
-            candidates,
-            msgspec.to_builtins(audit_result) if audit_result else {"contains_secret": False, "findings": []},
-            model,
-            scan.SCAN_VERSION,
-        )
-
-    return {
-        "id": req.id,
-        "candidates": candidates,
-        "audit": msgspec.to_builtins(audit_result) if audit_result else {"contains_secret": False, "findings": []},
-        "model": model,
-        "scan_version": scan.SCAN_VERSION,
-    }
+        return audit_one(store, req.id, doc.get("content"), doc.get("meta"))

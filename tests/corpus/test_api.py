@@ -9,7 +9,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from corpus import api, scan, search
+from corpus import api, enrich_batch, scan, search
 from corpus import secret_audit as audit_mod
 
 
@@ -141,8 +141,8 @@ def audit_secrets_mock(monkeypatch):
 
 @pytest.fixture
 def enrich_model(monkeypatch):
-    """Set the enrich_model setting."""
-    monkeypatch.setattr(api.settings, "enrich_model", "test-model")
+    """Set the enrich_model setting the audit resolves its model from."""
+    monkeypatch.setattr(enrich_batch.settings, "enrich_model", "test-model")
 
 
 def test_audit_endpoint_returns_none_for_missing_doc(client, monkeypatch):
@@ -166,12 +166,20 @@ def test_audit_endpoint_runs_audit_and_saves(
     assert data["audit"]["contains_secret"] is True
     assert data["audit"]["findings"][0]["type"] == "us_ssn"
     assert data["model"] == "test-model"
-    enrich_store.save_audit.assert_called_once()
+
+    # What is persisted is the model's own verdict, attributed to that model.
+    doc_id, candidates, verdict, model, scan_version = enrich_store.save_audit.call_args.args
+    assert doc_id == "test::1"
+    assert candidates == ["us_ssn"]
+    assert verdict == data["audit"]
+    assert model == "test-model"
+    assert scan_version == scan.SCAN_VERSION
 
 
-def test_audit_endpoint_no_candidates_still_saves(
+def test_audit_endpoint_no_candidates_does_not_store_a_verdict(
     client, get_document, monkeypatch, enrich_store, enrich_model
 ):
+    """No candidates means no model call, so no verdict may be attributed to one."""
     mock = create_autospec(scan.audit_candidates)
     mock.return_value = []
     monkeypatch.setattr(scan, "audit_candidates", mock)
@@ -180,12 +188,14 @@ def test_audit_endpoint_no_candidates_still_saves(
     assert resp.status_code == 200
     data = resp.json()
     assert data["candidates"] == []
-    assert data["audit"]["contains_secret"] is False
-    enrich_store.save_audit.assert_called_once()
+    assert data["audit"] is None
+    enrich_store.save_audit.assert_not_called()
 
 
-def test_audit_endpoint_raises_without_model(client, get_document, audit_candidates, monkeypatch):
-    monkeypatch.setattr(api.settings, "enrich_model", "")
+def test_audit_endpoint_raises_without_model(
+    client, get_document, audit_candidates, enrich_store, monkeypatch
+):
+    monkeypatch.setattr(enrich_batch.settings, "enrich_model", "")
 
     with pytest.raises(ValueError, match="no model configured"):
         client.post("/audit", json={"id": "test::1"})
