@@ -78,7 +78,11 @@ def chat_completion(client: httpx.Client, payload: dict) -> str:
     A 4xx is this request's own fault -- retrying it would only repeat it -- so it
     surfaces immediately as an ``EnrichError``.
     """
+    # Both knobs are clamped: a zero or negative value is a misconfiguration, and
+    # degrading to "try once" / "do not wait" beats failing the request with a
+    # ValueError out of time.sleep().
     attempts = max(1, settings.enrich_retries)
+    max_wait = max(0.0, settings.enrich_retry_max_wait)
     last: Exception | None = None
     for attempt in range(attempts):
         try:
@@ -92,7 +96,7 @@ def chat_completion(client: httpx.Client, payload: dict) -> str:
         except httpx.TransportError as exc:  # timeouts, connection resets
             last = exc
         if attempt + 1 < attempts:
-            wait = min(2**attempt, settings.enrich_retry_max_wait)
+            wait = min(2**attempt, max_wait)
             # Half the wait is jittered: concurrent workers hit the blip together,
             # and backing off in lockstep would re-converge on the endpoint in one
             # burst the moment it recovers.

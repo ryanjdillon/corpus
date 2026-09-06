@@ -100,6 +100,21 @@ def test_backoff_grows_but_is_capped_and_jittered(client, monkeypatch):
     assert waits[-1] > waits[0]
 
 
+def test_a_negative_backoff_cap_degrades_to_no_wait(client, monkeypatch):
+    # A misconfigured cap must not turn every retry into a ValueError from sleep().
+    waits: list[float] = []
+    monkeypatch.setattr(enricher_mod.settings, "enrich_retries", 3)
+    monkeypatch.setattr(enricher_mod.settings, "enrich_retry_max_wait", -1.0)
+    monkeypatch.setattr(enricher_mod.time, "sleep", waits.append)
+    client.post.return_value = _response(503, text="overloaded")
+
+    with pytest.raises(EnrichUnavailableError):
+        Enricher(model="local", client=client).enrich("x")
+
+    assert waits == [0.0, 0.0]
+    assert client.post.call_count == 3
+
+
 def test_unparseable_output_is_enrich_error(client):
     client.post.return_value = _response(
         200, json_body={"choices": [{"message": {"content": "not json"}}]}
