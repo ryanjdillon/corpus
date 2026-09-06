@@ -66,6 +66,38 @@ class EnrichUnavailableError(Exception):
     """
 
 
+# Response headers that say which layer answered. ``server`` names the process;
+# ``via`` and the Envoy headers mark a proxy in front of it, and an upstream
+# service time appears only once a request actually reached that upstream;
+# ``retry-after`` is set by a gateway shedding on queue depth, not by a model
+# server that ran out of KV cache. Any correlation id lets the server-side log for
+# the same request be found.
+_ATTRIBUTION_HEADERS = (
+    "server",
+    "via",
+    "retry-after",
+    "x-envoy-upstream-service-time",
+    "x-request-id",
+)
+
+
+def _describe(exc: Exception, elapsed: float) -> str:
+    """Describe a transient failure in enough detail to attribute it to a layer.
+
+    "503" on its own does not say whether the gateway shed the request or the model
+    server behind it did, so the whole response is worth keeping: the headers name
+    the layer that answered, the body distinguishes a proxy's error page from the
+    model server's JSON, and the elapsed time separates instant admission control
+    from an upstream timeout.
+    """
+    if isinstance(exc, httpx.HTTPStatusError):
+        headers = exc.response.headers
+        seen = " ".join(f"{k}={headers[k]!r}" for k in _ATTRIBUTION_HEADERS if k in headers)
+        body = " ".join(exc.response.text[:200].split())
+        return f"HTTP {exc.response.status_code} in {elapsed:.2f}s [{seen}] {body!r}"
+    return f"{type(exc).__name__} in {elapsed:.2f}s: {exc}"
+
+
 def chat_completion(client: httpx.Client, payload: dict) -> str:
     """POST one chat completion and return the assistant message content.
 
@@ -74,6 +106,8 @@ def chat_completion(client: httpx.Client, payload: dict) -> str:
     not die with it: each such failure is retried with exponential backoff, capped
     per wait at ``CORPUS_ENRICH_RETRY_MAX_WAIT``, over ``CORPUS_ENRICH_RETRIES``
     attempts. Only once that budget is spent is the endpoint called unavailable.
+    Every such failure is logged with its attribution detail (see ``_describe``),
+    since riding one out hides which layer shed the request.
 
     A 4xx is this request's own fault -- retrying it would only repeat it -- so it
     surfaces immediately as an ``EnrichError``.
@@ -84,7 +118,9 @@ def chat_completion(client: httpx.Client, payload: dict) -> str:
     attempts = max(1, settings.enrich_retries)
     max_wait = max(0.0, settings.enrich_retry_max_wait)
     last: Exception | None = None
+    detail = ""
     for attempt in range(attempts):
+        started = time.monotonic()
         try:
             resp = client.post("/chat/completions", json=payload)
             resp.raise_for_status()
@@ -95,6 +131,7 @@ def chat_completion(client: httpx.Client, payload: dict) -> str:
             last = exc
         except httpx.TransportError as exc:  # timeouts, connection resets
             last = exc
+        detail = _describe(last, time.monotonic() - started)
         if attempt + 1 < attempts:
             wait = min(2**attempt, max_wait)
             # Half the wait is jittered: concurrent workers hit the blip together,
@@ -103,11 +140,11 @@ def chat_completion(client: httpx.Client, payload: dict) -> str:
             wait = wait / 2 + random.uniform(0, wait / 2)
             log.warning(
                 "endpoint unavailable (attempt %d/%d), retrying in %.1fs: %s",
-                attempt + 1, attempts, wait, last,
+                attempt + 1, attempts, wait, detail,
             )
             time.sleep(wait)
     assert last is not None
-    raise EnrichUnavailableError(f"after {attempts} attempts: {last}") from last
+    raise EnrichUnavailableError(f"after {attempts} attempts: {detail}") from last
 
 
 class Enricher:

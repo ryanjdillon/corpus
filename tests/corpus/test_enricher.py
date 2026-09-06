@@ -28,9 +28,11 @@ _COMPLETION = {
 }
 
 
-def _response(status: int, *, json_body=None, text: str | None = None) -> httpx.Response:
+def _response(
+    status: int, *, json_body=None, text: str | None = None, headers: dict | None = None
+) -> httpx.Response:
     request = httpx.Request("POST", "http://gw/v1/chat/completions")
-    return httpx.Response(status, json=json_body, text=text, request=request)
+    return httpx.Response(status, json=json_body, text=text, headers=headers, request=request)
 
 
 @pytest.fixture
@@ -113,6 +115,40 @@ def test_a_negative_backoff_cap_degrades_to_no_wait(client, monkeypatch):
 
     assert waits == [0.0, 0.0]
     assert client.post.call_count == 3
+
+
+def test_a_shed_request_is_logged_with_what_answered_it(client, monkeypatch, caplog):
+    # Which layer shed the request is the whole question when the endpoint 503s
+    # under load, and retrying past it must not throw that evidence away.
+    monkeypatch.setattr(enricher_mod.settings, "enrich_retries", 2)
+    monkeypatch.setattr(enricher_mod.time, "sleep", lambda *_: None)
+    client.post.return_value = _response(
+        503,
+        text="upstream connect error",
+        headers={"server": "envoy", "retry-after": "1", "x-request-id": "abc123"},
+    )
+
+    with pytest.raises(EnrichUnavailableError) as excinfo, caplog.at_level("WARNING"):
+        Enricher(model="local", client=client).enrich("x")
+
+    assert "server='envoy'" in caplog.text
+    assert "retry-after='1'" in caplog.text
+    assert "x-request-id='abc123'" in caplog.text
+    assert "upstream connect error" in caplog.text
+    assert "HTTP 503 in " in caplog.text  # elapsed separates shedding from a timeout
+    assert "HTTP 503" in str(excinfo.value)
+
+
+def test_a_dropped_connection_is_described_by_kind(client, monkeypatch, caplog):
+    monkeypatch.setattr(enricher_mod.settings, "enrich_retries", 2)
+    monkeypatch.setattr(enricher_mod.time, "sleep", lambda *_: None)
+    client.post.side_effect = httpx.ReadTimeout("timed out")
+
+    with pytest.raises(EnrichUnavailableError) as excinfo, caplog.at_level("WARNING"):
+        Enricher(model="local", client=client).enrich("x")
+
+    assert "ReadTimeout in " in caplog.text
+    assert "ReadTimeout" in str(excinfo.value)
 
 
 def test_unparseable_output_is_enrich_error(client):
