@@ -62,12 +62,42 @@ def test_client_error_is_non_retryable(client):
 
 
 def test_server_error_retries_then_raises_unavailable(client, monkeypatch):
+    monkeypatch.setattr(enricher_mod.settings, "enrich_retries", 3)
     monkeypatch.setattr(enricher_mod.time, "sleep", lambda *_: None)
     client.post.return_value = _response(503, text="overloaded")
 
     with pytest.raises(EnrichUnavailableError):
         Enricher(model="local", client=client).enrich("x")
-    assert client.post.call_count == 4  # _RETRIES attempts
+    assert client.post.call_count == 3  # enrich_retries attempts
+
+
+def test_server_error_recovers_within_the_retry_budget(client, monkeypatch):
+    monkeypatch.setattr(enricher_mod.time, "sleep", lambda *_: None)
+    client.post.side_effect = [
+        _response(503, text="overloaded"),
+        _response(502, text="bad gateway"),
+        _response(200, json_body=_COMPLETION),
+    ]
+
+    doc = Enricher(model="local", client=client).enrich("x")
+
+    assert doc.category is Category.personal
+    assert client.post.call_count == 3
+
+
+def test_backoff_grows_but_is_capped_and_jittered(client, monkeypatch):
+    waits: list[float] = []
+    monkeypatch.setattr(enricher_mod.settings, "enrich_retries", 6)
+    monkeypatch.setattr(enricher_mod.settings, "enrich_retry_max_wait", 4.0)
+    monkeypatch.setattr(enricher_mod.time, "sleep", waits.append)
+    client.post.return_value = _response(503, text="overloaded")
+
+    with pytest.raises(EnrichUnavailableError):
+        Enricher(model="local", client=client).enrich("x")
+
+    assert len(waits) == 5  # no sleep after the final attempt
+    assert all(0.5 <= w <= 4.0 for w in waits)  # jittered into [wait/2, wait]
+    assert waits[-1] > waits[0]
 
 
 def test_unparseable_output_is_enrich_error(client):

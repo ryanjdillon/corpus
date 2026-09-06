@@ -10,6 +10,8 @@ the deterministic ``pii`` scan.
 
 from __future__ import annotations
 
+import logging
+import random
 import time
 
 import httpx
@@ -18,7 +20,7 @@ import msgspec
 from .config import settings
 from .enrichment import Enrichment, json_schema
 
-_RETRIES = 4
+log = logging.getLogger("corpus.enrich")
 
 _SYSTEM = (
     "You extract structured metadata from a single email or document for the "
@@ -64,6 +66,46 @@ class EnrichUnavailableError(Exception):
     """
 
 
+def chat_completion(client: httpx.Client, payload: dict) -> str:
+    """POST one chat completion and return the assistant message content.
+
+    Rides out a transient outage in-process. A busy endpoint sheds load as 5xx (or
+    drops the connection) and comes back within minutes, so a whole backfill must
+    not die with it: each such failure is retried with exponential backoff, capped
+    per wait at ``CORPUS_ENRICH_RETRY_MAX_WAIT``, over ``CORPUS_ENRICH_RETRIES``
+    attempts. Only once that budget is spent is the endpoint called unavailable.
+
+    A 4xx is this request's own fault -- retrying it would only repeat it -- so it
+    surfaces immediately as an ``EnrichError``.
+    """
+    attempts = max(1, settings.enrich_retries)
+    last: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            resp = client.post("/chat/completions", json=payload)
+            resp.raise_for_status()
+            return resp.json()["choices"][0]["message"]["content"]
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code < 500:
+                raise EnrichError(f"{exc.response.status_code}: {exc.response.text[:200]}") from exc
+            last = exc
+        except httpx.TransportError as exc:  # timeouts, connection resets
+            last = exc
+        if attempt + 1 < attempts:
+            wait = min(2**attempt, settings.enrich_retry_max_wait)
+            # Half the wait is jittered: concurrent workers hit the blip together,
+            # and backing off in lockstep would re-converge on the endpoint in one
+            # burst the moment it recovers.
+            wait = wait / 2 + random.uniform(0, wait / 2)
+            log.warning(
+                "endpoint unavailable (attempt %d/%d), retrying in %.1fs: %s",
+                attempt + 1, attempts, wait, last,
+            )
+            time.sleep(wait)
+    assert last is not None
+    raise EnrichUnavailableError(f"after {attempts} attempts: {last}") from last
+
+
 class Enricher:
     """Enrich message text into a structured ``Enrichment`` using a local model."""
 
@@ -92,29 +134,13 @@ class Enricher:
                 "json_schema": {"name": "enrichment", "schema": self._schema},
             },
         }
-        last: Exception | None = None
-        for attempt in range(_RETRIES):
-            try:
-                resp = self._client.post("/chat/completions", json=payload)
-                resp.raise_for_status()
-                content = resp.json()["choices"][0]["message"]["content"]
-                try:
-                    return msgspec.json.decode(content.encode(), type=Enrichment)
-                except msgspec.DecodeError as exc:
-                    # Guided decoding should prevent this; if it slips through it is
-                    # a bad record, not an outage — skippable.
-                    raise EnrichError(f"unparseable enrichment: {exc}") from exc
-            except httpx.HTTPStatusError as exc:
-                if exc.response.status_code < 500:
-                    raise EnrichError(
-                        f"{exc.response.status_code}: {exc.response.text[:200]}"
-                    ) from exc
-                last = exc
-            except httpx.TransportError as exc:  # timeouts, connection resets
-                last = exc
-            time.sleep(min(2**attempt, 20))
-        assert last is not None
-        raise EnrichUnavailableError(str(last)) from last
+        content = chat_completion(self._client, payload)
+        try:
+            return msgspec.json.decode(content.encode(), type=Enrichment)
+        except msgspec.DecodeError as exc:
+            # Guided decoding should prevent this; if it slips through it is
+            # a bad record, not an outage — skippable.
+            raise EnrichError(f"unparseable enrichment: {exc}") from exc
 
     def close(self) -> None:
         """Close the underlying HTTP client."""

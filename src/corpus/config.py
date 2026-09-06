@@ -37,6 +37,12 @@ class Settings(BaseSettings):
     # Concurrent in-flight enrichment requests; the local server batches them, so a
     # multi-hour sequential backfill becomes a few hours. 1 = fully sequential.
     enrich_concurrency: int = 8
+    # Riding out a busy endpoint: attempts per request (the first included) and the
+    # cap on the exponential backoff between them. A saturated server sheds load as
+    # 5xx and returns within minutes, so the defaults wait out roughly four minutes
+    # of that rather than aborting a whole backfill mid-pass.
+    enrich_retries: int = 10
+    enrich_retry_max_wait: float = 60.0
 
     # External credential scanner (Betterleaks). Empty => local regexes only; set to
     # the binary name/path to union in its full ruleset (the image sets this).

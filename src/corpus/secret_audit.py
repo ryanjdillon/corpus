@@ -14,16 +14,12 @@ worded description ever leave here, never the secret.
 
 from __future__ import annotations
 
-import time
-
 import httpx
 import msgspec
 
 from .config import settings
-from .enricher import EnrichError, EnrichUnavailableError
+from .enricher import EnrichError, chat_completion
 from .enrichment import SecretAudit, secret_audit_schema
-
-_RETRIES = 4
 
 _SYSTEM = (
     "You are a security auditor examining one email or document from its owner's "
@@ -80,28 +76,12 @@ def audit_secrets(
             headers={"Authorization": f"Bearer {settings.openai_api_key}"},
             timeout=settings.enrich_timeout,
         )
-    last: Exception | None = None
     try:
-        for attempt in range(_RETRIES):
-            try:
-                resp = client.post("/chat/completions", json=payload)
-                resp.raise_for_status()
-                content = resp.json()["choices"][0]["message"]["content"]
-                try:
-                    return msgspec.json.decode(content.encode(), type=SecretAudit)
-                except msgspec.DecodeError as exc:
-                    raise EnrichError(f"unparseable secret audit: {exc}") from exc
-            except httpx.HTTPStatusError as exc:
-                if exc.response.status_code < 500:
-                    raise EnrichError(
-                        f"{exc.response.status_code}: {exc.response.text[:200]}"
-                    ) from exc
-                last = exc
-            except httpx.TransportError as exc:
-                last = exc
-            time.sleep(min(2**attempt, 20))
-        assert last is not None
-        raise EnrichUnavailableError(str(last)) from last
+        content = chat_completion(client, payload)
+        try:
+            return msgspec.json.decode(content.encode(), type=SecretAudit)
+        except msgspec.DecodeError as exc:
+            raise EnrichError(f"unparseable secret audit: {exc}") from exc
     finally:
         if owns:
             client.close()
