@@ -11,6 +11,7 @@ from unittest.mock import create_autospec
 import httpx
 import pytest
 
+from corpus import enricher as enricher_mod
 from corpus import secret_audit as audit_mod
 from corpus.enricher import EnrichError, EnrichUnavailableError
 from corpus.enrichment import SecretSeverity, secret_audit_schema
@@ -67,12 +68,13 @@ def test_client_error_is_non_retryable(client):
 
 
 def test_server_error_retries_then_unavailable(client, monkeypatch):
-    monkeypatch.setattr(audit_mod.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(enricher_mod.settings, "enrich_retries", 3)
+    monkeypatch.setattr(enricher_mod.time, "sleep", lambda *_: None)
     client.post.return_value = _response(503, text="down")
 
     with pytest.raises(EnrichUnavailableError):
         audit_mod.audit_secrets("x", [], model="local", client=client)
-    assert client.post.call_count == 4
+    assert client.post.call_count == 3
 
 
 def test_unparseable_output_is_enrich_error(client):
@@ -85,7 +87,8 @@ def test_unparseable_output_is_enrich_error(client):
 
 
 def test_transport_error_is_unavailable(client, monkeypatch):
-    monkeypatch.setattr(audit_mod.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(enricher_mod.settings, "enrich_retries", 2)
+    monkeypatch.setattr(enricher_mod.time, "sleep", lambda *_: None)
     client.post.side_effect = httpx.ConnectError("boom")
 
     with pytest.raises(EnrichUnavailableError):
