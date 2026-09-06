@@ -120,6 +120,8 @@ def run_enrich(
             log.warning("skipping %s: %s", doc_id, exc)
             return doc_id, None, None, None
         candidates = scan.audit_candidates(content)
+        # The audit gets the full text even when the enricher caps its own input: a
+        # secret can sit past the cap, and the candidates came from a full-body scan.
         result = None
         if candidates:
             # The audit may run on a different model than the enrichment (see
