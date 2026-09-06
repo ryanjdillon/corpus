@@ -12,7 +12,7 @@ import httpx
 import pytest
 
 from corpus import enricher as enricher_mod
-from corpus.enricher import Enricher, EnrichError, EnrichUnavailableError
+from corpus.enricher import Enricher, EnrichError, EnrichUnavailableError, cap_input
 from corpus.enrichment import Category, json_schema
 
 _COMPLETION = {
@@ -127,3 +127,31 @@ def test_unparseable_output_is_enrich_error(client):
 def test_missing_model_raises(client):
     with pytest.raises(ValueError):
         Enricher(model="", client=client)
+
+
+def test_input_is_uncapped_by_default(client, monkeypatch):
+    monkeypatch.setattr(enricher_mod.settings, "enrich_max_input_chars", 0)
+    text = "Subject: invoice\n\n" + "x" * 5000
+
+    Enricher(model="local", client=client).enrich(text)
+
+    assert client.post.call_args.kwargs["json"]["messages"][1]["content"] == text
+
+
+def test_cap_keeps_the_head_and_marks_the_cut(client):
+    text = "Subject: invoice\n\n" + "x" * 5000
+
+    Enricher(model="local", client=client, max_input_chars=64).enrich(text)
+
+    sent = client.post.call_args.kwargs["json"]["messages"][1]["content"]
+    assert len(sent) == 64
+    assert sent.startswith("Subject: invoice")
+    assert sent.endswith("[truncated]")
+
+
+def test_cap_leaves_text_within_the_limit_untouched():
+    assert cap_input("Subject: hi\n\nshort", 64) == "Subject: hi\n\nshort"
+
+
+def test_cap_smaller_than_the_note_is_still_honoured():
+    assert cap_input("abcdefghij", 4) == "abcd"

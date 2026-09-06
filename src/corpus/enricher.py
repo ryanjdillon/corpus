@@ -6,6 +6,9 @@ The model runs against attacker-controlled email, so the system frame is fixed b
 us and treats the body as untrusted data (describe, never obey) and forbids
 copying any secret value into the summary — secrets are catalogued separately by
 the deterministic ``pii`` scan.
+
+The prompt can be capped (``CORPUS_ENRICH_MAX_INPUT_CHARS``) to bound prefill and
+KV-cache use per request on a memory-bound backend; unlimited by default.
 """
 
 from __future__ import annotations
@@ -21,6 +24,8 @@ from .config import settings
 from .enrichment import Enrichment, json_schema
 
 log = logging.getLogger("corpus.enrich")
+
+_TRUNCATION_NOTE = "\n\n[truncated]"
 
 _SYSTEM = (
     "You extract structured metadata from a single email or document for the "
@@ -50,6 +55,21 @@ _SYSTEM = (
     "amounts, or dates the text does not support.\n"
     "Respond with only the JSON object."
 )
+
+
+def cap_input(text: str, limit: int) -> str:
+    """Return ``text`` bounded to ``limit`` characters; ``limit`` <= 0 is unbounded.
+
+    The head is kept: the subject and opening lines carry most of the
+    classification and summary signal. A note replaces the dropped tail so the
+    model reads the cut as a cut rather than as the end of the message; a limit too
+    small to hold the note is honoured literally rather than overrun.
+    """
+    if limit <= 0 or len(text) <= limit:
+        return text
+    if limit <= len(_TRUNCATION_NOTE):
+        return text[:limit]
+    return text[: limit - len(_TRUNCATION_NOTE)].rstrip() + _TRUNCATION_NOTE
 
 
 class EnrichError(Exception):
@@ -113,10 +133,18 @@ def chat_completion(client: httpx.Client, payload: dict) -> str:
 class Enricher:
     """Enrich message text into a structured ``Enrichment`` using a local model."""
 
-    def __init__(self, model: str | None = None, client: httpx.Client | None = None) -> None:
+    def __init__(
+        self,
+        model: str | None = None,
+        client: httpx.Client | None = None,
+        max_input_chars: int | None = None,
+    ) -> None:
         self.model = model or settings.enrich_model
         if not self.model:
             raise ValueError("no enrichment model configured (set CORPUS_ENRICH_MODEL)")
+        self.max_input_chars = (
+            settings.enrich_max_input_chars if max_input_chars is None else max_input_chars
+        )
         self._schema = json_schema()
         self._client = client or httpx.Client(
             base_url=settings.openai_api_base,
@@ -125,13 +153,16 @@ class Enricher:
         )
 
     def enrich(self, text: str) -> Enrichment:
-        """Return the ``Enrichment`` for ``text``, retrying transient endpoint failures."""
+        """Return the ``Enrichment`` for ``text``, retrying transient endpoint failures.
+
+        ``text`` is capped to ``max_input_chars`` before the call.
+        """
         payload = {
             "model": self.model,
             "temperature": 0,
             "messages": [
                 {"role": "system", "content": _SYSTEM},
-                {"role": "user", "content": text},
+                {"role": "user", "content": cap_input(text, self.max_input_chars)},
             ],
             "response_format": {
                 "type": "json_schema",

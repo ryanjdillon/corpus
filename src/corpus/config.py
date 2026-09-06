@@ -49,6 +49,11 @@ class Settings(BaseSettings):
     # of that rather than aborting a whole backfill mid-pass.
     enrich_retries: int = 10
     enrich_retry_max_wait: float = 60.0
+    # Character cap on one enrichment prompt; 0 = unlimited (send the whole body).
+    # On a KV-cache-bound backend long bodies inflate prefill and cache use until
+    # the server preempts; capping trades tail-of-body fidelity for throughput. Only
+    # the enrichment call is capped — the secret audit always sees the full text.
+    enrich_max_input_chars: int = 0
 
     # External credential scanner (Betterleaks). Empty => local regexes only; set to
     # the binary name/path to union in its full ruleset (the image sets this).
