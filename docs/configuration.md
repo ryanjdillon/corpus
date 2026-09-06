@@ -44,7 +44,9 @@ a single consumer GPU at concurrency 16–32 — long bodies inflate prefill and
 cache use until the server preempts, which caps throughput. Setting
 `CORPUS_ENRICH_MAX_INPUT_CHARS` bounds each prompt: the head is kept (the subject
 and opening lines, where the classification and summary signal concentrates) and
-the dropped tail is replaced by a `[truncated]` marker. It trades fidelity on
+the dropped tail is replaced by a `[truncated]` marker. The subject is not
+privileged, only first, so a limit shorter than the subject cuts the subject
+itself — keep the cap comfortably above your longest subject. It trades fidelity on
 long bodies for throughput, so it is off by default; a backend with cache
 headroom should leave it at `0`.
 

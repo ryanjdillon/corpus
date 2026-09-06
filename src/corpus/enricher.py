@@ -64,6 +64,9 @@ def cap_input(text: str, limit: int) -> str:
     classification and summary signal. A note replaces the dropped tail so the
     model reads the cut as a cut rather than as the end of the message; a limit too
     small to hold the note is honoured literally rather than overrun.
+
+    The subject is not privileged, only first: it leads the composed text, so a
+    limit shorter than the subject cuts the subject itself.
     """
     if limit <= 0 or len(text) <= limit:
         return text

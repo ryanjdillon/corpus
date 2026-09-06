@@ -149,6 +149,19 @@ def test_cap_keeps_the_head_and_marks_the_cut(client):
     assert sent.endswith("[truncated]")
 
 
+def test_cap_comes_from_the_setting(client, monkeypatch):
+    # The operator-facing deliverable is the env var, so exercise the settings
+    # branch rather than only the injected override.
+    monkeypatch.setattr(enricher_mod.settings, "enrich_max_input_chars", 64)
+    text = "Subject: invoice\n\n" + "x" * 5000
+
+    Enricher(model="local", client=client).enrich(text)
+
+    sent = client.post.call_args.kwargs["json"]["messages"][1]["content"]
+    assert len(sent) == 64
+    assert sent.startswith("Subject: invoice")
+
+
 def test_cap_leaves_text_within_the_limit_untouched():
     assert cap_input("Subject: hi\n\nshort", 64) == "Subject: hi\n\nshort"
 
