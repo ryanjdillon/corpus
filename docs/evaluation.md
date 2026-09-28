@@ -25,6 +25,14 @@ flags: `--limit N`, `--only hard_case=injection` (any top-level fixture field, o
 ordinary records), `--model`, `--api-base`, `--concurrency`. `run --fake` swaps
 the endpoint for a deterministic noisy oracle, to check the harness itself.
 
+`--extra-body JSON` merges fields into every chat request, for provider knobs
+the production enricher does not send. An example is
+`--extra-body '{"reasoning_effort": "none"}'` for a model that reasons by default.
+Pair it with `--label` so the variant gets its own column: the label names the
+output file and the report column, and defaults to the model id. The injected
+fields are recorded on every row. A variant only helps production once the
+enricher sends the same fields.
+
 ## What `run` measures
 
 Each fixture goes through the production batch path, `run_enrich`, with its

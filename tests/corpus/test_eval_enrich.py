@@ -204,6 +204,24 @@ def test_run_meters_tokens_and_responding_model_through_real_clients(fixtures):
     assert key["latency_s"]["enrich"] >= 0
 
 
+def test_extra_body_is_merged_into_chat_requests_only():
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.url.path, json.loads(request.content or b"{}")))
+        return httpx.Response(200, json={"ok": True})
+
+    transport = ev.ExtraBodyTransport({"reasoning_effort": "none"}, httpx.MockTransport(handler))
+    with httpx.Client(base_url="http://llm.test/v1", transport=transport) as client:
+        client.post("/chat/completions", json={"model": "m", "temperature": 0})
+        client.post("/embeddings", json={"model": "m"})
+
+    assert seen == [
+        ("/v1/chat/completions", {"model": "m", "temperature": 0, "reasoning_effort": "none"}),
+        ("/v1/embeddings", {"model": "m"}),
+    ]
+
+
 def test_output_path_is_model_schema_timestamp(tmp_path):
     path = ev.output_path(tmp_path, "Qwen/Qwen3 8B:q4", datetime(2026, 9, 28, 12, tzinfo=UTC))
 
@@ -403,10 +421,12 @@ def test_score_rejects_output_with_invalid_label(fixtures, tmp_path):
 
 
 def test_fake_run_end_to_end(tmp_path, capsys):
-    assert ev.main(["run", "--fake", "--limit", "20", "--out-dir", str(tmp_path)]) == 0
-    [out] = tmp_path.glob("fake-oracle-0-*.jsonl")
+    assert ev.main(["run", "--fake", "--limit", "20", "--out-dir", str(tmp_path),
+                    "--label", "oracle-a"]) == 0
+    [out] = tmp_path.glob("oracle-a-*.jsonl")
     rows = [json.loads(line) for line in out.read_text().splitlines()]
     assert len(rows) == 20
+    assert {r["label"] for r in rows} == {"oracle-a"}
     assert all(r["usage"]["enrich"] for r in rows if r["enrichment"])
 
     assert ev.main(["score", str(out), "--resamples", "20"]) == 0

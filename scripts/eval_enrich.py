@@ -314,6 +314,33 @@ class UsageMeter:
         return last
 
 
+class ExtraBodyTransport(httpx.BaseTransport):
+    """Merge fixed fields into every ``/chat/completions`` request body.
+
+    Provider knobs the production enricher does not send (``reasoning_effort``,
+    ``chat_template_kwargs``) can then be evaluated without changing it; the
+    run records what was injected, so the variant stays visible in the report.
+    """
+
+    def __init__(self, extra: dict, inner: httpx.BaseTransport | None = None) -> None:
+        self._extra = extra
+        self._inner = inner or httpx.HTTPTransport()
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        """Forward ``request``, with ``extra`` merged into a chat-completion body."""
+        if request.method == "POST" and request.url.path.endswith("/chat/completions"):
+            body = {**json.loads(request.read()), **self._extra}
+            headers = {k: v for k, v in request.headers.items()
+                       if k.lower() not in ("content-length", "content-type")}
+            request = httpx.Request(request.method, request.url, headers=headers, json=body,
+                                    extensions=request.extensions)
+        return self._inner.handle_request(request)
+
+    def close(self) -> None:
+        """Close the wrapped transport."""
+        self._inner.close()
+
+
 class MeteredEnricher:
     """Wrap an enricher, recording latency, usage, and errors per input text.
 
@@ -586,6 +613,14 @@ def cmd_run(args: argparse.Namespace) -> int:
     if not records:
         print("no fixtures selected", file=sys.stderr)
         return 1
+    try:
+        extra = json.loads(args.extra_body) if args.extra_body else {}
+    except json.JSONDecodeError as exc:
+        print(f"--extra-body is not JSON: {exc}", file=sys.stderr)
+        return 2
+    if not isinstance(extra, dict):
+        print("--extra-body must be a JSON object", file=sys.stderr)
+        return 2
     meter = UsageMeter()
     if args.fake:
         fake = FakeEnricher(records, meter, seed=args.fake_seed)
@@ -600,13 +635,15 @@ def cmd_run(args: argparse.Namespace) -> int:
             headers={"Authorization": f"Bearer {settings.openai_api_key}"},
             timeout=settings.enrich_timeout,
             event_hooks={"response": [meter.hook]},
+            transport=ExtraBodyTransport(extra) if extra else None,
         )
         enricher = Enricher(model, client=client)
 
         def audit(text, candidates, *, model=None):
             return audit_secrets(text, candidates, model=model, client=client)
 
-    path = output_path(args.out_dir, enricher.model)
+    label = args.label or enricher.model
+    path = output_path(args.out_dir, label)
     status = 0
     try:
         rows = run_records(records, enricher, audit, concurrency=args.concurrency, meter=meter)
@@ -616,6 +653,9 @@ def cmd_run(args: argparse.Namespace) -> int:
     finally:
         if client is not None:
             client.close()
+    for row in rows:
+        row["label"] = label
+        row["request_extra"] = extra
     write_rows(rows, path)
     failed = sum(r["error"] is not None for r in rows)
     print(f"wrote {len(rows)} rows ({failed} failed) to {path}")
@@ -1186,8 +1226,11 @@ def cmd_score(args: argparse.Namespace) -> int:
 
 
 def run_names(loaded: dict[Path, list[dict]]) -> dict[str, list[dict]]:
-    """Name each run by its model id, falling back to the file stem when ids collide."""
-    models = [rows[0]["model"] if rows else path.stem for path, rows in loaded.items()]
+    """Name each run by its label (default: model id), or its file stem when names collide."""
+    models = [
+        (rows[0].get("label") or rows[0]["model"]) if rows else path.stem
+        for path, rows in loaded.items()
+    ]
     unique = len(set(models)) == len(models)
     return {
         (model if unique else path.stem): rows
@@ -1214,6 +1257,11 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--concurrency", type=int, default=None,
                      help="in-flight requests (default CORPUS_ENRICH_CONCURRENCY); "
                           "1 gives uncontended latency")
+    run.add_argument("--label", default=None,
+                     help="name for this run in files and reports (default: the model id)")
+    run.add_argument("--extra-body", default=None, metavar="JSON",
+                     help="fields merged into every chat request, e.g. "
+                          "'{\"reasoning_effort\": \"none\"}'")
     run.add_argument("--fake", action="store_true",
                      help="use a deterministic noisy oracle instead of an endpoint")
     run.add_argument("--fake-seed", type=int, default=0,
