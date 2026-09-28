@@ -33,6 +33,14 @@ output file and the report column, and defaults to the model id. The injected
 fields are recorded on every row. A variant only helps production once the
 enricher sends the same fields.
 
+`--inline-schema-refs` inlines the response schema's `$ref`s before sending.
+llama.cpp's schema-to-grammar converter can't resolve references nested inside
+a definition that a root `$ref` points at, which is exactly the shape msgspec
+emits. The server then drops the grammar without an error, and the model
+answers unconstrained. A llama.cpp-served model therefore needs the flag to be
+measured on its merits. A run without it shows what the production enricher
+would get today.
+
 ## What `run` measures
 
 Each fixture goes through the production batch path, `run_enrich`, with its

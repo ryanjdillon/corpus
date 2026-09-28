@@ -222,6 +222,36 @@ def test_extra_body_is_merged_into_chat_requests_only():
     ]
 
 
+def test_inline_refs_resolves_nested_definitions():
+    from corpus.enrichment import json_schema
+
+    schema = json_schema()
+    flat = ev.inline_refs(schema)
+
+    assert "$ref" not in json.dumps(flat) and "$defs" not in json.dumps(flat)
+    props = flat["properties"]
+    assert set(props["category"]["enum"]) == {c.value for c in Category}
+    assert flat["required"] == schema["$defs"]["Enrichment"]["required"]
+
+
+def test_transport_inlines_schema_refs_on_request():
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, json={"ok": True})
+
+    transport = ev.ExtraBodyTransport({}, httpx.MockTransport(handler), inline_schema_refs=True)
+    schema = {"$ref": "#/$defs/T", "$defs": {"T": {"type": "object", "properties": {
+        "k": {"$ref": "#/$defs/K"}}}, "K": {"enum": ["a", "b"]}}}
+    with httpx.Client(base_url="http://llm.test/v1", transport=transport) as client:
+        client.post("/chat/completions", json={
+            "response_format": {"type": "json_schema", "json_schema": {"schema": schema}}})
+
+    sent = seen[0]["response_format"]["json_schema"]["schema"]
+    assert sent == {"type": "object", "properties": {"k": {"enum": ["a", "b"]}}}
+
+
 def test_output_path_is_model_schema_timestamp(tmp_path):
     path = ev.output_path(tmp_path, "Qwen/Qwen3 8B:q4", datetime(2026, 9, 28, 12, tzinfo=UTC))
 

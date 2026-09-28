@@ -314,22 +314,52 @@ class UsageMeter:
         return last
 
 
-class ExtraBodyTransport(httpx.BaseTransport):
-    """Merge fixed fields into every ``/chat/completions`` request body.
+def inline_refs(schema: dict) -> dict:
+    """Return ``schema`` with every local ``#/$defs/...`` reference inlined.
 
-    Provider knobs the production enricher does not send (``reasoning_effort``,
-    ``chat_template_kwargs``) can then be evaluated without changing it; the
-    run records what was injected, so the variant stays visible in the report.
+    llama.cpp's JSON-schema-to-grammar converter cannot resolve references
+    nested inside a definition that is itself reached by a root ``$ref`` -- the
+    shape msgspec emits -- and the server then drops the grammar silently, so
+    the model answers unconstrained. The inlined schema is equivalent, and has
+    no cycles because the enrichment schema has none.
+    """
+    defs = schema.get("$defs", {})
+
+    def walk(node):
+        if isinstance(node, list):
+            return [walk(x) for x in node]
+        if isinstance(node, dict):
+            if "$ref" in node:
+                return walk(defs[node["$ref"].rsplit("/", 1)[-1]])
+            return {k: walk(v) for k, v in node.items() if k != "$defs"}
+        return node
+
+    return walk(schema)
+
+
+class ExtraBodyTransport(httpx.BaseTransport):
+    """Rewrite every ``/chat/completions`` request body on its way out.
+
+    Merges fixed fields, for provider knobs the production enricher does not
+    send (``reasoning_effort``), and optionally inlines the response schema's
+    references for servers that cannot resolve them. Either variant is then
+    evaluated without changing the enricher; the run records what was done, so
+    the variant stays visible in the report.
     """
 
-    def __init__(self, extra: dict, inner: httpx.BaseTransport | None = None) -> None:
+    def __init__(self, extra: dict, inner: httpx.BaseTransport | None = None,
+                 *, inline_schema_refs: bool = False) -> None:
         self._extra = extra
+        self._inline = inline_schema_refs
         self._inner = inner or httpx.HTTPTransport()
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
-        """Forward ``request``, with ``extra`` merged into a chat-completion body."""
+        """Forward ``request``, rewriting a chat-completion body."""
         if request.method == "POST" and request.url.path.endswith("/chat/completions"):
             body = {**json.loads(request.read()), **self._extra}
+            spec = (body.get("response_format") or {}).get("json_schema") or {}
+            if self._inline and "schema" in spec:
+                spec["schema"] = inline_refs(spec["schema"])
             headers = {k: v for k, v in request.headers.items()
                        if k.lower() not in ("content-length", "content-type")}
             request = httpx.Request(request.method, request.url, headers=headers, json=body,
@@ -635,7 +665,10 @@ def cmd_run(args: argparse.Namespace) -> int:
             headers={"Authorization": f"Bearer {settings.openai_api_key}"},
             timeout=settings.enrich_timeout,
             event_hooks={"response": [meter.hook]},
-            transport=ExtraBodyTransport(extra) if extra else None,
+            transport=(
+                ExtraBodyTransport(extra, inline_schema_refs=args.inline_schema_refs)
+                if extra or args.inline_schema_refs else None
+            ),
         )
         enricher = Enricher(model, client=client)
 
@@ -656,6 +689,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     for row in rows:
         row["label"] = label
         row["request_extra"] = extra
+        row["inline_schema_refs"] = args.inline_schema_refs
     write_rows(rows, path)
     failed = sum(r["error"] is not None for r in rows)
     print(f"wrote {len(rows)} rows ({failed} failed) to {path}")
@@ -1262,6 +1296,9 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--extra-body", default=None, metavar="JSON",
                      help="fields merged into every chat request, e.g. "
                           "'{\"reasoning_effort\": \"none\"}'")
+    run.add_argument("--inline-schema-refs", action="store_true",
+                     help="inline the response schema's $refs (llama.cpp cannot resolve "
+                          "the nested refs msgspec emits and silently drops the grammar)")
     run.add_argument("--fake", action="store_true",
                      help="use a deterministic noisy oracle instead of an endpoint")
     run.add_argument("--fake-seed", type=int, default=0,
