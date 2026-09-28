@@ -38,6 +38,12 @@ commitlint BASE="origin/main":
 # All pre-PR checks, mirroring CI. Run this (and fix any failures) before pushing.
 check: lint cov arch commitlint
 
+# Evaluate an enrichment model (docs/evaluation.md). Run, then score one or more outputs:
+#   just eval-enrich run [--limit N] [--only hard_case=TAG]
+#   just eval-enrich score outputs/<run>.jsonl [...] [--price-per-mtok P]
+eval-enrich *ARGS:
+    uv run python scripts/eval_enrich.py {{ARGS}}
+
 # One-time Gmail OAuth to mint a refresh token.
 # Usage: just gmail-auth path/to/client_secret.json
 gmail-auth CLIENT_SECRET:

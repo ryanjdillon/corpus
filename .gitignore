@@ -17,3 +17,6 @@ uv.lock
 
 # MkDocs build output
 site/
+
+# Enrichment eval run outputs and reports
+outputs/

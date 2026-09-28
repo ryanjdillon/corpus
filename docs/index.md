@@ -33,5 +33,6 @@ sanitized tier.
 - [Configuration](configuration.md) — every `CORPUS_` setting.
 - [Sources](fetchers/index.md) — the fetcher protocol, plus [IMAP](fetchers/imap.md) and [Gmail](fetchers/gmail.md).
 - [Database](database.md) — the pgvector store and sync state.
+- [Enrichment evaluation](evaluation.md) — compare enrichment models on a labelled synthetic set.
 - [Observability](observability.md) — OpenTelemetry traces and metrics.
 - [Development](development.md) — tests, the pre-PR gate, and builds.
