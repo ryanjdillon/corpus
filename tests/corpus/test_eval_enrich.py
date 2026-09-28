@@ -356,6 +356,20 @@ def test_disagreement_list_sorted_by_axes_that_differ(fixtures):
     assert [d["id"] for d in ev.disagreements({"a": run_a, "c": run_c})] == ["t-lunch"]
 
 
+def test_disagreement_list_reports_failed_runs_apart_from_divergence(fixtures):
+    lunch, key, order = fixtures
+    run_a = [_row(f, _pred(f)) for f in fixtures]
+    run_b = [_row(lunch, None), _row(key, _pred(key, domain="other")), _row(order, _pred(order))]
+
+    dis = ev.disagreements({"a": run_a, "b": run_b})
+
+    # A failed output is not twelve disagreements; real divergence sorts first.
+    assert [(d["id"], d["n_axes"], d["invalid_in"]) for d in dis] == [
+        ("t-key", 1, []),
+        ("t-lunch", 0, ["b"]),
+    ]
+
+
 def test_score_cli_writes_markdown_and_json(fixtures, tmp_path, capsys):
     paths = []
     for name, importance in (("m1", "low"), ("m2", "high")):

@@ -130,4 +130,6 @@ count records that produced text.
 With two or more output files, `score` also lists per-record disagreements:
 every enum and boolean axis plus the deadline, most-divergent first. Each entry
 shows the expected value beside each model's value, so you can see where the
-candidates part ways.
+candidates part ways. Only runs that produced output are compared. A run that
+failed on a record is listed under "invalid in" instead of counting as a
+disagreement on every axis, which would bury the real divergences.

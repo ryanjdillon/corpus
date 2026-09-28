@@ -1055,16 +1055,14 @@ def score_rows(rows: list[dict], *, price_per_mtok: float | None = None,
     }
 
 
-def _axis_value(row: dict, axis: str):
-    pred = row.get("enrichment")
-    return None if pred is None else pred.get(axis)
-
-
 def disagreements(runs: dict[str, list[dict]]) -> list[dict]:
     """Per-record axes on which the runs disagree, most-divergent first.
 
-    Only records present in every run are compared. Each entry lists the
-    expected value and every run's prediction for the disagreeing axes.
+    Only records present in every run are compared, and only between the runs
+    that produced an output: a failed run differs on every axis, which would
+    bury the real divergences, so it is reported in ``invalid_in`` instead.
+    Each entry lists the expected value and every valid run's prediction for
+    the disagreeing axes.
     """
     by_id = {name: {r["id"]: r for r in rows} for name, rows in runs.items()}
     common = set.intersection(*(set(m) for m in by_id.values())) if by_id else set()
@@ -1072,15 +1070,18 @@ def disagreements(runs: dict[str, list[dict]]) -> list[dict]:
     for rid in sorted(common):
         rows = {name: m[rid] for name, m in by_id.items()}
         any_row = next(iter(rows.values()))
+        valid = {name: r["enrichment"] for name, r in rows.items() if r.get("enrichment")}
+        invalid = sorted(set(rows) - set(valid))
         axes = {}
-        for axis in DISAGREEMENT_AXES:
-            values = {name: _axis_value(r, axis) for name, r in rows.items()}
-            if len({json.dumps(v) for v in values.values()}) > 1:
-                axes[axis] = {"expected": _gold(any_row)[axis], **values}
-        if axes:
+        if len(valid) > 1:
+            for axis in DISAGREEMENT_AXES:
+                values = {name: pred.get(axis) for name, pred in valid.items()}
+                if len({json.dumps(v) for v in values.values()}) > 1:
+                    axes[axis] = {"expected": _gold(any_row)[axis], **values}
+        if axes or invalid:
             out.append({"id": rid, "hard_case": any_row["fixture"].get("hard_case"),
-                        "n_axes": len(axes), "axes": axes})
-    out.sort(key=lambda d: (-d["n_axes"], d["id"]))
+                        "n_axes": len(axes), "invalid_in": invalid, "axes": axes})
+    out.sort(key=lambda d: (-d["n_axes"], len(d["invalid_in"]), d["id"]))
     return out
 
 
@@ -1138,14 +1139,15 @@ def render_markdown(report: dict, top: int = 20) -> str:
     dis = report.get("disagreements")
     if dis:
         lines += ["", f"### Disagreements (top {min(top, len(dis))} of {len(dis)})", ""]
-        lines.append("| id | hard_case | axes | details |")
-        lines.append("|---|---|---|---|")
+        lines.append("| id | hard_case | axes | invalid in | details |")
+        lines.append("|---|---|---|---|---|")
         for d in dis[:top]:
             detail = "; ".join(
                 f"{axis}: " + " / ".join(f"{k}={v}" for k, v in vals.items())
                 for axis, vals in d["axes"].items()
             )
-            lines.append(f"| {d['id']} | {d['hard_case'] or ''} | {d['n_axes']} | {detail} |")
+            lines.append(f"| {d['id']} | {d['hard_case'] or ''} | {d['n_axes']} | "
+                         f"{', '.join(d['invalid_in'])} | {detail} |")
     return "\n".join(lines)
 
 
