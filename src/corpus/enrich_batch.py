@@ -84,7 +84,10 @@ def run_enrich(
     own = enricher is None
     enricher = enricher or Enricher()
     audit_model = settings.audit_model or enricher.model
-    counts = {"scanned": 0, "enriched": 0, "audited": 0, "skipped": 0, "ineligible": 0}
+    counts = {
+        "scanned": 0, "enriched": 0, "audited": 0, "audit_failed": 0, "skipped": 0,
+        "ineligible": 0,
+    }
     excluded: set[str] = set()
 
     def selected() -> Iterator[tuple]:
@@ -117,7 +120,17 @@ def run_enrich(
             log.warning("skipping %s: %s", doc_id, exc)
             return doc_id, None, None, None
         candidates = scan.audit_candidates(content)
-        result = audit(text, candidates, model=audit_model) if candidates else None
+        result = None
+        if candidates:
+            # The audit may run on a different model than the enrichment (see
+            # CORPUS_AUDIT_MODEL), e.g. one with a smaller context window. Its
+            # per-record failure must not discard the enrichment or abort the run:
+            # the document would then never be marked done and every later run
+            # would fail on it again.
+            try:
+                result = audit(text, candidates, model=audit_model)
+            except EnrichError as exc:
+                log.warning("audit skipped for %s: %s", doc_id, exc)
         return doc_id, enrichment, candidates, result
 
     def persist(res: tuple) -> None:
@@ -129,7 +142,9 @@ def run_enrich(
             doc_id, msgspec.to_builtins(enrichment), enricher.model, SCHEMA_VERSION
         )
         counts["enriched"] += 1
-        if candidates:
+        if candidates and result is None:
+            counts["audit_failed"] += 1
+        elif candidates:
             store.save_audit(
                 doc_id, candidates, msgspec.to_builtins(result), audit_model, scan.SCAN_VERSION
             )
@@ -153,8 +168,8 @@ def run_enrich(
         if own:
             enricher.close()
     log.info(
-        "enriched %d, audited %d, skipped %d, ineligible %d of %d scanned",
-        counts["enriched"], counts["audited"], counts["skipped"],
+        "enriched %d, audited %d (%d failed), skipped %d, ineligible %d of %d scanned",
+        counts["enriched"], counts["audited"], counts["audit_failed"], counts["skipped"],
         counts["ineligible"], counts["scanned"],
     )
     if excluded:
