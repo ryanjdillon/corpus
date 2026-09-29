@@ -94,8 +94,6 @@ def run_enrich(
             # The limit caps documents sent to the model, not documents scanned:
             # documents arrive in a stable order, so a scan cap would re-scan the
             # same already-enriched prefix on every run and never reach new mail.
-            if limit and queued >= limit:
-                return
             counts["scanned"] += 1
             doc_source = (meta or {}).get("source")
             if not may_enrich(doc_source):
@@ -107,6 +105,8 @@ def run_enrich(
             if doc_id not in seen:
                 queued += 1
                 yield doc_id, content, meta
+                if limit and queued >= limit:
+                    return
 
     def work(item: tuple) -> tuple:
         doc_id, content, meta = item
