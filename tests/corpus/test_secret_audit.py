@@ -113,3 +113,14 @@ def test_uses_default_client_when_none_given(monkeypatch):
 def test_missing_model_raises(client):
     with pytest.raises(ValueError):
         audit_mod.audit_secrets("x", [], model="", client=client)
+
+
+def test_audit_falls_back_to_the_audit_model(client, monkeypatch):
+    # A caller that passes no model must get the local audit model, never the
+    # (possibly remote) enrichment model.
+    monkeypatch.setattr(audit_mod.settings, "audit_model", "local-auditor")
+    monkeypatch.setattr(audit_mod.settings, "enrich_model", "remote")
+
+    audit_mod.audit_secrets("x", ["us_ssn"], client=client)
+
+    assert client.post.call_args.kwargs["json"]["model"] == "local-auditor"
