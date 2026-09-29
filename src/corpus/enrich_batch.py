@@ -56,6 +56,7 @@ def run_enrich(
     limit: int = 0,
     force: bool = False,
     upgrade_stale: bool = False,
+    retry_rejected: bool = False,
     enricher: Enricher | None = None,
     documents=iter_documents,
     audit=audit_secrets,
@@ -67,9 +68,12 @@ def run_enrich(
     ``upgrade_stale``, docs enriched under an older ``SCHEMA_VERSION`` are treated
     as not yet done and re-enriched; it is opt-in so that a scheduled run on a
     remote model does not re-send the whole archive after a schema change.
-    ``limit`` caps the documents sent to the model (0 does all), so a capped
-    scheduled run keeps making progress past the already-enriched ones. ``store``
-    is an open EnrichStore whose lifecycle the caller owns.
+
+    A document the model rejects (4xx, or unparseable output) is recorded as
+    rejected by that model and passed over by later runs on it; ``retry_rejected``
+    sends those again. A different model is always given a try. ``limit`` caps
+    the documents sent to the model (0 does all), so a capped scheduled run keeps
+    making progress past the already-enriched ones. ``store`` is an open EnrichStore whose lifecycle the caller owns.
 
     The audit uses ``CORPUS_AUDIT_MODEL`` when set, else the enrichment model.
 
@@ -100,6 +104,8 @@ def run_enrich(
             seen: set[str] = set()
         else:
             seen = store.enriched_ids(SCHEMA_VERSION if upgrade_stale else None)
+            if not retry_rejected:
+                seen |= store.rejected_ids(enricher.model)
         queued = 0
         for doc_id, content, meta in documents(source=source, account=account):
             # The limit caps documents sent to the model, not documents scanned:
@@ -126,7 +132,7 @@ def run_enrich(
             enrichment = enricher.enrich(text)
         except EnrichError as exc:
             log.warning("skipping %s: %s", doc_id, exc)
-            return doc_id, None, None, None
+            return doc_id, None, None, str(exc)
         candidates = scan.audit_candidates(content)
         # The audit gets the full text even when the enricher caps its own input: a
         # secret can sit past the cap, and the candidates came from a full-body scan.
@@ -145,8 +151,9 @@ def run_enrich(
 
     def persist(res: tuple) -> None:
         doc_id, enrichment, candidates, result = res
-        if enrichment is None:  # a per-record EnrichError was skipped
+        if enrichment is None:  # a per-record EnrichError; ``result`` holds the reason
             counts["skipped"] += 1
+            store.save_rejection(doc_id, result, enricher.model)
             return
         store.save_enrichment(
             doc_id, msgspec.to_builtins(enrichment), enricher.model, SCHEMA_VERSION

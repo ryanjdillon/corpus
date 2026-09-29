@@ -50,6 +50,7 @@ def documents():
 def store():
     m = create_autospec(EnrichStore, instance=True)
     m.enriched_ids.return_value = set()
+    m.rejected_ids.return_value = set()
     return m
 
 
@@ -141,6 +142,37 @@ def test_upgrade_stale_only_counts_current_schema_as_done(
     )
 
     store.enriched_ids.assert_called_once_with(SCHEMA_VERSION)
+
+
+def test_rejection_is_recorded_with_reason_and_model(store, enricher, documents, clean_doc):
+    enricher.enrich.side_effect = EnrichError("400: context length exceeded")
+
+    run_enrich(store, documents=documents(clean_doc), enricher=enricher)
+
+    store.save_rejection.assert_called_once_with("d2", "400: context length exceeded", "local")
+
+
+def test_rejected_documents_are_passed_over_for_the_same_model(
+    store, enricher, audit, documents, key_doc, clean_doc
+):
+    store.rejected_ids.return_value = {"d2"}
+
+    r = run_enrich(store, documents=documents(key_doc, clean_doc), enricher=enricher, audit=audit)
+
+    store.rejected_ids.assert_called_once_with("local")
+    assert r["enriched"] == 1
+    assert {c.args[0] for c in store.save_enrichment.call_args_list} == {"d1"}
+
+
+def test_retry_rejected_sends_them_again(store, enricher, audit, documents, clean_doc):
+    store.rejected_ids.return_value = {"d2"}
+
+    r = run_enrich(
+        store, documents=documents(clean_doc), enricher=enricher, audit=audit, retry_rejected=True
+    )
+
+    store.rejected_ids.assert_not_called()
+    assert r["enriched"] == 1
 
 
 def test_skips_already_enriched(store, enricher, documents, key_doc):

@@ -14,6 +14,7 @@ corpus enrich                # every eligible document not yet enriched
 corpus enrich --limit 400    # at most 400 documents sent to the model
 corpus enrich --force        # re-enrich documents that already have a record
 corpus enrich --upgrade-stale    # also redo records from an older schema version
+corpus enrich --retry-rejected   # also retry documents this model rejected
 ```
 
 A run is resumable: documents that already have an enrichment are skipped, so a
@@ -22,9 +23,17 @@ model, not documents scanned, so a capped scheduled run keeps making progress pa
 the ones already done.
 
 Requests run `CORPUS_ENRICH_CONCURRENCY` at a time. A transient endpoint failure
-is retried in-process (see [Configuration](configuration.md)). A per-document
-rejection (4xx, or unparseable output) is skipped and counted, while an endpoint
+is retried in-process (see [Configuration](configuration.md)), and an endpoint
 that stays down aborts the run so it can resume later.
+
+A per-document rejection (a 4xx such as an input over the model's context, or
+unparseable output) is counted as skipped and recorded against the model that
+rejected it, with the reason. Later runs on that model pass the document over
+instead of re-sending it every time; `--retry-rejected` sends them again, and a
+different model is always given a try. A later successful enrichment clears the
+record. If the secret audit fails for a document (for example, a text longer than
+the audit model's context), the enrichment is kept and the audit is counted as
+`audit_failed`.
 
 ## Models
 
