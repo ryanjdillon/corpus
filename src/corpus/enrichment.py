@@ -213,33 +213,21 @@ class SecretAudit(msgspec.Struct):
     findings: list[ConfirmedSecret] = msgspec.field(default_factory=list)
 
 
-#: Classification axes the model must always decide. They carry struct defaults so
-#: non-LLM construction stays convenient, but if they are left OPTIONAL in the
-#: guided-decoding schema the model simply omits them and every record collapses to
-#: the default (domain -> "other", transactional_type -> "none", …). Marking them
-#: required forces a real choice per message.
-_REQUIRED_AXES = (
-    "domain",
-    "transactional_type",
-    "unsubscribe_available",
-    "requires_action",
-    "action_type",
-    "waiting_on",
-    "importance",
-    "time_sensitive",
-    "sensitivity_level",
-    "suggested_disposition",
-)
-
-
 def json_schema() -> dict:
     """Render the Enrichment struct to a JSON Schema for guided decoding.
 
-    The classification axes are forced required (see ``_REQUIRED_AXES``).
+    Every top-level field is forced required. The fields carry struct defaults so
+    non-LLM construction stays convenient, but a field left OPTIONAL in the
+    guided-decoding schema is one the grammar lets the model skip -- and which
+    fields get skipped depends on the server, not the message. The classification
+    axes collapsed to their defaults (domain -> "other", ...) until they were forced;
+    vLLM then dropped every entity list and llama.cpp every deadline. Required
+    means "decide", not "non-empty": an empty list or a null deadline is still a
+    valid answer.
     """
     schema = msgspec.json.schema(Enrichment)
     target = schema["$defs"]["Enrichment"] if "$defs" in schema else schema
-    target["required"] = sorted(set(target.get("required", ())) | set(_REQUIRED_AXES))
+    target["required"] = sorted(target["properties"])
     return schema
 
 
