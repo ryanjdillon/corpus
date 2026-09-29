@@ -103,6 +103,19 @@ def test_run_sync_skips_unchanged(store, embedder, documents):
     store.save_message.assert_not_called()
 
 
+def test_run_sync_limit_reaches_past_already_synced_rows(store, embedder, documents):
+    # A capped sync must project unsynced rows even when the head of the stable
+    # read order is already synced.
+    store.synced_versions.return_value = {"d0": "v1", "d1": "v1"}
+    docs = documents(*(_doc(f"d{i}", {}, {"one_line": f"m{i}", "sensitivity_level": "low"})
+                       for i in range(5)))
+
+    r = sanitize.run_sync(store, documents=docs, embedder=embedder, limit=2, read_dsn="x")
+
+    assert r == {"scanned": 4, "synced": 2, "skipped": 2}
+    assert [c.args[0]["id"] for c in store.save_message.call_args_list] == ["d2", "d3"]
+
+
 def test_run_sync_force_reprojects(store, embedder, documents):
     store.synced_versions.return_value = {"d1": "v1"}
     docs = documents(_doc("d1", {}, {"one_line": "x", "sensitivity_level": "low"}, "v1"))

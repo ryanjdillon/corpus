@@ -124,13 +124,14 @@ def run_sync(
     """Project enriched documents into the sanitized store.
 
     Skips rows whose source enrichment is unchanged since the last sync unless
-    ``force``. ``store`` is an open SanitizedStore whose lifecycle the caller owns.
+    ``force``. ``limit`` caps the rows projected (0 does all). ``store`` is an open SanitizedStore whose lifecycle the caller owns.
     """
     read_dsn = read_dsn or settings.database_url
     embedder = embedder or Embedder()
     seen = {} if force else store.synced_versions()
     counts = {"scanned": 0, "synced": 0, "skipped": 0}
     batch: list[dict] = []
+    queued = 0
 
     def flush() -> None:
         if not batch:
@@ -142,8 +143,6 @@ def run_sync(
         batch.clear()
 
     for doc_id, meta, enr, enriched_at in documents(read_dsn, source=source):
-        if limit and counts["scanned"] >= limit:
-            break
         counts["scanned"] += 1
         if not force and seen.get(doc_id) == enriched_at:
             counts["skipped"] += 1
@@ -151,8 +150,14 @@ def run_sync(
         row = project(doc_id, meta, enr, settings.index_sensitivity_gate)
         row["enriched_at"] = enriched_at
         batch.append(row)
+        queued += 1
         if len(batch) >= batch_size:
             flush()
+        # The limit caps rows projected, not rows scanned: the reader's order is
+        # stable, so a scan cap would re-scan the same already-synced prefix on
+        # every run and never reach older unsynced rows.
+        if limit and queued >= limit:
+            break
     flush()
     log.info(
         "synced %d, skipped %d of %d scanned",
