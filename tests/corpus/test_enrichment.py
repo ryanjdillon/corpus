@@ -36,6 +36,10 @@ def test_json_schema_forces_every_field_required():
     assert set(enr["required"]) == set(enr["properties"])
     for field in ("domain", "deadline", "people", "organizations", "monetary_amounts"):
         assert field in enr["required"]
+    # Nested structs too: Person.role and every Appointment field were skippable.
+    for name in ("Person", "Appointment", "Money"):
+        nested = schema["$defs"][name]
+        assert set(nested["required"]) == set(nested["properties"])
 
 
 def test_decode_applies_defaults_to_minimal_output():
