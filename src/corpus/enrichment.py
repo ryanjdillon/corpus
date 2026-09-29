@@ -216,7 +216,7 @@ class SecretAudit(msgspec.Struct):
 def json_schema() -> dict:
     """Render the Enrichment struct to a JSON Schema for guided decoding.
 
-    Every top-level field is forced required. The fields carry struct defaults so
+    Every field of every struct is forced required. The fields carry struct defaults so
     non-LLM construction stays convenient, but a field left OPTIONAL in the
     guided-decoding schema is one the grammar lets the model skip -- and which
     fields get skipped depends on the server, not the message. The classification
@@ -226,8 +226,9 @@ def json_schema() -> dict:
     valid answer.
     """
     schema = msgspec.json.schema(Enrichment)
-    target = schema["$defs"]["Enrichment"] if "$defs" in schema else schema
-    target["required"] = sorted(target["properties"])
+    for definition in schema.get("$defs", {}).values():
+        if "properties" in definition:
+            definition["required"] = sorted(definition["properties"])
     return schema
 
 
