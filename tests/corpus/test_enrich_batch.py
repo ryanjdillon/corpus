@@ -71,7 +71,7 @@ def audit():
 def test_enriches_all_audits_only_flagged(store, enricher, audit, documents, key_doc, clean_doc):
     r = run_enrich(store, documents=documents(key_doc, clean_doc), enricher=enricher, audit=audit)
 
-    assert r == {"scanned": 2, "enriched": 2, "audited": 1, "skipped": 0, "ineligible": 0}
+    assert r == {"scanned": 2, "enriched": 2, "audited": 1, "audit_failed": 0, "skipped": 0, "ineligible": 0}
     assert store.save_enrichment.call_count == 2
     assert {c.args[0] for c in store.save_audit.call_args_list} == {"d1"}
     assert "aws_access_key" in store.save_audit.call_args.args[1]
@@ -110,12 +110,27 @@ def test_run_audit_prefers_the_audit_model(store, audit, documents, key_doc, mon
     assert audit.call_args.kwargs["model"] == "local-auditor"
 
 
+def test_audit_failure_keeps_the_enrichment_and_continues(
+    store, enricher, audit, documents, key_doc, clean_doc
+):
+    # e.g. a document longer than the audit model's context window: the enrichment
+    # is saved (so the document is not retried forever) and the run carries on.
+    audit.side_effect = EnrichError("400: maximum context length exceeded")
+
+    r = run_enrich(store, documents=documents(key_doc, clean_doc), enricher=enricher, audit=audit)
+
+    assert r["enriched"] == 2
+    assert r["audit_failed"] == 1
+    assert r["audited"] == 0
+    store.save_audit.assert_not_called()
+
+
 def test_skips_already_enriched(store, enricher, documents, key_doc):
     store.enriched_ids.return_value = {"d1"}
 
     r = run_enrich(store, documents=documents(key_doc), enricher=enricher)
 
-    assert r == {"scanned": 1, "enriched": 0, "audited": 0, "skipped": 0, "ineligible": 0}
+    assert r == {"scanned": 1, "enriched": 0, "audited": 0, "audit_failed": 0, "skipped": 0, "ineligible": 0}
     store.save_enrichment.assert_not_called()
 
 
@@ -125,7 +140,7 @@ def test_bad_record_is_skipped_not_fatal(store, enricher, documents, key_doc, cl
 
     r = run_enrich(store, documents=documents(key_doc, clean_doc), enricher=enricher)
 
-    assert r == {"scanned": 2, "enriched": 0, "audited": 0, "skipped": 2, "ineligible": 0}
+    assert r == {"scanned": 2, "enriched": 0, "audited": 0, "audit_failed": 0, "skipped": 2, "ineligible": 0}
     store.save_enrichment.assert_not_called()
 
 
@@ -194,7 +209,7 @@ def test_undeclared_source_is_never_enriched(store, enricher, audit, documents, 
     # though no filter was passed.
     r = run_enrich(store, documents=documents(video_doc), enricher=enricher, audit=audit)
 
-    assert r == {"scanned": 1, "enriched": 0, "audited": 0, "skipped": 0, "ineligible": 1}
+    assert r == {"scanned": 1, "enriched": 0, "audited": 0, "audit_failed": 0, "skipped": 0, "ineligible": 1}
     enricher.enrich.assert_not_called()
     store.save_enrichment.assert_not_called()
 
