@@ -51,9 +51,9 @@ def audit_secrets(
 
     Return a validated ``SecretAudit`` (secret values are never included).
     """
-    model = model or settings.enrich_model
+    model = model or settings.audit_model or settings.enrich_model
     if not model:
-        raise ValueError("no model configured (set CORPUS_ENRICH_MODEL)")
+        raise ValueError("no model configured (set CORPUS_AUDIT_MODEL or CORPUS_ENRICH_MODEL)")
     schema = secret_audit_schema()
     candidates = ", ".join(candidate_types) or "none"
     user = f"Candidate secret types from the deterministic scan: {candidates}\n\nMessage:\n{text}"

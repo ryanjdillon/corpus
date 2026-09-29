@@ -35,7 +35,9 @@ class Settings(BaseSettings):
     enrich_model: str = ""
     # Model for the secret audit. Empty => the enrichment model. Set it apart when
     # enrichment runs on a remote endpoint: the audit reads the very secrets the
-    # egress gate redacts, so it belongs on a local model.
+    # egress gate redacts, so it belongs on a local model. Both calls go to the same
+    # OpenAI-compatible base, so locality is the gateway's model-name routing: name
+    # a model the gateway serves on-prem.
     audit_model: str = ""
     enrich_timeout: float = 120.0
     # Concurrent in-flight enrichment requests; the local server batches them, so a
