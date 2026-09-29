@@ -12,6 +12,7 @@ in `src/corpus/config.py`; the common ones:
 | `CORPUS_EMBEDDING_MODEL` | embedding model name (default `local-embed`) |
 | `CORPUS_EMBEDDING_DIMENSIONS` | vector dimension (default `1024`) |
 | `CORPUS_ENRICH_MODEL` | model for batch enrichment (empty disables it) |
+| `CORPUS_AUDIT_MODEL` | model for the secret audit (default: the enrichment model); keep it local when enrichment runs remotely |
 | `CORPUS_ENRICH_CONCURRENCY` | enrichment requests in flight (default `8`) |
 | `CORPUS_ENRICH_RETRIES` | attempts per enrichment request (default `10`) |
 | `CORPUS_ENRICH_RETRY_MAX_WAIT` | cap on the backoff between them, seconds (default `60`) |

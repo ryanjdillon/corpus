@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     # Local model for batch enrichment (structured per-message summary +
     # classification via guided decoding). Empty => enrichment disabled.
     enrich_model: str = ""
+    # Model for the secret audit. Empty => the enrichment model. Set it apart when
+    # enrichment runs on a remote endpoint: the audit reads the very secrets the
+    # egress gate redacts, so it belongs on a local model.
+    audit_model: str = ""
     enrich_timeout: float = 120.0
     # Concurrent in-flight enrichment requests; the local server batches them, so a
     # multi-hour sequential backfill becomes a few hours. 1 = fully sequential.

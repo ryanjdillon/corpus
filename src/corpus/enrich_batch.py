@@ -65,6 +65,8 @@ def run_enrich(
     Resumable: already-enriched docs are skipped unless ``force``. ``limit`` of 0
     does all. ``store`` is an open EnrichStore whose lifecycle the caller owns.
 
+    The audit uses ``CORPUS_AUDIT_MODEL`` when set, else the enrichment model.
+
     Enrichment/audit LLM calls run ``concurrency`` at a time (the local server
     batches them); the store writes stay single-threaded on the caller's one
     connection. A per-record ``EnrichError`` (a bad message) is skipped so it can't
@@ -80,6 +82,7 @@ def run_enrich(
     concurrency = concurrency or settings.enrich_concurrency
     own = enricher is None
     enricher = enricher or Enricher()
+    audit_model = settings.audit_model or enricher.model
     counts = {"scanned": 0, "enriched": 0, "audited": 0, "skipped": 0, "ineligible": 0}
     excluded: set[str] = set()
 
@@ -108,7 +111,7 @@ def run_enrich(
             log.warning("skipping %s: %s", doc_id, exc)
             return doc_id, None, None, None
         candidates = scan.audit_candidates(content)
-        result = audit(text, candidates, model=enricher.model) if candidates else None
+        result = audit(text, candidates, model=audit_model) if candidates else None
         return doc_id, enrichment, candidates, result
 
     def persist(res: tuple) -> None:
@@ -122,7 +125,7 @@ def run_enrich(
         counts["enriched"] += 1
         if candidates:
             store.save_audit(
-                doc_id, candidates, msgspec.to_builtins(result), enricher.model, scan.SCAN_VERSION
+                doc_id, candidates, msgspec.to_builtins(result), audit_model, scan.SCAN_VERSION
             )
             counts["audited"] += 1
 
@@ -176,9 +179,9 @@ def run_audit(
     nobody is looking. It already runs the model only on documents the
     deterministic detectors flagged, so the cost of the wider net is small.
     """
-    model = model or settings.enrich_model
+    model = model or settings.audit_model or settings.enrich_model
     if not model:
-        raise ValueError("no model configured (set CORPUS_ENRICH_MODEL)")
+        raise ValueError("no model configured (set CORPUS_AUDIT_MODEL or CORPUS_ENRICH_MODEL)")
     scanned = audited = 0
     for doc_id, content, meta in documents(source=source, account=account):
         if limit and scanned >= limit:
