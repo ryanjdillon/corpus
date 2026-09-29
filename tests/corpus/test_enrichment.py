@@ -27,15 +27,15 @@ def test_json_schema_lists_enum_values():
         assert value in dumped
 
 
-def test_json_schema_forces_classification_axes_required():
-    # The axes carry struct defaults, but the guided-decoding schema must mark them
-    # required so the model decides each instead of omitting them (which collapsed
-    # every record to domain="other", transactional_type="none", ...).
+def test_json_schema_forces_every_field_required():
+    # Fields carry struct defaults, but the guided-decoding schema must mark all of
+    # them required: an optional field is one the grammar lets the model skip (the
+    # axes collapsed to their defaults; vLLM dropped entities, llama.cpp deadlines).
     schema = enrichment.json_schema()
     enr = schema["$defs"]["Enrichment"] if "$defs" in schema else schema
-    required = set(enr["required"])
-    for axis in ("domain", "transactional_type", "requires_action", "importance", "sensitivity_level"):
-        assert axis in required
+    assert set(enr["required"]) == set(enr["properties"])
+    for field in ("domain", "deadline", "people", "organizations", "monetary_amounts"):
+        assert field in enr["required"]
 
 
 def test_decode_applies_defaults_to_minimal_output():
