@@ -77,6 +77,39 @@ def test_enriches_all_audits_only_flagged(store, enricher, audit, documents, key
     assert "aws_access_key" in store.save_audit.call_args.args[1]
 
 
+def test_audit_uses_its_own_model_when_configured(
+    store, enricher, audit, documents, key_doc, monkeypatch
+):
+    # Enrichment may run remotely; the audit reads the secrets the egress gate
+    # redacts, so a configured audit model must be used and recorded instead.
+    from corpus.config import settings
+
+    monkeypatch.setattr(settings, "audit_model", "local-auditor")
+
+    run_enrich(store, documents=documents(key_doc), enricher=enricher, audit=audit)
+
+    assert audit.call_args.kwargs["model"] == "local-auditor"
+    assert store.save_audit.call_args.args[3] == "local-auditor"
+    assert store.save_enrichment.call_args.args[2] == "local"
+
+
+def test_audit_defaults_to_the_enrichment_model(store, enricher, audit, documents, key_doc):
+    run_enrich(store, documents=documents(key_doc), enricher=enricher, audit=audit)
+
+    assert audit.call_args.kwargs["model"] == "local"
+
+
+def test_run_audit_prefers_the_audit_model(store, audit, documents, key_doc, monkeypatch):
+    from corpus.config import settings
+
+    monkeypatch.setattr(settings, "audit_model", "local-auditor")
+    monkeypatch.setattr(settings, "enrich_model", "remote")
+
+    run_audit(store, documents=documents(key_doc), audit=audit)
+
+    assert audit.call_args.kwargs["model"] == "local-auditor"
+
+
 def test_skips_already_enriched(store, enricher, documents, key_doc):
     store.enriched_ids.return_value = {"d1"}
 
