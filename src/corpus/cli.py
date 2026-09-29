@@ -78,8 +78,13 @@ def ingest(source: str, batch_size: int) -> None:
     "--upgrade-stale", is_flag=True,
     help="also re-enrich documents enriched under an older schema version",
 )
+@click.option(
+    "--retry-rejected", is_flag=True,
+    help="also retry documents this model previously rejected",
+)
 def enrich(
     source: str | None, account: str | None, limit: int, force: bool, upgrade_stale: bool,
+    retry_rejected: bool,
 ) -> None:
     """Batch-enrich stored documents with summary and classification.
 
@@ -93,7 +98,7 @@ def enrich(
         with EnrichStore() as store:
             r = run_enrich(
                 store, source=source, account=account, limit=limit, force=force,
-                upgrade_stale=upgrade_stale,
+                upgrade_stale=upgrade_stale, retry_rejected=retry_rejected,
             )
         msg = f"enriched {r['enriched']}, audited {r['audited']} of {r['scanned']} scanned"
         if r["ineligible"]:
