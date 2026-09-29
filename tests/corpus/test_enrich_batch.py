@@ -125,6 +125,24 @@ def test_audit_failure_keeps_the_enrichment_and_continues(
     store.save_audit.assert_not_called()
 
 
+def test_resume_ignores_schema_version_by_default(store, enricher, audit, documents, key_doc):
+    run_enrich(store, documents=documents(key_doc), enricher=enricher, audit=audit)
+
+    store.enriched_ids.assert_called_once_with(None)
+
+
+def test_upgrade_stale_only_counts_current_schema_as_done(
+    store, enricher, audit, documents, key_doc
+):
+    from corpus.enrichment import SCHEMA_VERSION
+
+    run_enrich(
+        store, documents=documents(key_doc), enricher=enricher, audit=audit, upgrade_stale=True
+    )
+
+    store.enriched_ids.assert_called_once_with(SCHEMA_VERSION)
+
+
 def test_skips_already_enriched(store, enricher, documents, key_doc):
     store.enriched_ids.return_value = {"d1"}
 
