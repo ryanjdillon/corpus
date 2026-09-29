@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 
 from haystack.document_stores.types import DuplicatePolicy
@@ -17,11 +18,17 @@ from .telemetry import documents_counter, embed_batch_size, embed_duration
 
 log = logging.getLogger("corpus.ingest")
 
-# Hard cap on the characters sent to the embedder. Word-count chunking does not
-# bound a message with a giant unbroken string (base64/inline content becomes a
-# single huge "word"), which the embedder rejects; this keeps every request well
-# under the model's token limit. ~8000 chars is roughly 2k tokens.
-_MAX_EMBED_CHARS = 8000
+# Hard cap on the characters sent to the embedder, so the embed input stays
+# near one 200-word chunk. Embedding cost grows quadratically with token count
+# and every input in a batch is padded to the longest, so one long input stalls
+# the whole batch on the CPU embedder (DIL-507).
+_MAX_EMBED_CHARS = 2000
+
+# URLs and other long unbroken strings (tracking links, base64, inline content)
+# carry no meaning for retrieval but tokenize densely: a newsletter's first
+# chunk can run to thousands of tokens. They are dropped from the embed input.
+_URL = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
+_MAX_WORD_CHARS = 64
 
 # Abort the run if this many records fail consecutively: a long unbroken run of
 # failures means something systemic (e.g. the store is unreachable), not a few
@@ -40,9 +47,16 @@ def _chunk(text: str) -> list[str]:
     return [" ".join(words[i : i + size]) for i in range(0, len(words), step)]
 
 
+def _clean_for_embed(text: str) -> str:
+    """Drop URLs and overlong tokens, which cost tokens without adding meaning."""
+    words = _URL.sub(" ", text).split()
+    return " ".join(w for w in words if len(w) <= _MAX_WORD_CHARS)
+
+
 def _embed_text(record: Record) -> str:
-    """The text embedded for a record: subject + first chunk, length-capped."""
-    return f"{record.subject or ''}\n\n{_chunk(record.body_text)[0]}"[:_MAX_EMBED_CHARS]
+    """The text embedded for a record: subject + first chunk, cleaned and capped."""
+    body = _chunk(_clean_for_embed(record.body_text))[0]
+    return f"{record.subject or ''}\n\n{body}"[:_MAX_EMBED_CHARS]
 
 
 def ingest(source: str, batch_size: int = 50, *, fetcher: Fetcher | None = None) -> int:
