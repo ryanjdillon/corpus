@@ -62,8 +62,9 @@ def run_enrich(
 ) -> dict[str, int]:
     """Enrich stored documents; audit only those with secret candidates.
 
-    Resumable: already-enriched docs are skipped unless ``force``. ``limit`` of 0
-    does all. ``store`` is an open EnrichStore whose lifecycle the caller owns.
+    Resumable: already-enriched docs are skipped unless ``force``. ``limit`` caps
+    the documents sent to the model (0 does all), so a capped scheduled run keeps
+    making progress past the already-enriched ones. ``store`` is an open EnrichStore whose lifecycle the caller owns.
 
     The audit uses ``CORPUS_AUDIT_MODEL`` when set, else the enrichment model.
 
@@ -88,8 +89,12 @@ def run_enrich(
 
     def selected() -> Iterator[tuple]:
         seen = set() if force else store.enriched_ids()
+        queued = 0
         for doc_id, content, meta in documents(source=source, account=account):
-            if limit and counts["scanned"] >= limit:
+            # The limit caps documents sent to the model, not documents scanned:
+            # documents arrive in a stable order, so a scan cap would re-scan the
+            # same already-enriched prefix on every run and never reach new mail.
+            if limit and queued >= limit:
                 return
             counts["scanned"] += 1
             doc_source = (meta or {}).get("source")
@@ -100,6 +105,7 @@ def run_enrich(
                 excluded.add(doc_source or "<unset>")
                 continue
             if doc_id not in seen:
+                queued += 1
                 yield doc_id, content, meta
 
     def work(item: tuple) -> tuple:

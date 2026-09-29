@@ -154,11 +154,23 @@ def test_force_reenriches_seen(store, enricher, audit, documents, key_doc):
     store.save_enrichment.assert_called_once()
 
 
-def test_limit_caps_scan(store, enricher, documents, key_doc, clean_doc):
+def test_limit_caps_documents_sent_to_the_model(store, enricher, documents, key_doc, clean_doc):
     r = run_enrich(store, documents=documents(clean_doc, key_doc), enricher=enricher, limit=1)
 
     assert r["scanned"] == 1
     store.save_enrichment.assert_called_once()
+
+
+def test_limit_reaches_past_already_enriched_documents(store, enricher, audit, documents):
+    # A capped daily run must enrich new mail even when the head of the stable
+    # document order is already enriched.
+    docs = tuple((f"d{i}", "are we on for lunch?", MAIL) for i in range(5))
+    store.enriched_ids.return_value = {"d0", "d1", "d2"}
+
+    r = run_enrich(store, documents=documents(*docs), enricher=enricher, audit=audit, limit=2)
+
+    assert r["enriched"] == 2
+    assert {c.args[0] for c in store.save_enrichment.call_args_list} == {"d3", "d4"}
 
 
 def test_run_audit_only_audits_candidates_without_enriching(
