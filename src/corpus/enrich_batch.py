@@ -55,6 +55,7 @@ def run_enrich(
     account: str | None = None,
     limit: int = 0,
     force: bool = False,
+    upgrade_stale: bool = False,
     enricher: Enricher | None = None,
     documents=iter_documents,
     audit=audit_secrets,
@@ -62,9 +63,13 @@ def run_enrich(
 ) -> dict[str, int]:
     """Enrich stored documents; audit only those with secret candidates.
 
-    Resumable: already-enriched docs are skipped unless ``force``. ``limit`` caps
-    the documents sent to the model (0 does all), so a capped scheduled run keeps
-    making progress past the already-enriched ones. ``store`` is an open EnrichStore whose lifecycle the caller owns.
+    Resumable: already-enriched docs are skipped unless ``force``. With
+    ``upgrade_stale``, docs enriched under an older ``SCHEMA_VERSION`` are treated
+    as not yet done and re-enriched; it is opt-in so that a scheduled run on a
+    remote model does not re-send the whole archive after a schema change.
+    ``limit`` caps the documents sent to the model (0 does all), so a capped
+    scheduled run keeps making progress past the already-enriched ones. ``store``
+    is an open EnrichStore whose lifecycle the caller owns.
 
     The audit uses ``CORPUS_AUDIT_MODEL`` when set, else the enrichment model.
 
@@ -91,7 +96,10 @@ def run_enrich(
     excluded: set[str] = set()
 
     def selected() -> Iterator[tuple]:
-        seen = set() if force else store.enriched_ids()
+        if force:
+            seen: set[str] = set()
+        else:
+            seen = store.enriched_ids(SCHEMA_VERSION if upgrade_stale else None)
         queued = 0
         for doc_id, content, meta in documents(source=source, account=account):
             # The limit caps documents sent to the model, not documents scanned:

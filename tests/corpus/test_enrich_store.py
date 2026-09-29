@@ -32,6 +32,15 @@ def test_lazy_create_save_and_resume(pg):
     assert _row("d1") == ("local", "sv1", ["us_ssn"], "local")
 
 
+def test_resume_ids_can_exclude_stale_schema_versions(pg):
+    with EnrichStore() as est:
+        est.save_enrichment("old", {"one_line": "a"}, "local", "sv1")
+        est.save_enrichment("new", {"one_line": "b"}, "local", "sv2")
+
+        assert est.enriched_ids() == {"old", "new"}
+        assert est.enriched_ids("sv2") == {"new"}
+
+
 def test_upsert_replaces_enrichment_only(pg):
     with EnrichStore() as est:
         est.save_enrichment("d1", {"one_line": "a"}, "local", "sv1")

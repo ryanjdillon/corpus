@@ -46,9 +46,20 @@ class EnrichStore(Store):
         """Return the idempotent DDL that lazily creates the enrichments table."""
         return _DDL.format(table=self._table)
 
-    def enriched_ids(self) -> set[str]:
-        """Return doc ids that already have an enrichment, so a batch can resume."""
-        rows = self._read(f"SELECT doc_id FROM {self._table} WHERE enrichment IS NOT NULL")
+    def enriched_ids(self, schema_version: str | None = None) -> set[str]:
+        """Return doc ids that already have an enrichment, so a batch can resume.
+
+        With ``schema_version``, only records produced under that schema count as
+        done, so records from an older schema are picked up again and upgraded.
+        """
+        if schema_version is None:
+            rows = self._read(f"SELECT doc_id FROM {self._table} WHERE enrichment IS NOT NULL")
+        else:
+            rows = self._read(
+                f"SELECT doc_id FROM {self._table} "
+                "WHERE enrichment IS NOT NULL AND schema_version = %s",
+                (schema_version,),
+            )
         return {row[0] for row in rows}
 
     def save_enrichment(self, doc_id: str, enrichment: dict, model: str, schema_version: str) -> None:

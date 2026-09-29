@@ -13,6 +13,7 @@ enrichable are processed (see [Enrichment policy](fetchers/policy.md)).
 corpus enrich                # every eligible document not yet enriched
 corpus enrich --limit 400    # at most 400 documents sent to the model
 corpus enrich --force        # re-enrich documents that already have a record
+corpus enrich --upgrade-stale    # also redo records from an older schema version
 ```
 
 A run is resumable: documents that already have an enrichment are skipped, so a
@@ -47,6 +48,7 @@ null deadline is still a valid answer.
 
 `SCHEMA_VERSION` is a hash of that schema, stored with each enrichment, so it
 changes whenever the schema does. Records written under an older version stay
-readable, because decoding fills defaults. But they are still counted as enriched,
-so a normal run does not upgrade them. Upgrading older records means
-re-enriching them with `--force`.
+readable, because decoding fills defaults, and a normal run still counts them as
+enriched. `--upgrade-stale` treats them as not yet done, so they are re-enriched.
+It is opt-in: a scheduled run on a remote model would otherwise re-send the whole
+archive after every schema change. Run it where the model is local.
