@@ -45,6 +45,19 @@ already removed, and on a non-redacting one it would send them off-prem. Both
 calls use the same `CORPUS_OPENAI_API_BASE`, so the audit is local only if the
 gateway serves the named model on-prem.
 
+`CORPUS_MODEL_OPTIONS` tunes how each model is called, as JSON keyed by model
+name. A model with no entry is called exactly as before.
+
+```sh
+CORPUS_MODEL_OPTIONS='{"bonsai-2-27b": {"inline_schema_refs": true,
+  "extra_body": {"reasoning_effort": "none"}, "context_tokens": 32768}}'
+```
+
+- `inline_schema_refs`: inline the response schema's `$ref`s. llama.cpp can't
+  resolve the nested references msgspec emits and silently drops the grammar, so
+  the model answers unconstrained. `SCHEMA_VERSION` is unaffected.
+- `extra_body`: fields merged into every request, e.g. `reasoning_effort`.
+
 ## Schema and `SCHEMA_VERSION`
 
 Every field of every struct is required in the schema sent to the model, even

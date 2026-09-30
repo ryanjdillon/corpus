@@ -168,3 +168,54 @@ def test_cap_leaves_text_within_the_limit_untouched():
 
 def test_cap_smaller_than_the_note_is_still_honoured():
     assert cap_input("abcdefghij", 4) == "abcd"
+
+
+# --------------------------------------------------------------------------- #
+# Per-model options (CORPUS_MODEL_OPTIONS)
+# --------------------------------------------------------------------------- #
+@pytest.fixture
+def options(monkeypatch):
+    """Set CORPUS_MODEL_OPTIONS for the test."""
+    def set_options(value: dict) -> None:
+        monkeypatch.setattr(enricher_mod.settings, "model_options", value)
+    return set_options
+
+
+def test_unconfigured_model_is_called_as_before(client):
+    Enricher(model="local", client=client).enrich("Hello")
+
+    body = client.post.call_args.kwargs["json"]
+    assert body["response_format"]["json_schema"]["schema"] == json_schema()
+    assert "reasoning_effort" not in body
+
+
+def test_options_inline_refs_and_merge_extra_body(client, options):
+    options({"bonsai": {"inline_schema_refs": True, "extra_body": {"reasoning_effort": "none"}}})
+
+    Enricher(model="bonsai", client=client).enrich("Hello")
+
+    body = client.post.call_args.kwargs["json"]
+    sent = json.dumps(body["response_format"]["json_schema"]["schema"])
+    assert "$ref" not in sent and "$defs" not in sent
+    assert body["reasoning_effort"] == "none"
+
+
+def test_unknown_option_key_fails_loudly(client, options):
+    options({"bonsai": {"reasoning": "none"}})
+
+    with pytest.raises(ValueError, match="unknown CORPUS_MODEL_OPTIONS keys"):
+        Enricher(model="bonsai", client=client).enrich("Hello")
+
+
+def test_close_closes_the_client(client):
+    Enricher(model="local", client=client).close()
+
+    client.close.assert_called_once()
+
+
+def test_inline_refs_resolves_nested_definitions():
+    flat = enricher_mod.inline_refs(json_schema())
+
+    dumped = json.dumps(flat)
+    assert "$ref" not in dumped and "$defs" not in dumped
+    assert "personal" in json.dumps(flat["properties"]["category"])
