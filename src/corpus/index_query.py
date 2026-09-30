@@ -19,7 +19,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 from .config import settings
-from .sanitized_store import COLS
+from .sanitized_store import COLS, sanitized_schema
 
 # The safe columns to return: the sanitized projection, never the embedding.
 _SELECT = ", ".join(COLS)
@@ -28,7 +28,7 @@ Connect = Callable[..., psycopg.Connection]
 
 
 def _table() -> str:
-    return f"{settings.db_schema}.messages"
+    return f"{sanitized_schema()}.messages"
 
 
 def _rows(sql: str, params: list, *, connect: Connect = psycopg.connect) -> list[dict]:
