@@ -200,5 +200,5 @@ def test_server_options_size_both_directions():
 
 
 def test_server_options_default_to_the_setting():
-    limit = settings.scan_gate_max_message_bytes
+    limit = settings.scan_gate_grpc_max_message_bytes
     assert dict(scan_gate.server_options())["grpc.max_receive_message_length"] == limit
