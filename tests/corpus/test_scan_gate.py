@@ -192,9 +192,13 @@ def test_image_parts_pass_through_byte_identical():
     assert parts[1] == {"type": "image_url", "image_url": {"url": image}}
 
 
-def test_server_options_cover_the_configured_message_size(monkeypatch):
-    monkeypatch.setattr(settings, "scan_gate_max_message_bytes", 1234)
-    assert dict(scan_gate.server_options()) == {
+def test_server_options_size_both_directions():
+    assert dict(scan_gate.server_options(1234)) == {
         "grpc.max_receive_message_length": 1234,
         "grpc.max_send_message_length": 1234,
     }
+
+
+def test_server_options_default_to_the_setting():
+    limit = settings.scan_gate_max_message_bytes
+    assert dict(scan_gate.server_options())["grpc.max_receive_message_length"] == limit
