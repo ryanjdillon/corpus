@@ -81,3 +81,21 @@ When it does, the gate refuses the stream, and the proxy then passes the body
 through unscanned or refuses the request, depending on its own fail-open setting. Only the `text` of
 each message and content part is redacted. Image and audio parts pass through
 byte-identical.
+
+## Sanitized tier
+
+`corpus sync` projects enriched documents into a separate, trust-downgraded
+database: summaries and the priority signal, never raw content, subject or
+sender. `corpus index` serves that database to cloud-side consumers over MCP.
+
+| Variable | Purpose |
+|---|---|
+| `CORPUS_SANITIZED_DATABASE_URL` | DSN the sync writes to |
+| `CORPUS_INDEX_DATABASE_URL` | DSN the index server reads with (a read-only role) |
+| `CORPUS_SANITIZED_DB_SCHEMA` | schema of the sanitized `messages` table; empty means `CORPUS_DB_SCHEMA` |
+| `CORPUS_INDEX_SENSITIVITY_GATE` | sensitivity at which free-text summaries are withheld (default `high`) |
+
+Set `CORPUS_SANITIZED_DB_SCHEMA` when several raw schemas feed one sanitized
+view. For example, one raw schema per mailbox (`mbx_kasserar`, `mbx_post`, …) can
+each run `corpus sync` into a shared `kbl` schema. Record ids include the source
+(`imap:<mailbox>::…`), so rows from different mailboxes never collide.

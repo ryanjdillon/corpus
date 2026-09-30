@@ -102,6 +102,10 @@ class Settings(BaseSettings):
     # projection drops raw content/subject/sender; only cloud-safe fields land here.
     # Empty => sync disabled.
     sanitized_database_url: str = ""
+    # Schema of the sanitized tier's ``messages`` table (sync writes it, the index
+    # reads it). Empty means ``db_schema``. Set it when several raw schemas (one
+    # per mailbox) project into one sanitized view.
+    sanitized_db_schema: str = ""
     # sensitivity_level at/above which richer summary detail (abstract, key_points)
     # is withheld from the sanitized surface. one_line + classification still shown.
     index_sensitivity_gate: str = "high"
