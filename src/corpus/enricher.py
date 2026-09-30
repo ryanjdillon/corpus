@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 import random
 import time
+from dataclasses import dataclass, field
 
 import httpx
 import msgspec
@@ -73,6 +74,69 @@ def cap_input(text: str, limit: int) -> str:
     if limit <= len(_TRUNCATION_NOTE):
         return text[:limit]
     return text[: limit - len(_TRUNCATION_NOTE)].rstrip() + _TRUNCATION_NOTE
+
+
+@dataclass(frozen=True)
+class ModelOptions:
+    """How to call one model, from ``CORPUS_MODEL_OPTIONS``; defaults change nothing."""
+
+    inline_schema_refs: bool = False
+    extra_body: dict = field(default_factory=dict)
+    context_tokens: int = 0
+
+
+def model_options(model: str) -> ModelOptions:
+    """Return the configured options for ``model``; an unknown key fails loudly."""
+    raw = settings.model_options.get(model, {})
+    unknown = set(raw) - {"inline_schema_refs", "extra_body", "context_tokens"}
+    if unknown:
+        raise ValueError(f"unknown CORPUS_MODEL_OPTIONS keys for {model!r}: {sorted(unknown)}")
+    return ModelOptions(**raw)
+
+
+def inline_refs(schema: dict) -> dict:
+    """Return ``schema`` with every local ``#/$defs/...`` reference inlined.
+
+    llama.cpp's JSON-schema-to-grammar converter cannot resolve references nested
+    inside a definition that is itself reached by a root ``$ref`` -- the shape
+    msgspec emits -- and the server then drops the grammar silently, so the model
+    answers unconstrained. The inlined schema is equivalent (the schemas here have
+    no cycles), so ``SCHEMA_VERSION``, a hash of the un-inlined schema, is unchanged.
+    """
+    defs = schema.get("$defs", {})
+
+    def walk(node):
+        if isinstance(node, list):
+            return [walk(x) for x in node]
+        if isinstance(node, dict):
+            if "$ref" in node:
+                return walk(defs[node["$ref"].rsplit("/", 1)[-1]])
+            return {k: walk(v) for k, v in node.items() if k != "$defs"}
+        return node
+
+    return walk(schema)
+
+
+def build_payload(model: str, system: str, user: str, name: str, schema: dict) -> dict:
+    """Return a guided-decoding chat request for ``model``, with its options applied."""
+    options = model_options(model)
+    payload = {
+        "model": model,
+        "temperature": 0,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": name,
+                "schema": inline_refs(schema) if options.inline_schema_refs else schema,
+            },
+        },
+    }
+    payload.update(options.extra_body)
+    return payload
 
 
 class EnrichError(Exception):
@@ -160,18 +224,13 @@ class Enricher:
 
         ``text`` is capped to ``max_input_chars`` before the call.
         """
-        payload = {
-            "model": self.model,
-            "temperature": 0,
-            "messages": [
-                {"role": "system", "content": _SYSTEM},
-                {"role": "user", "content": cap_input(text, self.max_input_chars)},
-            ],
-            "response_format": {
-                "type": "json_schema",
-                "json_schema": {"name": "enrichment", "schema": self._schema},
-            },
-        }
+        payload = build_payload(
+            self.model,
+            _SYSTEM,
+            cap_input(text, self.max_input_chars),
+            "enrichment",
+            self._schema,
+        )
         content = chat_completion(self._client, payload)
         try:
             return msgspec.json.decode(content.encode(), type=Enrichment)

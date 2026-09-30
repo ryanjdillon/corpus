@@ -124,3 +124,12 @@ def test_audit_falls_back_to_the_audit_model(client, monkeypatch):
     audit_mod.audit_secrets("x", ["us_ssn"], client=client)
 
     assert client.post.call_args.kwargs["json"]["model"] == "local-auditor"
+
+
+def test_audit_applies_model_options(client, monkeypatch):
+    monkeypatch.setattr(audit_mod.settings, "model_options",
+                        {"bonsai": {"inline_schema_refs": True, "extra_body": {"reasoning_effort": "none"}}})
+
+    audit_mod.audit_secrets("x", ["us_ssn"], model="bonsai", client=client)
+
+    assert client.post.call_args.kwargs["json"]["reasoning_effort"] == "none"

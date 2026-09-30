@@ -54,6 +54,14 @@ class Settings(BaseSettings):
     # the server preempts; capping trades tail-of-body fidelity for throughput. Only
     # the enrichment call is capped — the secret audit always sees the full text.
     enrich_max_input_chars: int = 0
+    # Per-model request options, as JSON: {"<model>": {...}}. Keys:
+    #   inline_schema_refs  inline the response schema's $refs (llama.cpp cannot
+    #                       resolve the nested refs msgspec emits, and silently
+    #                       drops the grammar)
+    #   extra_body          fields merged into the request, e.g. reasoning_effort
+    #   context_tokens      the model's per-request context, to budget inputs
+    # A model with no entry is called exactly as before.
+    model_options: dict[str, dict] = {}
 
     # External credential scanner (Betterleaks). Empty => local regexes only; set to
     # the binary name/path to union in its full ruleset (the image sets this).

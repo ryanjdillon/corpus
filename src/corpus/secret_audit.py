@@ -18,7 +18,7 @@ import httpx
 import msgspec
 
 from .config import settings
-from .enricher import EnrichError, chat_completion
+from .enricher import EnrichError, build_payload, chat_completion
 from .enrichment import SecretAudit, secret_audit_schema
 
 _SYSTEM = (
@@ -57,18 +57,7 @@ def audit_secrets(
     schema = secret_audit_schema()
     candidates = ", ".join(candidate_types) or "none"
     user = f"Candidate secret types from the deterministic scan: {candidates}\n\nMessage:\n{text}"
-    payload = {
-        "model": model,
-        "temperature": 0,
-        "messages": [
-            {"role": "system", "content": _SYSTEM},
-            {"role": "user", "content": user},
-        ],
-        "response_format": {
-            "type": "json_schema",
-            "json_schema": {"name": "secret_audit", "schema": schema},
-        },
-    }
+    payload = build_payload(model, _SYSTEM, user, "secret_audit", schema)
     owns = client is None
     if client is None:
         client = httpx.Client(
