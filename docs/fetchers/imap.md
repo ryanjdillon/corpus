@@ -19,3 +19,21 @@ selectable folder on the account.
 Incremental sync is tracked per folder in the `sync_state` table: the cursor is a
 JSON map of folder to `UIDVALIDITY:UID`, so each folder resyncs independently. A
 `UIDVALIDITY` change resets that folder's UID window.
+
+A record's id is `<folder>:<UIDVALIDITY>:<UID>`, and its `uri` is the RFC 5092
+form `imap://<host>/<folder>;UIDVALIDITY=<v>/;UID=<uid>`. A UID is unique only
+within one folder and one UIDVALIDITY epoch: after a change the server may hand an
+old UID to a new message, and an id without the validity would match the stored
+message and be skipped. Messages stored under the previous epoch stay as they are.
+
+Folders are opened read-only (`EXAMINE`), so fetching never sets `\Seen` or
+changes the mailbox in any other way.
+
+## Stalwart and other self-hosted servers
+
+Any IMAPS server works, Stalwart included. For a shared or role mailbox, log in as
+the mailbox's own principal (its address and service password) instead of as a
+member with access to it. The fetcher then sees the mailbox as its own INBOX, and
+access revokes when that password is rotated. Configure one fetcher name per
+mailbox (`imap:kasserar`, `imap:post`, …), so each mailbox keeps its own cursor
+and can be stored in its own schema or database.
