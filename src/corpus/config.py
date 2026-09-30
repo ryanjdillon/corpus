@@ -88,6 +88,11 @@ class Settings(BaseSettings):
     # Comma-separated secret types that force an outright 403 block instead of
     # redaction. Kept small and high-confidence; see ``scan_gate.block_types``.
     scan_gate_block_types: str = "private_key"
+    # Largest gRPC message the gate accepts and returns. Envoy sends the whole
+    # buffered request body in one message, so this must cover the gateway's body
+    # buffer limit: grpc's 4 MiB default refuses a chat body carrying an inline
+    # image, and a fail-closed route then refuses the request.
+    scan_gate_max_message_bytes: int = 50 * 1024 * 1024
 
     # corpus-index: the sanitized query surface. Connects as a restricted DB role
     # (corpus_index_ro) that reads only the sanitized DB, never a raw body — the

@@ -168,3 +168,33 @@ def test_header_and_trailer_phases_continue():
 def test_block_types_parsing(monkeypatch):
     monkeypatch.setattr(settings, "scan_gate_block_types", " private_key , openai_key ,")
     assert scan_gate.block_types() == frozenset({"private_key", "openai_key"})
+
+
+def test_image_parts_pass_through_byte_identical():
+    # Inline images ride next to text parts. Only the text is redacted: a data URL
+    # must come back byte-identical, or the provider receives a corrupt image.
+    image = "data:image/jpeg;base64," + "QUtJQUlPU0ZPRE5ON0VYQU1QTEU+/9j/4AAQ" * 2000
+    payload = {
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "who is alice@example.org?"},
+                    {"type": "image_url", "image_url": {"url": image}},
+                ],
+            }
+        ]
+    }
+    response = _drive(_body_request(payload))
+    body = json.loads(response.request_body.response.body_mutation.body)
+    parts = body["messages"][0]["content"]
+    assert "alice@example.org" not in parts[0]["text"]
+    assert parts[1] == {"type": "image_url", "image_url": {"url": image}}
+
+
+def test_server_options_cover_the_configured_message_size(monkeypatch):
+    monkeypatch.setattr(settings, "scan_gate_max_message_bytes", 1234)
+    assert dict(scan_gate.server_options()) == {
+        "grpc.max_receive_message_length": 1234,
+        "grpc.max_send_message_length": 1234,
+    }
