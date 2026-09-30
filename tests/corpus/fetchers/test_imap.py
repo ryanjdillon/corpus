@@ -51,8 +51,9 @@ def test_fetch_parses_messages(greenmail, monkeypatch):
         assert r.kind == "email"
         assert r.account == USER
         assert r.body_text.strip()
-        assert r.source_uid.startswith("INBOX:")
-        assert r.source_uid.rsplit(":", 1)[1].isdigit()
+        folder, validity, uid = r.source_uid.split(":")
+        assert folder == "INBOX"
+        assert validity.isdigit() and uid.isdigit()
     # Headers survive parsing (needed downstream for classification).
     promo = next(r for r in records if r.subject == "Winter sale")
     assert any(k.lower() == "list-unsubscribe" for k in promo.headers)

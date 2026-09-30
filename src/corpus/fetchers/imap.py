@@ -15,7 +15,10 @@ FOLDERS selects which mailboxes to catalog: a comma-separated list, or unset
 
 Incremental sync is tracked per folder: the cursor is a JSON object mapping each
 folder to "<uidvalidity>:<uid>" (its highest seen UID). A UIDVALIDITY change for
-a folder resets that folder's UID window.
+a folder resets that folder's UID window. Record ids carry the UIDVALIDITY too
+("<folder>:<uidvalidity>:<uid>"): after a change the server may reuse old UIDs,
+and an id without the validity would collide with an already-stored message and
+be skipped.
 """
 
 from __future__ import annotations
@@ -25,6 +28,7 @@ import logging
 import os
 from collections.abc import Iterator
 from datetime import UTC, datetime
+from urllib.parse import quote
 
 import mailparser
 from imapclient import IMAPClient
@@ -84,7 +88,7 @@ class ImapFetcher:
                         if not raw:
                             continue
                         try:
-                            record = self._to_record(folder, uid, raw)
+                            record = self._to_record(folder, validity, uid, raw)
                         except Exception:
                             # Skip one unparseable message rather than abort.
                             log.warning(
@@ -111,7 +115,7 @@ class ImapFetcher:
             discovered.append(name)
         return discovered
 
-    def _to_record(self, folder: str, uid: int, raw: bytes) -> Record:
+    def _to_record(self, folder: str, validity: int, uid: int, raw: bytes) -> Record:
         parsed = mailparser.parse_from_bytes(raw)
         headers = {k: str(v) for k, v in (parsed.headers or {}).items()}
         sent_at: datetime | None = parsed.date
@@ -122,9 +126,8 @@ class ImapFetcher:
         body = parsed.text_plain[0] if parsed.text_plain else (parsed.body or "")
         return Record(
             source=self.source,
-            # Folder-qualified so ids stay unique across folders (UIDs are only
-            # unique within a folder).
-            source_uid=f"{folder}:{uid}",
+            # A UID is unique only within one folder and one UIDVALIDITY epoch.
+            source_uid=f"{folder}:{validity}:{uid}",
             kind="email",
             account=self.user,
             folder=folder,
@@ -134,7 +137,8 @@ class ImapFetcher:
             subject=as_text(parsed.subject),
             sent_at=sent_at,
             headers=headers,
-            uri=f"imap://{self.host}/{folder}/{uid}",
+            # RFC 5092 IMAP URL.
+            uri=f"imap://{self.host}/{quote(folder)};UIDVALIDITY={validity}/;UID={uid}",
             body_text=body or "",
         )
 
