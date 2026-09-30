@@ -32,7 +32,7 @@ from .config import settings
 from .enricher import Enricher, EnrichError
 from .enrichment import SCHEMA_VERSION
 from .fetchers.policy import enrichable_kinds, may_enrich
-from .secret_audit import audit_secrets
+from .secret_audit import audit_secrets, audit_texts, merge_audits
 from .store import iter_documents
 
 log = logging.getLogger("corpus.enrich")
@@ -46,6 +46,17 @@ def _model_text(meta, content) -> str:
     """
     subject = (meta or {}).get("subject") or ""
     return f"Subject: {subject}\n\n{content or ''}"
+
+
+def _audit_windowed(audit, text: str, content: str, candidates, model: str):
+    """Audit ``text``, split into candidate-centred chunks if it overflows ``model``.
+
+    A document that fits is audited whole, exactly as before; a longer one is
+    audited on the windows around its candidates, and the chunk verdicts merged.
+    """
+    texts = audit_texts(text, content, scan.candidate_spans(content), model)
+    results = [audit(t, candidates, model=model) for t in texts]
+    return results[0] if len(results) == 1 else merge_audits(results)
 
 
 def run_enrich(
@@ -144,7 +155,7 @@ def run_enrich(
             # the document would then never be marked done and every later run
             # would fail on it again.
             try:
-                result = audit(text, candidates, model=audit_model)
+                result = _audit_windowed(audit, text, content, candidates, audit_model)
             except EnrichError as exc:
                 log.warning("audit skipped for %s: %s", doc_id, exc)
         return doc_id, enrichment, candidates, result
@@ -228,7 +239,7 @@ def run_audit(
         candidates = scan.audit_candidates(content)
         if not candidates:
             continue
-        result = audit(_model_text(meta, content), candidates, model=model)
+        result = _audit_windowed(audit, _model_text(meta, content), content, candidates, model)
         store.save_audit(doc_id, candidates, msgspec.to_builtins(result), model, scan.SCAN_VERSION)
         audited += 1
     log.info("audited %d of %d scanned", audited, scanned)

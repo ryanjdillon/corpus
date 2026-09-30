@@ -31,9 +31,9 @@ unparseable output) is counted as skipped and recorded against the model that
 rejected it, with the reason. Later runs on that model pass the document over
 instead of re-sending it every time; `--retry-rejected` sends them again, and a
 different model is always given a try. A later successful enrichment clears the
-record. If the secret audit fails for a document (for example, a text longer than
-the audit model's context), the enrichment is kept and the audit is counted as
-`audit_failed`.
+record. If the secret audit fails for a document, the enrichment is kept and the
+audit is counted as `audit_failed`; configuring the audit model's
+`context_tokens` avoids the overflow case (see below).
 
 ## Models
 
@@ -57,6 +57,12 @@ CORPUS_MODEL_OPTIONS='{"bonsai-2-27b": {"inline_schema_refs": true,
   resolve the nested references msgspec emits and silently drops the grammar, so
   the model answers unconstrained. `SCHEMA_VERSION` is unaffected.
 - `extra_body`: fields merged into every request, e.g. `reasoning_effort`.
+- `context_tokens`: the model's per-request context. Enrichment input is capped
+  to what fits (after `CORPUS_ENRICH_MAX_INPUT_CHARS`, whichever is tighter), and
+  a secret audit that would overflow is run on windows of text around each
+  detected candidate, chunked to fit, with the chunk verdicts merged (worst
+  severity per type). A secret deep in a long message is still audited rather
+  than cut off or skipped.
 
 ## Schema and `SCHEMA_VERSION`
 

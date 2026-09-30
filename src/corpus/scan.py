@@ -73,6 +73,23 @@ def detect_spans(content: str | None) -> list[Span]:
     return pii.scan_spans(content) + leaks.scan_spans(content)
 
 
+def candidate_spans(content: str | None) -> list[Span]:
+    """Return where each audit candidate sits in ``content``: detector hits plus
+    recovery wording.
+
+    The positional counterpart of :func:`audit_candidates`, used to show a long
+    document's audit only the text around its candidates. Values are never included.
+    """
+    if not content:
+        return []
+    spans = detect_spans(content)
+    spans += [
+        Span(m.start(), m.end(), "recovery_code", "hint")
+        for m in _RECOVERY_HINT.finditer(content)
+    ]
+    return sorted(spans, key=lambda s: s.start)
+
+
 def audit_candidates(content: str | None) -> list[str]:
     """Return the secret types worth an LLM confirmation for this document.
 

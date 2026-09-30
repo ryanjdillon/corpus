@@ -207,6 +207,23 @@ def test_unknown_option_key_fails_loudly(client, options):
         Enricher(model="bonsai", client=client).enrich("Hello")
 
 
+def test_context_budget_caps_input_below_the_configured_cap(client, options):
+    options({"small": {"context_tokens": 8192}})
+    e = Enricher(model="small", client=client, max_input_chars=100_000)
+
+    limit = e.input_limit()
+    e.enrich("x" * 50_000)
+
+    assert 0 < limit < 100_000
+    assert len(client.post.call_args.kwargs["json"]["messages"][1]["content"]) <= limit
+
+
+def test_tighter_configured_cap_wins_over_the_context_budget(client, options):
+    options({"big": {"context_tokens": 262_144}})
+
+    assert Enricher(model="big", client=client, max_input_chars=32_000).input_limit() == 32_000
+
+
 def test_close_closes_the_client(client):
     Enricher(model="local", client=client).close()
 
