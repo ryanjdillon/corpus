@@ -175,6 +175,45 @@ def test_retry_rejected_sends_them_again(store, enricher, audit, documents, clea
     assert r["enriched"] == 1
 
 
+def test_long_document_audit_is_windowed_and_merged(
+    store, enricher, audit, documents, monkeypatch
+):
+    # An audit model with a small context sees candidate-centred chunks of a long
+    # document, not the whole of it, and the chunk verdicts are merged.
+    from corpus.config import settings
+
+    monkeypatch.setattr(settings, "model_options", {"local": {"context_tokens": 8192}})
+    body = ("filler text " * 2000) + " key AKIAQZX3PL7RKEXAMPLE " + ("filler text " * 2000)
+    body += " and another AKIAQZX3PL7RKEXAMPLE far away " + ("more text " * 2000)
+    doc = ("d9", body, MAIL)
+
+    run_enrich(store, documents=documents(doc), enricher=enricher, audit=audit)
+
+    sent = [c.args[0] for c in audit.call_args_list]
+    assert sent and all(len(t) < len(body) for t in sent)
+    assert any("AKIAQZX3PL7RKEXAMPLE" in t for t in sent)
+    store.save_audit.assert_called_once()
+
+
+def test_an_enricher_built_by_the_run_is_closed_by_it(store, documents, monkeypatch):
+    from corpus import enrich_batch
+
+    built = create_autospec(Enricher, instance=True)
+    built.model = "local"
+    monkeypatch.setattr(enrich_batch, "Enricher", lambda: built)
+
+    run_enrich(store, documents=documents())
+
+    built.close.assert_called_once()
+
+
+def test_run_audit_limit_stops_scanning(store, audit, documents, key_doc, clean_doc):
+    r = run_audit(store, documents=documents(key_doc, clean_doc), audit=audit, model="local",
+                  limit=1)
+
+    assert r["scanned"] == 1
+
+
 def test_skips_already_enriched(store, enricher, documents, key_doc):
     store.enriched_ids.return_value = {"d1"}
 

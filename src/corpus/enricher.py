@@ -76,6 +76,14 @@ def cap_input(text: str, limit: int) -> str:
     return text[: limit - len(_TRUNCATION_NOTE)].rstrip() + _TRUNCATION_NOTE
 
 
+#: Tokens held back from a model's context for its own output. Enrichment and audit
+#: answers are well under this with reasoning off; a reasoning model needs more.
+OUTPUT_RESERVE_TOKENS = 4096
+#: Conservative characters per token for budgeting. Real prose averages 3.5-4,
+#: but JSON-escaped or non-Latin text packs fewer, so err towards shorter inputs.
+CHARS_PER_TOKEN = 3
+
+
 @dataclass(frozen=True)
 class ModelOptions:
     """How to call one model, from ``CORPUS_MODEL_OPTIONS``; defaults change nothing."""
@@ -83,6 +91,18 @@ class ModelOptions:
     inline_schema_refs: bool = False
     extra_body: dict = field(default_factory=dict)
     context_tokens: int = 0
+
+    def input_chars(self, prompt_chars: int) -> int:
+        """Characters of input that fit beside ``prompt_chars`` of fixed prompt.
+
+        0 means unbudgeted (no context size configured). A configured context always
+        yields a positive budget, however small, so a context too small for the
+        reserve still bounds the input instead of reading as "unbounded".
+        """
+        if self.context_tokens <= 0:
+            return 0
+        tokens = self.context_tokens - OUTPUT_RESERVE_TOKENS - prompt_chars // CHARS_PER_TOKEN
+        return max(tokens, 1) * CHARS_PER_TOKEN
 
 
 def model_options(model: str) -> ModelOptions:
@@ -222,14 +242,11 @@ class Enricher:
     def enrich(self, text: str) -> Enrichment:
         """Return the ``Enrichment`` for ``text``, retrying transient endpoint failures.
 
-        ``text`` is capped to ``max_input_chars`` before the call.
+        ``text`` is capped to ``max_input_chars``, and further to what fits the
+        model's context when its ``context_tokens`` is configured.
         """
         payload = build_payload(
-            self.model,
-            _SYSTEM,
-            cap_input(text, self.max_input_chars),
-            "enrichment",
-            self._schema,
+            self.model, _SYSTEM, cap_input(text, self.input_limit()), "enrichment", self._schema
         )
         content = chat_completion(self._client, payload)
         try:
@@ -238,6 +255,15 @@ class Enricher:
             # Guided decoding should prevent this; if it slips through it is
             # a bad record, not an outage — skippable.
             raise EnrichError(f"unparseable enrichment: {exc}") from exc
+
+    def input_limit(self) -> int:
+        """Characters of message text to send: the configured cap or the context budget.
+
+        Whichever is tighter wins; 0 means unbounded.
+        """
+        budget = model_options(self.model).input_chars(len(_SYSTEM))
+        limits = [n for n in (self.max_input_chars, budget) if n > 0]
+        return min(limits) if limits else 0
 
     def close(self) -> None:
         """Close the underlying HTTP client."""

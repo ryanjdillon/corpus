@@ -12,9 +12,10 @@ import httpx
 import pytest
 
 from corpus import enricher as enricher_mod
+from corpus import scan
 from corpus import secret_audit as audit_mod
 from corpus.enricher import EnrichError, EnrichUnavailableError
-from corpus.enrichment import SecretSeverity, secret_audit_schema
+from corpus.enrichment import ConfirmedSecret, SecretAudit, SecretSeverity, secret_audit_schema
 
 _COMPLETION = {
     "choices": [
@@ -126,6 +127,63 @@ def test_audit_falls_back_to_the_audit_model(client, monkeypatch):
     assert client.post.call_args.kwargs["json"]["model"] == "local-auditor"
 
 
+# --------------------------------------------------------------------------- #
+# Long documents: candidate-centred windows, merged verdicts
+# --------------------------------------------------------------------------- #
+_KEY = "AKIAQZX3PL7RKEXAMPLE"
+
+
+def _long_doc(filler: int = 200_000) -> tuple[str, str]:
+    body = ("lorem ipsum " * (filler // 12)) + f"\nthe deploy key is {_KEY}\n" + ("dolor " * 5000)
+    return "Subject: deploy notes\n\n" + body, body
+
+
+def test_audit_texts_returns_the_whole_text_when_it_fits(monkeypatch):
+    monkeypatch.setattr(audit_mod.settings, "model_options", {})
+    text, body = _long_doc()
+
+    assert audit_mod.audit_texts(text, body, scan.candidate_spans(body), "local") == [text]
+
+
+def test_long_document_is_audited_on_windows_around_candidates(monkeypatch):
+    monkeypatch.setattr(audit_mod.settings, "model_options", {"small": {"context_tokens": 8192}})
+    text, body = _long_doc()
+
+    chunks = audit_mod.audit_texts(text, body, scan.candidate_spans(body), "small")
+
+    budget = audit_mod.model_options("small").input_chars(
+        len(audit_mod._SYSTEM) + audit_mod._AUDIT_PREAMBLE
+    )
+    assert all(len(c) <= budget for c in chunks)
+    assert any(_KEY in c for c in chunks)            # the candidate survives
+    assert sum(len(c) for c in chunks) < len(text) // 10  # most filler is dropped
+    assert chunks[0].startswith("Subject: deploy notes")
+
+
+def test_audit_texts_terminates_on_a_tiny_budget_or_huge_subject(monkeypatch):
+    monkeypatch.setattr(audit_mod.settings, "model_options", {"tiny": {"context_tokens": 4200}})
+    body = f"key {_KEY} " + "x" * 50_000
+    text = "Subject: " + "s" * 20_000 + "\n\n" + body
+
+    chunks = audit_mod.audit_texts(text, body, scan.candidate_spans(body), "tiny")
+
+    assert chunks and all(len(c) <= 10_000 for c in chunks)
+
+
+def test_merge_audits_keeps_the_worst_severity_per_type():
+    merged = audit_mod.merge_audits([
+        SecretAudit(contains_secret=False, findings=[
+            ConfirmedSecret(type="aws_access_key", severity=SecretSeverity.none)]),
+        SecretAudit(contains_secret=True, findings=[
+            ConfirmedSecret(type="aws_access_key", severity=SecretSeverity.live),
+            ConfirmedSecret(type="us_ssn", severity=SecretSeverity.reference)]),
+    ])
+
+    assert merged.contains_secret is True
+    assert {f.type: f.severity for f in merged.findings} == {
+        "aws_access_key": SecretSeverity.live, "us_ssn": SecretSeverity.reference}
+
+
 def test_audit_applies_model_options(client, monkeypatch):
     monkeypatch.setattr(audit_mod.settings, "model_options",
                         {"bonsai": {"inline_schema_refs": True, "extra_body": {"reasoning_effort": "none"}}})
@@ -133,3 +191,44 @@ def test_audit_applies_model_options(client, monkeypatch):
     audit_mod.audit_secrets("x", ["us_ssn"], model="bonsai", client=client)
 
     assert client.post.call_args.kwargs["json"]["reasoning_effort"] == "none"
+
+
+def test_candidate_spans_include_recovery_wording_in_order():
+    body = "your backup codes are below. Also AKIAQZX3PL7RKEXAMPLE was pasted."
+
+    spans = scan.candidate_spans(body)
+
+    assert [s.entity_type for s in spans] == ["recovery_code", "aws_access_key"]
+    assert spans[0].start < spans[1].start
+
+
+def test_candidate_spans_of_empty_content_is_empty():
+    assert scan.candidate_spans("") == []
+
+
+def test_nearby_candidates_share_a_window_and_spread_ones_overflow_into_chunks(monkeypatch):
+    monkeypatch.setattr(audit_mod.settings, "model_options", {"small": {"context_tokens": 6000}})
+    near = f"one {_KEY} and close by {_KEY} again "
+    far = "".join(f"{'pad ' * 1500} key {_KEY} " for _ in range(6))
+    body = near + far
+    text = "Subject: many keys\n\n" + body
+
+    chunks = audit_mod.audit_texts(text, body, scan.candidate_spans(body), "small")
+
+    budget = audit_mod.model_options("small").input_chars(
+        len(audit_mod._SYSTEM) + audit_mod._AUDIT_PREAMBLE
+    )
+    assert len(chunks) > 1
+    assert all(len(c) <= budget for c in chunks)
+    assert sum(c.count(_KEY) for c in chunks) >= 7
+
+
+def test_a_subject_too_long_to_repeat_is_dropped_from_chunks(monkeypatch):
+    monkeypatch.setattr(audit_mod.settings, "model_options", {"small": {"context_tokens": 6000}})
+    body = "x" * 40_000 + f" key {_KEY} " + "y" * 40_000
+    text = "Subject: " + "s" * 5_000 + "\n\n" + body
+
+    chunks = audit_mod.audit_texts(text, body, scan.candidate_spans(body), "small")
+
+    assert not any(c.startswith("Subject:") for c in chunks)
+    assert any(_KEY in c for c in chunks)
