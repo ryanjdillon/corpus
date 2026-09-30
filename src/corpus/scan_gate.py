@@ -206,9 +206,9 @@ def server_options(limit: int | None = None) -> list[tuple[str, int]]:
     """gRPC channel options sizing messages to the largest body the gate buffers.
 
     The redacted body goes back in a single message too, so send and receive are
-    raised together. ``limit`` defaults to ``settings.scan_gate_max_message_bytes``.
+    raised together. ``limit`` defaults to ``settings.scan_gate_grpc_max_message_bytes``.
     """
-    limit = limit or settings.scan_gate_max_message_bytes
+    limit = limit or settings.scan_gate_grpc_max_message_bytes
     return [
         ("grpc.max_receive_message_length", limit),
         ("grpc.max_send_message_length", limit),
