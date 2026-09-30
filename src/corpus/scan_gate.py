@@ -202,9 +202,25 @@ class RedactingProcessor(epg.ExternalProcessorServicer):
                 yield ep.ProcessingResponse(response_trailers=ep.TrailersResponse())
 
 
+def server_options() -> list[tuple[str, int]]:
+    """gRPC channel options sizing messages to the largest body the gate buffers.
+
+    The redacted body goes back in a single message too, so send and receive are
+    raised together.
+    """
+    limit = settings.scan_gate_max_message_bytes
+    return [
+        ("grpc.max_receive_message_length", limit),
+        ("grpc.max_send_message_length", limit),
+    ]
+
+
 def serve() -> None:  # pragma: no cover - binds a port and blocks on the reactor
     """Run the ext_proc gRPC server until terminated."""
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=settings.scan_gate_workers))
+    server = grpc.server(
+        futures.ThreadPoolExecutor(max_workers=settings.scan_gate_workers),
+        options=server_options(),
+    )
     epg.add_ExternalProcessorServicer_to_server(RedactingProcessor(), server)
     server.add_insecure_port(f"{settings.host}:{settings.scan_gate_port}")
     log.info("scan-gate ext_proc listening on %s:%s", settings.host, settings.scan_gate_port)
