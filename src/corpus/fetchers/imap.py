@@ -26,7 +26,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from urllib.parse import quote
 
@@ -48,8 +48,9 @@ def _env(name: str, key: str, default: str = "") -> str:
 class ImapFetcher:
     """Catalog an IMAP account, tracking incremental sync per folder by UID."""
 
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, *, connect: Callable[..., IMAPClient] = IMAPClient) -> None:
         self.name = name
+        self._connect = connect
         self.source = f"imap:{name}"
         self.host = _env(name, "HOST")
         self.port = int(_env(name, "PORT", "993"))
@@ -71,7 +72,7 @@ class ImapFetcher:
         """Yield records newer than the cursor across the account's folders."""
         state = self._load_cursor(cursor)
         new_state = dict(state)
-        with IMAPClient(self.host, port=self.port, ssl=self.ssl) as client:
+        with self._connect(self.host, port=self.port, ssl=self.ssl) as client:
             client.login(self.user, self.password)
             for folder in self._resolve_folders(client):
                 prev_validity, prev_uid = self._parse_folder_cursor(state.get(folder))
