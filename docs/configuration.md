@@ -58,3 +58,24 @@ the enrichment is kept and the audit is counted as `audit_failed`.
 
 Per-source variables are namespaced by fetcher name — see [IMAP](fetchers/imap.md)
 and [Gmail](fetchers/gmail.md).
+
+## scan-gate
+
+`corpus scan-gate` runs the Envoy `ext_proc` service that redacts PII and secrets
+from LLM request bodies before they leave the network.
+
+| Variable | Purpose |
+|---|---|
+| `CORPUS_SCAN_GATE_PORT` | gRPC port (default `9002`) |
+| `CORPUS_SCAN_GATE_WORKERS` | concurrent request streams (default `8`) |
+| `CORPUS_SCAN_GATE_FAIL_OPEN` | pass a body the gate cannot parse (e.g. multipart audio) through unchanged; the default blocks it |
+| `CORPUS_SCAN_GATE_BLOCK_TYPES` | comma-separated secret types refused with a 403 instead of redacted (default `private_key`) |
+| `CORPUS_SCAN_GATE_MAX_MESSAGE_BYTES` | largest gRPC message accepted and returned (default 50 MiB) |
+
+Envoy sends the whole buffered request body as one gRPC message, so
+`CORPUS_SCAN_GATE_MAX_MESSAGE_BYTES` must be at least the gateway's body buffer
+limit. A chat request with an inline image easily exceeds grpc's 4 MiB default.
+When it does, the gate refuses the stream, and Envoy then passes the body through
+unscanned (fail-open) or refuses the request (fail-closed). Only the `text` of
+each message and content part is redacted. Image and audio parts pass through
+byte-identical.
