@@ -67,6 +67,27 @@ def _error_reason(resp: httpx.Response) -> str:
         return ""
 
 
+def _error_message(resp: httpx.Response) -> str:
+    """Return Google's error message (e.g. how long to wait), or ``""``."""
+    try:
+        return str(resp.json().get("error", {}).get("message", ""))[:200]
+    except (ValueError, AttributeError):
+        return ""
+
+
+def _retry_delay(resp: httpx.Response, attempt: int) -> float:
+    """Seconds to wait before retrying a rate-limited request.
+
+    Exponential (1, 2, 4, … s, capped at 60) unless the response carries a
+    ``Retry-After`` of seconds, which is used instead (at least 1, at most 120).
+    An HTTP-date ``Retry-After`` falls back to the exponential wait.
+    """
+    retry_after = resp.headers.get("retry-after", "")
+    if retry_after.isdigit():
+        return min(max(float(retry_after), 1.0), 120.0)
+    return min(2.0**attempt, 60.0)
+
+
 class GmailFetcher:
     """Catalog a Gmail account over the API, using historyId for incremental sync."""
 
@@ -209,7 +230,7 @@ class GmailFetcher:
         api: httpx.Client,
         mid: str,
         *,
-        attempts: int = 5,
+        attempts: int = 8,
         sleep: Callable[[float], None] = time.sleep,
     ) -> Record | None:
         for attempt in range(attempts):
@@ -221,8 +242,18 @@ class GmailFetcher:
                 resp.status_code == 403 and reason in _RATE_LIMIT_REASONS
             )
             if rate_limited and attempt < attempts - 1:
-                sleep(min(2.0**attempt, 30.0))
+                # Gmail's per-user throttle can last a minute or two, so back
+                # off well beyond a few seconds; honour Retry-After if given.
+                sleep(_retry_delay(resp, attempt))
                 continue
+            if rate_limited:
+                log.error(
+                    "gmail: still rate-limited after %d attempts (%s %s): %s",
+                    attempts,
+                    resp.status_code,
+                    reason or "no reason given",
+                    _error_message(resp),
+                )
             if resp.status_code == 403 and not rate_limited and reason not in _FATAL_REASONS:
                 # Gmail refuses some single messages outright (403 with a
                 # non-quota reason). Skipping one must not abort the whole

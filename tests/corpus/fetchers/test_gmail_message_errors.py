@@ -147,3 +147,58 @@ def test_a_deleted_message_neither_counts_nor_resets_refusals(fetcher, sleep):
     assert fetcher._fetch_message(client, "gone", sleep=sleep) is None
     with pytest.raises(httpx.HTTPStatusError):
         fetcher._fetch_message(client, "m", sleep=sleep)
+
+
+def test_backoff_grows_to_a_minute_for_a_lasting_throttle(fetcher, sleep):
+    limited = refusal(403, "userRateLimitExceeded")
+    client, calls = api(*([limited] * 8))
+    with pytest.raises(httpx.HTTPStatusError):
+        fetcher._fetch_message(client, "m1", sleep=sleep)
+    assert calls() == 8
+    assert [c.args[0] for c in sleep.call_args_list] == [1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 60.0]
+
+
+def test_retry_after_header_sets_the_wait(fetcher, sleep):
+    limited = httpx.Response(429, headers={"retry-after": "7"}, json={"error": {"code": 429}})
+    client, _ = api(limited, ok())
+    assert fetcher._fetch_message(client, "m1", sleep=sleep) is not None
+    assert [c.args[0] for c in sleep.call_args_list] == [7.0]
+
+
+def test_exhausted_retries_on_a_non_json_body_still_raise(fetcher, sleep):
+    client, _ = api(*[httpx.Response(429, text="slow down") for _ in range(2)])
+    with pytest.raises(httpx.HTTPStatusError):
+        fetcher._fetch_message(client, "m1", attempts=2, sleep=sleep)
+
+
+@pytest.mark.parametrize(
+    ("header", "wait"),
+    [("500", 120.0), ("0", 1.0), ("Wed, 21 Oct 2026 07:28:00 GMT", 1.0)],
+    ids=["capped", "floored", "http-date-falls-back"],
+)
+def test_retry_after_is_bounded(fetcher, sleep, header, wait):
+    limited = httpx.Response(429, headers={"retry-after": header}, json={"error": {"code": 429}})
+    client, _ = api(limited, ok())
+    fetcher._fetch_message(client, "m1", sleep=sleep)
+    assert [c.args[0] for c in sleep.call_args_list] == [wait]
+
+
+def test_exhaustion_logs_googles_reason_and_message(fetcher, sleep, caplog):
+    limited = httpx.Response(
+        403,
+        json={
+            "error": {
+                "code": 403,
+                "message": "User-rate limit exceeded. Retry after 2026-10-01T15:00:00Z",
+                "errors": [{"reason": "userRateLimitExceeded"}],
+            }
+        },
+    )
+    client, _ = api(limited, limited)
+    with (
+        caplog.at_level("ERROR", logger="corpus.fetchers.gmail"),
+        pytest.raises(httpx.HTTPStatusError),
+    ):
+        fetcher._fetch_message(client, "m1", attempts=2, sleep=sleep)
+    assert "userRateLimitExceeded" in caplog.text
+    assert "Retry after 2026-10-01T15:00:00Z" in caplog.text
