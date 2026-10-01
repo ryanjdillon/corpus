@@ -34,9 +34,13 @@ def test_a_tier_without_an_entry_grants_no_one():
     assert tiers.tier("sanitized", {}).access == ()
 
 
-def test_access_defaults_to_the_configured_setting():
-    configured = tiers.settings.tier_access
-    assert tiers.tier("sanitized").access == tuple(configured.get("sanitized", ()))
+def test_access_is_parsed_from_json_in_the_environment(monkeypatch):
+    from corpus.config import Settings
+
+    monkeypatch.setenv("CORPUS_TIER_ACCESS", '{"sanitized": ["orchestrator", "pi"]}')
+    access = Settings().tier_access
+    assert tiers.tier("sanitized", access).access == ("orchestrator", "pi")
+    assert tiers.tier("sensitive", access).access == ()
 
 
 def test_unknown_tier_raises():
