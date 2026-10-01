@@ -26,7 +26,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Container, Iterator
 from datetime import UTC, datetime
 from urllib.parse import quote
 
@@ -68,8 +68,11 @@ class ImapFetcher:
             raise ValueError(f"IMAP fetcher {name!r} missing host/user/password env")
         self._next_cursor: str | None = None
 
-    def fetch(self, cursor: str | None) -> Iterator[Record]:
-        """Yield records newer than the cursor across the account's folders."""
+    def fetch(self, cursor: str | None, known: Container[str] = frozenset()) -> Iterator[Record]:
+        """Yield records newer than the cursor across the account's folders.
+
+        UIDs whose record key is in *known* are not downloaded.
+        """
         state = self._load_cursor(cursor)
         new_state = dict(state)
         with self._connect(self.host, port=self.port, ssl=self.ssl) as client:
@@ -82,7 +85,15 @@ class ImapFetcher:
                 same = validity == prev_validity
                 start_uid = prev_uid + 1 if same else 1
                 max_uid = prev_uid if same else 0
-                uids = [u for u in client.search(["UID", f"{start_uid}:*"]) if u >= start_uid]
+                listed = [u for u in client.search(["UID", f"{start_uid}:*"]) if u >= start_uid]
+                uids = [
+                    u
+                    for u in listed
+                    if Record.key_for(self.source, f"{folder}:{validity}:{u}") not in known
+                ]
+                # Already-stored UIDs still advance this folder's cursor.
+                for uid in set(listed) - set(uids):
+                    max_uid = max(max_uid, uid)
                 if uids:
                     for uid, data in client.fetch(uids, ["RFC822"]).items():
                         raw = data.get(b"RFC822")

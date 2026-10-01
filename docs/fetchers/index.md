@@ -14,7 +14,9 @@ A fetcher satisfies `fetchers.base.Fetcher`:
 class Fetcher(Protocol):
     source: str  # e.g. "files:notes"
 
-    def fetch(self, cursor: str | None) -> Iterator[Record]:
+    def fetch(
+        self, cursor: str | None, known: Container[str] = frozenset()
+    ) -> Iterator[Record]:
         """Yield records newer than `cursor` (all records if cursor is None)."""
 
     def next_cursor(self) -> str | None:
@@ -29,6 +31,13 @@ class Fetcher(Protocol):
   resume incrementally (a timestamp, a page token, a provider history id, a
   per-folder map). It is persisted in `sync_state` and handed back on the next
   run. Return `None` to always do a full pass.
+- `known` holds the keys (`Record.key()`, i.e. `source::source_uid`) already in
+  the store. A fetcher should skip *downloading* those items when it can tell
+  their key before fetching them. Then a run that resumes a partly stored page
+  costs a listing, not a re-download of everything it already has, which
+  matters for providers with per-user quotas (Gmail throttles bursts of raw
+  downloads). Ignoring `known` is correct, just slower; ingest skips stored keys
+  again before writing.
 
 ## Register it
 

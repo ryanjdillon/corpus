@@ -202,3 +202,29 @@ def test_exhaustion_logs_googles_reason_and_message(fetcher, sleep, caplog):
         fetcher._fetch_message(client, "m1", attempts=2, sleep=sleep)
     assert "userRateLimitExceeded" in caplog.text
     assert "Retry after 2026-10-01T15:00:00Z" in caplog.text
+
+
+def test_backfill_skips_downloading_known_messages(fetcher):
+    # A resumed page costs the listing, not a re-download of stored mail.
+    listing = httpx.Response(200, json={"messages": [{"id": "a"}, {"id": "b"}, {"id": "c"}]})
+    client, calls = api(listing, ok("b"))
+    fetcher._label_names = {}
+    fetcher._known = {"gmail:unit::a", "gmail:unit::c"}
+    assert [r.source_uid for r in fetcher._backfill(client, None)] == ["b"]
+    assert calls() == 2  # one list call, one download
+
+
+def test_incremental_skips_downloading_known_messages(fetcher):
+    history = httpx.Response(
+        200,
+        json={
+            "history": [{"messagesAdded": [{"message": {"id": "a"}}, {"message": {"id": "b"}}]}],
+            "historyId": "2000",
+        },
+    )
+    client, calls = api(history, ok("b"))
+    fetcher._label_names = {}
+    fetcher._known = {"gmail:unit::a"}
+    records = list(fetcher._incremental(client, "1000", None, "2000"))
+    assert [r.source_uid for r in records] == ["b"]
+    assert calls() == 2
