@@ -82,3 +82,8 @@ def test_run_serves_streamable_http(monkeypatch):
     monkeypatch.setattr(index_server.mcp, "run", run)
     index_server.run()
     run.assert_called_once_with(transport="streamable-http")
+
+
+def test_serves_stateless_http():
+    # Idle sessions must not expire under long-lived clients (they would get 404).
+    assert index_server.mcp.settings.stateless_http is True
