@@ -30,7 +30,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..config import settings
+from ..config import Settings, settings
 from ..redact import Span, redact
 
 log = logging.getLogger(__name__)
@@ -51,14 +51,15 @@ class EgressPolicy:
     batch_max_bytes: int = 65536
 
     @classmethod
-    def from_settings(cls) -> EgressPolicy:
-        """Build the policy from ``CORPUS_SCAN_GATE_*`` settings."""
+    def from_settings(cls, config: Settings | None = None) -> EgressPolicy:
+        """Build the policy from ``CORPUS_SCAN_GATE_*`` settings (default: the loaded ones)."""
+        config = config or settings
         return cls(
-            fail_open=settings.scan_gate_fail_open,
-            block_types=_names(settings.scan_gate_block_types),
-            skip_models=_names(settings.scan_gate_skip_models),
-            batch_clients=_names(settings.scan_gate_batch_clients),
-            batch_max_bytes=settings.scan_gate_batch_max_bytes,
+            fail_open=config.scan_gate_fail_open,
+            block_types=_names(config.scan_gate_block_types),
+            skip_models=_names(config.scan_gate_skip_models),
+            batch_clients=_names(config.scan_gate_batch_clients),
+            batch_max_bytes=config.scan_gate_batch_max_bytes,
         )
 
 
@@ -80,7 +81,8 @@ class Verdict:
 PASS = Verdict("pass")
 
 
-def _refuse(status: int, error_type: str, message: str, detail: str) -> Verdict:
+def refusal(status: int, error_type: str, message: str, detail: str) -> Verdict:
+    """A refusing verdict with an OpenAI-style JSON error body."""
     body = json.dumps({"error": {"type": error_type, "message": message}}).encode()
     return Verdict("refuse", status=status, body=body, detail=detail)
 
@@ -93,60 +95,72 @@ def _summary(findings: Iterable[Span]) -> dict[str, int]:
     return counts
 
 
-def _redact_parts(parts: list[Any], findings: list[Span]) -> None:
-    """Redact the ``text`` of each structured content part in place."""
-    for part in parts:
-        if isinstance(part, dict) and isinstance(part.get("text"), str):
-            result = redact(part["text"])
-            part["text"] = result.text
-            findings.extend(result.findings)
+def _redact_field(container: dict[str, Any], key: str, findings: list[Span]) -> None:
+    """Redact ``container[key]`` in place: a string, a list of strings, or parts."""
+    value = container.get(key)
+    if isinstance(value, str):
+        result = redact(value)
+        container[key] = result.text
+        findings.extend(result.findings)
+    elif isinstance(value, list):
+        for i, item in enumerate(value):
+            if isinstance(item, str):
+                result = redact(item)
+                value[i] = result.text
+                findings.extend(result.findings)
+            elif isinstance(item, dict):
+                _redact_part(item, findings)
+
+
+def _redact_part(part: dict[str, Any], findings: list[Span]) -> None:
+    """Redact one structured content part: its ``text``, and nested ``content``
+    (an Anthropic ``tool_result`` carries its own string or part list)."""
+    _redact_field(part, "text", findings)
+    _redact_field(part, "content", findings)
 
 
 def redact_payload(data: dict[str, Any]) -> list[Span]:
-    """Redact every text field of a chat-completion body in place.
+    """Redact every text field of a model request body in place.
 
-    Handles the OpenAI and Anthropic shapes: an Anthropic top-level ``system``
-    (string or content parts) and each message's ``content`` (a string or a list
-    of ``{"type": ..., "text": ...}`` parts). Image and audio parts are left
-    untouched. Returns the applied spans.
+    Covers the OpenAI and Anthropic shapes that carry user text:
+
+    - chat: each message's ``content`` (a string or content parts, including an
+      Anthropic ``tool_result`` part's nested ``content``) and each assistant
+      ``tool_calls[].function.arguments``;
+    - Anthropic's top-level ``system`` (a string or parts);
+    - embeddings ``input`` and legacy completions ``prompt`` (a string or a list
+      of strings; token-id arrays carry no text).
+
+    Image and audio parts are left untouched. Returns the applied spans.
     """
     findings: list[Span] = []
-    system = data.get("system")
-    if isinstance(system, str):
-        result = redact(system)
-        data["system"] = result.text
-        findings.extend(result.findings)
-    elif isinstance(system, list):
-        _redact_parts(system, findings)
+    for key in ("system", "input", "prompt"):
+        _redact_field(data, key, findings)
 
     messages = data.get("messages")
     if isinstance(messages, list):
         for message in messages:
             if not isinstance(message, dict):
                 continue
-            content = message.get("content")
-            if isinstance(content, str):
-                result = redact(content)
-                message["content"] = result.text
-                findings.extend(result.findings)
-            elif isinstance(content, list):
-                _redact_parts(content, findings)
+            _redact_field(message, "content", findings)
+            for call in message.get("tool_calls") or []:
+                function = call.get("function") if isinstance(call, dict) else None
+                if isinstance(function, dict):
+                    _redact_field(function, "arguments", findings)
     return findings
 
 
 def _unparseable(policy: EgressPolicy, reason: str) -> Verdict:
     if policy.fail_open:
-        log.warning("egress: passing an uninspectable body through (%s)", reason)
+        # Routine for multipart audio uploads, so not a warning.
+        log.info("egress: passing an uninspectable body through (%s)", reason)
         return PASS
     log.warning("egress: refusing an uninspectable body (%s)", reason)
-    return _refuse(403, "egress_policy", "request body could not be inspected", "unredactable")
+    return refusal(403, "egress_policy", "request body could not be inspected", "unredactable")
 
 
-def inspect(
-    body: bytes, client_id: str | None = None, *, policy: EgressPolicy | None = None
-) -> Verdict:
+def inspect(body: bytes, client_id: str | None = None, *, policy: EgressPolicy) -> Verdict:
     """Decide what may leave for one request body; see the module docstring."""
-    policy = policy or EgressPolicy.from_settings()
     if not body:
         return PASS
     try:
@@ -162,7 +176,7 @@ def inspect(
 
     if client_id in policy.batch_clients and len(body) > policy.batch_max_bytes:
         log.warning("egress: refusing %d-byte body from batch client %s", len(body), client_id)
-        return _refuse(
+        return refusal(
             413,
             "request_too_large",
             f"request body exceeds the batch-client limit of {policy.batch_max_bytes} bytes; "
@@ -175,7 +189,7 @@ def inspect(
     blocked = counts.keys() & policy.block_types
     if blocked:
         log.warning("egress: refusing request body; types=%s", sorted(blocked))
-        return _refuse(
+        return refusal(
             403,
             "egress_policy",
             "request blocked by egress data policy",
