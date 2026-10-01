@@ -12,7 +12,13 @@ import httpx
 import pytest
 
 from corpus import enricher as enricher_mod
-from corpus.enricher import Enricher, EnrichError, EnrichUnavailableError, cap_input
+from corpus.enricher import (
+    OUTPUT_RESERVE_TOKENS,
+    Enricher,
+    EnrichError,
+    EnrichUnavailableError,
+    cap_input,
+)
 from corpus.enrichment import Category, json_schema
 
 _COMPLETION = {
@@ -187,6 +193,18 @@ def test_unconfigured_model_is_called_as_before(client):
     body = client.post.call_args.kwargs["json"]
     assert body["response_format"]["json_schema"]["schema"] == json_schema()
     assert "reasoning_effort" not in body
+
+
+def test_output_is_capped_to_the_reserved_budget(client):
+    # An uncapped request can generate until the gateway times out.
+    Enricher(model="local", client=client).enrich("Hello")
+    assert client.post.call_args.kwargs["json"]["max_tokens"] == OUTPUT_RESERVE_TOKENS
+
+
+def test_a_model_option_can_override_the_output_cap(client, options):
+    options({"local": {"extra_body": {"max_tokens": 1024}}})
+    Enricher(model="local", client=client).enrich("Hello")
+    assert client.post.call_args.kwargs["json"]["max_tokens"] == 1024
 
 
 def test_options_inline_refs_and_merge_extra_body(client, options):
