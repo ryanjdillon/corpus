@@ -40,7 +40,10 @@ Every request caps the model's output at 4096 tokens (`max_tokens`; a model's
 length: a document can send a model into a loop that keeps generating, and an
 uncapped request then runs until the gateway's request timeout, is retried as an
 outage, and can stall the run. Capped, the cut-off output fails to parse and the
-document is rejected like any other.
+document is rejected like any other. The same 4096 is the output reserve that
+`context_tokens` budgeting subtracts when sizing the input, so raising one model's
+`max_tokens` above it can make prompt plus output exceed that model's context;
+lower its `context_tokens` by the difference when you do.
 
 ## Models
 

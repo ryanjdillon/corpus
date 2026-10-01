@@ -130,6 +130,21 @@ def test_unparseable_output_is_enrich_error(client):
         Enricher(model="local", client=client).enrich("x")
 
 
+@pytest.mark.parametrize(
+    "content",
+    ['{"one_line": "hi", "abstract": "a loop that never clo', None],
+    ids=["truncated-at-the-cap", "no-content"],
+)
+def test_output_cut_off_or_missing_is_enrich_error(client, content):
+    # What a capped runaway returns: a JSON object cut off mid-string (or, for a
+    # reasoning model that spent its budget thinking, no content at all).
+    client.post.return_value = _response(
+        200, json_body={"choices": [{"message": {"content": content}, "finish_reason": "length"}]}
+    )
+    with pytest.raises(EnrichError):
+        Enricher(model="local", client=client).enrich("x")
+
+
 def test_missing_model_raises(client):
     with pytest.raises(ValueError):
         Enricher(model="", client=client)
@@ -182,8 +197,10 @@ def test_cap_smaller_than_the_note_is_still_honoured():
 @pytest.fixture
 def options(monkeypatch):
     """Set CORPUS_MODEL_OPTIONS for the test."""
+
     def set_options(value: dict) -> None:
         monkeypatch.setattr(enricher_mod.settings, "model_options", value)
+
     return set_options
 
 

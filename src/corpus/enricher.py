@@ -201,7 +201,10 @@ def chat_completion(client: httpx.Client, payload: dict) -> str:
         try:
             resp = client.post("/chat/completions", json=payload)
             resp.raise_for_status()
-            return resp.json()["choices"][0]["message"]["content"]
+            # A model can spend its whole output budget on reasoning and return
+            # no content. Treat that as empty output, which the caller rejects
+            # as unparseable, instead of failing the run on a None.
+            return resp.json()["choices"][0]["message"]["content"] or ""
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code < 500:
                 raise EnrichError(f"{exc.response.status_code}: {exc.response.text[:200]}") from exc
@@ -216,7 +219,10 @@ def chat_completion(client: httpx.Client, payload: dict) -> str:
             wait = wait / 2 + random.uniform(0, wait / 2)
             log.warning(
                 "endpoint unavailable (attempt %d/%d), retrying in %.1fs: %s",
-                attempt + 1, attempts, wait, last,
+                attempt + 1,
+                attempts,
+                wait,
+                last,
             )
             time.sleep(wait)
     assert last is not None
