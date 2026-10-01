@@ -116,6 +116,28 @@ def test_other_phases_are_acknowledged(processor, context):
     ]
 
 
+@pytest.fixture
+def failing_inspect():
+    return create_autospec(envoy.inspect, side_effect=ValueError)
+
+
+def test_inspection_error_is_refused_when_failing_closed(context, failing_inspect):
+    processor = envoy.EgressProcessor(
+        policy=lambda: EgressPolicy(fail_open=False), inspect=failing_inspect
+    )
+    (response,) = processor.Process(iter([body("hi")]), context)
+    assert response.immediate_response.status.code == 403
+    assert "ValueError" in response.immediate_response.details
+
+
+def test_inspection_error_passes_when_failing_open(context, failing_inspect):
+    processor = envoy.EgressProcessor(
+        policy=lambda: EgressPolicy(fail_open=True), inspect=failing_inspect
+    )
+    (response,) = processor.Process(iter([body("hi")]), context)
+    assert response.request_body.response.status == ep.CommonResponse.CONTINUE
+
+
 def test_pass_verdict_maps_to_continue():
     assert envoy.to_response(Verdict("pass")).request_body.response.status == (
         ep.CommonResponse.CONTINUE

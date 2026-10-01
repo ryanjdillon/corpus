@@ -82,9 +82,15 @@ Envoy-based proxy can call.
 For each body, in order: a body that is not a JSON object is refused (or passed,
 when failing open); a model in `SKIP_MODELS` passes unscanned; a batch client's
 oversized body gets a 413; otherwise every message's text is redacted, and a
-finding in `BLOCK_TYPES` gets a 403. Refusals carry an OpenAI-style JSON error.
+finding in `BLOCK_TYPES` gets a 403. Text is read from chat message content
+(including nested tool results and tool-call arguments), Anthropic `system`,
+embeddings `input` and completions `prompt`. An error inside the policy is
+refused (or passed, when failing open) rather than left to the proxy. Refusals carry an OpenAI-style JSON error.
 `SKIP_MODELS` takes exact names, not patterns, so a typo can only make the gate
-scan more. The client id is the caller's `x-client-id` request header, which the
+scan more. Skipping trusts the body's `model` field, so it is sound only where the
+gateway routes on that same field: a request naming a local model must not be
+able to reach a cloud backend. Do not list a model if any route sends that name
+off the network, and keep path-routed cloud endpoints off the skip path. The client id is the caller's `x-client-id` request header, which the
 gateway sets after authenticating the API key.
 
 The envoy-ext-proc adapter expects the request body in `Buffered` processing

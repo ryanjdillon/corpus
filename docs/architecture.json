@@ -249,7 +249,7 @@
       "id": "egress-gate",
       "type": "backend",
       "label": "scan-gate",
-      "sublabel": "ext_proc egress redaction",
+      "sublabel": "egress policy + gateway adapter",
       "pos": [
         280,
         470
@@ -261,7 +261,15 @@
       "sources": [
         {
           "path": "src/corpus/scan_gate.py",
-          "label": "ExternalProcessor (redact / block)"
+          "label": "adapter selection"
+        },
+        {
+          "path": "src/corpus/egress/policy.py",
+          "label": "inspect → pass / redact / refuse"
+        },
+        {
+          "path": "src/corpus/egress/envoy.py",
+          "label": "Envoy ext_proc adapter"
         },
         {
           "path": "src/corpus/redact.py",
@@ -492,7 +500,7 @@
       "items": [
         "enrichment reads documents, calls the model (guided JSON), upserts a derived enrichments table in the same store",
         "secret scan = deterministic pii + leaks (Betterleaks); enrich_batch has the model confirm flagged candidates",
-        "scan-gate reuses the same pii + leaks detectors as an Envoy ext_proc filter, redacting (or blocking) chat bodies before they egress to an untrusted provider"
+        "scan-gate applies a gateway-neutral egress policy (the same pii + leaks detectors) behind a gateway adapter (Envoy ext_proc today), redacting or refusing request bodies before they reach a model provider; local models pass unscanned"
       ]
     },
     {

@@ -28,7 +28,7 @@ from .._ext_proc.envoy.service.ext_proc.v3 import external_processor_pb2 as ep
 from .._ext_proc.envoy.service.ext_proc.v3 import external_processor_pb2_grpc as epg
 from .._ext_proc.envoy.type.v3 import http_status_pb2 as hs
 from ..config import settings
-from .policy import EgressPolicy, Verdict, inspect
+from .policy import PASS, EgressPolicy, Verdict, inspect, refusal
 
 log = logging.getLogger(__name__)
 
@@ -91,15 +91,45 @@ def client_id(headers: ep.HttpHeaders) -> str | None:
     """Return the ``x-client-id`` request header, if the proxy sent one."""
     for h in headers.headers.headers:
         if h.key.lower() == CLIENT_ID_HEADER:
-            return h.raw_value.decode() if h.raw_value else h.value
+            return h.raw_value.decode(errors="replace") if h.raw_value else h.value
     return None
 
 
 class EgressProcessor(epg.ExternalProcessorServicer):
     """ext_proc servicer applying the egress policy to the request body."""
 
-    def __init__(self, policy: Callable[[], EgressPolicy] = EgressPolicy.from_settings) -> None:
+    def __init__(
+        self,
+        policy: Callable[[], EgressPolicy] = EgressPolicy.from_settings,
+        inspect: Callable[..., Verdict] = inspect,
+    ) -> None:
         self._policy = policy
+        self._inspect = inspect
+
+    def _decide(self, body: bytes, caller: str | None) -> Verdict:
+        """Apply the policy; an error inside it is answered, never left to the proxy.
+
+        An exception would end the gRPC stream, and a fail-closed proxy would then
+        return a bare 5xx with nothing in the egress log. Refuse instead (or pass,
+        when failing open), logging only the exception's type.
+        """
+        policy = self._policy()
+        try:
+            return self._inspect(body, caller, policy=policy)
+        except Exception as exc:  # noqa: BLE001 - any failure must become an answer
+            log.warning(
+                "egress: policy raised %s; %s",
+                type(exc).__name__,
+                "passing" if policy.fail_open else "refusing",
+            )
+            if policy.fail_open:
+                return PASS
+            return refusal(
+                403,
+                "egress_policy",
+                "request could not be inspected",
+                f"error {type(exc).__name__}",
+            )
 
     def Process(
         self,
@@ -116,8 +146,7 @@ class EgressProcessor(epg.ExternalProcessorServicer):
         for request in request_iterator:
             phase = request.WhichOneof("request")
             if phase == "request_body":
-                verdict = inspect(request.request_body.body, caller, policy=self._policy())
-                yield to_response(verdict)
+                yield to_response(self._decide(request.request_body.body, caller))
             elif phase == "request_headers":
                 caller = client_id(request.request_headers)
                 yield ep.ProcessingResponse(request_headers=ep.HeadersResponse())

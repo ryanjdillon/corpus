@@ -170,13 +170,67 @@ def test_batch_client_under_the_limit_is_scanned_normally(policy):
     assert inspect(chat("hi"), "corpus-enrich", policy=policy).action == "pass"
 
 
-def test_policy_reads_comma_separated_settings():
-    policy = EgressPolicy.from_settings()
-    assert isinstance(policy.skip_models, frozenset)
-    assert isinstance(policy.batch_clients, frozenset)
-    assert policy.batch_max_bytes > 0
+def test_policy_reads_comma_separated_settings(monkeypatch):
+    # Settings come from the environment; a fresh Settings() reads it.
+    from corpus.config import Settings
+
+    monkeypatch.setenv("CORPUS_SCAN_GATE_SKIP_MODELS", " qwen3-coder , local-embed ,")
+    monkeypatch.setenv("CORPUS_SCAN_GATE_BATCH_CLIENTS", "corpus-enrich")
+    loaded = EgressPolicy.from_settings(Settings())
+    assert loaded.skip_models == frozenset({"qwen3-coder", "local-embed"})
+    assert loaded.batch_clients == frozenset({"corpus-enrich"})
 
 
 def test_non_string_model_is_scanned(policy):
-    body = json.dumps({"model": ["qwen3-coder"], "messages": [{"role": "user", "content": "x"}]})
-    assert inspect(body.encode(), policy=policy).action == "pass"
+    body = {"model": ["qwen3-coder"], "messages": [{"role": "user", "content": FAKE_PRIVATE_KEY}]}
+    assert inspect(json.dumps(body).encode(), policy=policy).action == "refuse"
+
+
+def test_body_without_a_model_is_scanned(policy):
+    body = {"messages": [{"role": "user", "content": FAKE_PRIVATE_KEY}]}
+    assert inspect(json.dumps(body).encode(), policy=policy).action == "refuse"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"model": "text-embedding-3", "input": FAKE_PRIVATE_KEY},
+        {"model": "text-embedding-3", "input": ["fine", FAKE_PRIVATE_KEY]},
+        {"model": "gpt-3.5-turbo-instruct", "prompt": FAKE_PRIVATE_KEY},
+        {
+            "model": "DeepSeek-V4-Flash",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "tool_calls": [{"function": {"name": "f", "arguments": FAKE_PRIVATE_KEY}}],
+                }
+            ],
+        },
+        {
+            "model": "claude-x",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "content": [{"type": "text", "text": FAKE_PRIVATE_KEY}],
+                        }
+                    ],
+                }
+            ],
+        },
+    ],
+    ids=["embeddings", "embeddings-list", "completions", "tool-call-args", "nested-tool-result"],
+)
+def test_every_text_container_is_scanned(policy, body):
+    assert inspect(json.dumps(body).encode(), policy=policy).action == "refuse"
+
+
+def test_token_id_input_carries_no_text(policy):
+    body = {"model": "text-embedding-3", "input": [[1, 2, 3]]}
+    assert inspect(json.dumps(body).encode(), policy=policy).action == "pass"
+
+
+def test_invalid_utf8_body_is_uninspectable(policy):
+    assert inspect(b"\xff\xfe not utf8", policy=policy).action == "refuse"
