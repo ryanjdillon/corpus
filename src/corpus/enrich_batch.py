@@ -171,7 +171,9 @@ def run_enrich(
         version = RECOVERED_SCHEMA_VERSION if recovered else SCHEMA_VERSION
         store.save_enrichment(doc_id, msgspec.to_builtins(enrichment), enricher.model, version)
         counts["enriched"] += 1
-        counts["recovered"] += recovered
+        if recovered:
+            counts["recovered"] += 1
+            log.warning("recovered %s from a reply stalled in whitespace padding", doc_id)
         if candidates and result is None:
             counts["audit_failed"] += 1
         elif candidates:

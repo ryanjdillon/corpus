@@ -206,7 +206,9 @@ def close_stalled(content: str) -> str | None:
     dangling ``,`` or ``"key":``, and close the open brackets. Unfinished fields
     are left to the caller (see :func:`decode_stalled`). A reply that ends
     inside a string, or without the padding, was cut mid-content and is not
-    repaired. Whatever the closed text holds must still pass the schema.
+    repaired. Whatever the closed text holds must still pass the schema; a
+    number cut short (``12`` of ``1250``) is indistinguishable from a complete
+    one and is kept as written.
     """
     body = content.rstrip()
     if len(content) - len(body) < STALL_PADDING_CHARS:
@@ -252,6 +254,8 @@ def decode_stalled[T](content: str, type_: type[T], unreached: dict[str, Any]) -
         return None
     try:
         fields = msgspec.json.decode(closed.encode())
+        if not isinstance(fields, dict):
+            return None
         return msgspec.convert({**unreached, **fields}, type=type_)
     except (msgspec.DecodeError, msgspec.ValidationError):
         return None
@@ -356,7 +360,6 @@ class Enricher:
                 # Guided decoding should prevent this; if it slips through it is
                 # a bad record, not an outage -- skippable.
                 raise EnrichError(f"unparseable enrichment: {exc}") from exc
-            log.warning("recovered an enrichment stalled in whitespace padding")
             return recovered, True
 
     def input_limit(self) -> int:
