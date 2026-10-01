@@ -78,16 +78,20 @@ def audit():
     return m
 
 
-def test_recovered_enrichment_is_stored_as_stale(store, enricher, audit, documents, clean_doc):
+def test_recovered_enrichment_is_stored_as_stale(
+    store, enricher, audit, documents, clean_doc, caplog
+):
     # Kept, but under a version --upgrade-stale treats as not yet done.
     enricher.enrich_reporting.return_value = (
         Enrichment(one_line="x", abstract="y", category=Category.personal),
         True,
     )
 
-    r = run_enrich(store, documents=documents(clean_doc), enricher=enricher, audit=audit)
+    with caplog.at_level("WARNING", logger="corpus.enrich"):
+        r = run_enrich(store, documents=documents(clean_doc), enricher=enricher, audit=audit)
 
     assert (r["enriched"], r["recovered"]) == (1, 1)
+    assert "stalled" in caplog.text
     assert store.save_enrichment.call_args.args[3] == RECOVERED_SCHEMA_VERSION
     assert RECOVERED_SCHEMA_VERSION != SCHEMA_VERSION
 

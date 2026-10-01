@@ -179,8 +179,9 @@ def test_reply_stalled_in_whitespace_keeps_what_was_written(client, prefix):
         '{"one_line": "hi", "abstract": "padding inside a string ',
         '{"one_line": "hi", "abstract": "a note", "category": "personal", "importance": "hi',
         '{"one_line": "hi", "abstract": "a note"',
+        '["not", "an", "object",',
     ],
-    ids=["mid-string", "mid-enum", "missing-required-field"],
+    ids=["mid-string", "mid-enum", "missing-required-field", "not-an-object"],
 )
 def test_reply_stalled_short_of_a_valid_record_is_enrich_error(client, prefix):
     client.post.return_value = _response(200, json_body=_stalled(prefix))
@@ -192,14 +193,12 @@ def test_reply_stalled_short_of_a_valid_record_is_enrich_error(client, prefix):
 _HEAD = '{"one_line": "hi", "abstract": "a note", "category": "personal", '
 
 
-def test_recovered_reply_is_reported(client, caplog):
+def test_recovered_reply_is_reported(client):
     client.post.return_value = _response(200, json_body=_stalled(_HEAD + '"topics": ['))
 
-    with caplog.at_level("WARNING", logger="corpus.enrich"):
-        _, recovered = Enricher(model="local", client=client).enrich_reporting("x")
+    _, recovered = Enricher(model="local", client=client).enrich_reporting("x")
 
     assert recovered is True
-    assert "stalled" in caplog.text
 
 
 def test_complete_reply_is_not_reported_as_recovered(client):
