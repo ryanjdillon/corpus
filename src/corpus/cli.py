@@ -206,11 +206,12 @@ def scan(source: str | None, account: str | None, limit: int, json_out: str | No
 
 @main.command(name="scan-gate")
 def scan_gate_cmd() -> None:
-    """Run the ext_proc egress redaction gate (gRPC).
+    """Run the egress gate behind the configured gateway adapter.
 
-    Envoy streams request bodies here on the path to untrusted providers; the gate
-    redacts PII/secrets (redact-by-default) and blocks the highest-confidence
-    classes outright. Reports types + counts, never values.
+    The gateway sends LLM request bodies here on the way to model providers. The
+    gate redacts PII/secrets (redact-by-default), refuses the highest-confidence
+    classes and oversized batch bodies, and passes local models unscanned.
+    Reports types + counts, never values.
     """
     telemetry.configure("corpus-scan-gate")
     from .scan_gate import serve
