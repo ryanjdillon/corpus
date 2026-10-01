@@ -112,11 +112,27 @@ def _redact_field(container: dict[str, Any], key: str, findings: list[Span]) -> 
                 _redact_part(item, findings)
 
 
+def _redact_values(obj: Any, findings: list[Span]) -> Any:
+    """Return *obj* with every string inside it redacted (dicts and lists walked)."""
+    if isinstance(obj, str):
+        result = redact(obj)
+        findings.extend(result.findings)
+        return result.text
+    if isinstance(obj, dict):
+        return {k: _redact_values(v, findings) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_redact_values(v, findings) for v in obj]
+    return obj
+
+
 def _redact_part(part: dict[str, Any], findings: list[Span]) -> None:
-    """Redact one structured content part: its ``text``, and nested ``content``
-    (an Anthropic ``tool_result`` carries its own string or part list)."""
+    """Redact one structured content part: its ``text``, nested ``content`` (an
+    Anthropic ``tool_result`` carries its own string or part list), and a
+    ``tool_use`` part's ``input`` arguments."""
     _redact_field(part, "text", findings)
     _redact_field(part, "content", findings)
+    if isinstance(part.get("input"), dict):
+        part["input"] = _redact_values(part["input"], findings)
 
 
 def redact_payload(data: dict[str, Any]) -> list[Span]:
@@ -143,7 +159,8 @@ def redact_payload(data: dict[str, Any]) -> list[Span]:
             if not isinstance(message, dict):
                 continue
             _redact_field(message, "content", findings)
-            for call in message.get("tool_calls") or []:
+            calls = message.get("tool_calls")
+            for call in calls if isinstance(calls, list) else []:
                 function = call.get("function") if isinstance(call, dict) else None
                 if isinstance(function, dict):
                     _redact_field(function, "arguments", findings)
