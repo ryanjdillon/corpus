@@ -106,6 +106,10 @@ class Settings(BaseSettings):
     # reads it). Empty means ``db_schema``. Set it when several raw schemas (one
     # per mailbox) project into one sanitized view.
     sanitized_db_schema: str = ""
+    # Who may reach each tier's MCP surface: tier name -> principal ids, as JSON,
+    # e.g. {"sanitized": ["orchestrator"]}. Deployment data, so empty by default
+    # (no tier grants anyone). See ``tiers.StorageTier.access``.
+    tier_access: dict[str, list[str]] = {}
     # sensitivity_level at/above which richer summary detail (abstract, key_points)
     # is withheld from the sanitized surface. one_line + classification still shown.
     index_sensitivity_gate: str = "high"
