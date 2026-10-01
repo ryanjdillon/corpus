@@ -113,7 +113,16 @@ class EgressProcessor(epg.ExternalProcessorServicer):
         return a bare 5xx with nothing in the egress log. Refuse instead (or pass,
         when failing open), logging only the exception's type.
         """
-        policy = self._policy()
+        try:
+            policy = self._policy()
+        except Exception as exc:  # noqa: BLE001 - any failure must become an answer
+            log.warning("egress: policy unavailable (%s); refusing", type(exc).__name__)
+            return refusal(
+                403,
+                "egress_policy",
+                "request could not be inspected",
+                f"error {type(exc).__name__}",
+            )
         try:
             return self._inspect(body, caller, policy=policy)
         except Exception as exc:  # noqa: BLE001 - any failure must become an answer

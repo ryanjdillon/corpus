@@ -210,6 +210,21 @@ def test_body_without_a_model_is_scanned(policy):
             "model": "claude-x",
             "messages": [
                 {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "name": "f",
+                            "input": {"q": [FAKE_PRIVATE_KEY], "n": 3},
+                        },
+                    ],
+                }
+            ],
+        },
+        {
+            "model": "claude-x",
+            "messages": [
+                {
                     "role": "user",
                     "content": [
                         {
@@ -221,7 +236,14 @@ def test_body_without_a_model_is_scanned(policy):
             ],
         },
     ],
-    ids=["embeddings", "embeddings-list", "completions", "tool-call-args", "nested-tool-result"],
+    ids=[
+        "embeddings",
+        "embeddings-list",
+        "completions",
+        "tool-call-args",
+        "nested-tool-result",
+        "anthropic-tool-use-input",
+    ],
 )
 def test_every_text_container_is_scanned(policy, body):
     assert inspect(json.dumps(body).encode(), policy=policy).action == "refuse"
@@ -234,3 +256,31 @@ def test_token_id_input_carries_no_text(policy):
 
 def test_invalid_utf8_body_is_uninspectable(policy):
     assert inspect(b"\xff\xfe not utf8", policy=policy).action == "refuse"
+
+
+def test_non_list_tool_calls_are_ignored(policy):
+    body = {"model": "DeepSeek-V4-Flash", "messages": [{"role": "assistant", "tool_calls": "x"}]}
+    assert inspect(json.dumps(body).encode(), policy=policy).action == "pass"
+
+
+def test_tts_input_is_redacted(policy):
+    # TTS text is the one non-chat JSON shape that goes to a cloud model.
+    body = {"model": "kokoro", "input": "call jane@example.com tomorrow", "voice": "af_heart"}
+    verdict = inspect(json.dumps(body).encode(), policy=policy)
+    assert verdict.action == "replace"
+    redacted = json.loads(verdict.body)
+    assert "jane@example.com" not in redacted["input"]
+    assert redacted["voice"] == "af_heart"
+
+
+def test_anthropic_messages_body_is_redacted(policy):
+    body = {
+        "model": "claude-x",
+        "system": [{"type": "text", "text": "owner: jane@example.com"}],
+        "messages": [
+            {"role": "user", "content": [{"type": "text", "text": "mail bob@example.net"}]}
+        ],
+    }
+    redacted = json.loads(inspect(json.dumps(body).encode(), policy=policy).body)
+    assert "jane@example.com" not in redacted["system"][0]["text"]
+    assert "bob@example.net" not in redacted["messages"][0]["content"][0]["text"]

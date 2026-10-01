@@ -149,3 +149,12 @@ def test_server_options_size_both_directions():
         "grpc.max_receive_message_length": 1234,
         "grpc.max_send_message_length": 1234,
     }
+
+
+def test_unavailable_policy_is_refused(context):
+    def broken_policy():
+        raise RuntimeError("bad config")
+
+    processor = envoy.EgressProcessor(policy=broken_policy)
+    (response,) = processor.Process(iter([body("hi")]), context)
+    assert response.immediate_response.status.code == 403
