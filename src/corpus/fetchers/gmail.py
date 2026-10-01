@@ -44,8 +44,15 @@ def _env(name: str, key: str, default: str = "") -> str:
     return os.environ.get(f"CORPUS_GMAIL_{name.upper()}_{key}", default)
 
 
-# Gmail signals quota exhaustion with 403 (or 429) and one of these reasons.
+# Gmail signals short-term quota exhaustion with 403 (or 429) and one of these
+# reasons; waiting helps.
 _RATE_LIMIT_REASONS = frozenset({"rateLimitExceeded", "userRateLimitExceeded"})
+# Quota or access refusals that apply to every message, not one; waiting within
+# a run does not help, and skipping would drop the whole mailbox.
+_FATAL_REASONS = frozenset({"dailyLimitExceeded", "insufficientPermissions"})
+# Consecutive per-message refusals after which the refusal is clearly not about
+# individual messages (e.g. a token whose scope cannot read raw mail).
+MAX_CONSECUTIVE_REFUSALS = 5
 
 
 def _error_reason(resp: httpx.Response) -> str:
@@ -64,6 +71,7 @@ class GmailFetcher:
     """Catalog a Gmail account over the API, using historyId for incremental sync."""
 
     def __init__(self, name: str) -> None:
+        self._refused_in_a_row = 0
         self.name = name
         self.source = f"gmail:{name}"
         self.client_id = _env(name, "CLIENT_ID")
@@ -215,11 +223,22 @@ class GmailFetcher:
             if rate_limited and attempt < attempts - 1:
                 sleep(min(2.0**attempt, 30.0))
                 continue
-            if resp.status_code == 403 and not rate_limited:
+            if resp.status_code == 403 and not rate_limited and reason not in _FATAL_REASONS:
                 # Gmail refuses some single messages outright (403 with a
                 # non-quota reason). Skipping one must not abort the whole
                 # backfill; it resumes from the same page each run, so a fatal
-                # 403 would block every later message forever.
+                # 403 would block every later message forever. But a refusal
+                # that repeats for message after message is about the account,
+                # not the messages: skipping then would move the cursor past
+                # the whole mailbox, so stop instead.
+                self._refused_in_a_row += 1
+                if self._refused_in_a_row >= MAX_CONSECUTIVE_REFUSALS:
+                    log.error(
+                        "gmail: %d messages in a row refused (403 %s); stopping",
+                        self._refused_in_a_row,
+                        reason or "no reason given",
+                    )
+                    resp.raise_for_status()
                 log.warning(
                     "gmail: skipping message %s refused by the API (403 %s)",
                     mid,
@@ -228,6 +247,7 @@ class GmailFetcher:
                 return None
             break
         d = resp.raise_for_status().json()
+        self._refused_in_a_row = 0
         try:
             raw = base64.urlsafe_b64decode(d["raw"])
             label_names = [self._label_names.get(i, i) for i in d.get("labelIds", [])]

@@ -37,3 +37,12 @@ message would otherwise stop all later mail from being ingested.
 Quota errors (429, or 403 with reason `rateLimitExceeded` or
 `userRateLimitExceeded`) are retried with exponential backoff (1 s, 2 s, 4 s, …,
 at most 30 s) and fail the run only after the retries are used up.
+
+Two kinds of refusal stop the run instead of skipping, because they apply to the
+whole account and skipping would move the sync cursor past every message:
+
+- `dailyLimitExceeded` (the daily quota) or `insufficientPermissions`;
+- the same refusal for five messages in a row (e.g. a token whose scope cannot
+  read raw mail, which still lists messages fine).
+
+The next run resumes from the saved page once the cause is fixed.
