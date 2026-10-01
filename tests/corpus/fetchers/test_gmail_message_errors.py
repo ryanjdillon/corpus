@@ -73,8 +73,9 @@ def test_403_without_a_json_body_skips_the_message(fetcher, sleep, response):
     assert fetcher._fetch_message(client, "m1", sleep=sleep) is None
 
 
-def test_daily_limit_stops_the_run_instead_of_skipping(fetcher, sleep):
-    client, calls = api(refusal(403, "dailyLimitExceeded"))
+@pytest.mark.parametrize("reason", ["dailyLimitExceeded", "insufficientPermissions"])
+def test_account_wide_refusal_stops_the_run_instead_of_skipping(fetcher, sleep, reason):
+    client, calls = api(refusal(403, reason))
     with pytest.raises(httpx.HTTPStatusError):
         fetcher._fetch_message(client, "m1", sleep=sleep)
     assert calls() == 1
@@ -136,3 +137,13 @@ def test_server_error_still_raises(fetcher, sleep):
     client, _ = api(httpx.Response(500))
     with pytest.raises(httpx.HTTPStatusError):
         fetcher._fetch_message(client, "m1", sleep=sleep)
+
+
+def test_a_deleted_message_neither_counts_nor_resets_refusals(fetcher, sleep):
+    refused = [refusal(403, "forbidden") for _ in range(MAX_CONSECUTIVE_REFUSALS - 1)]
+    client, _ = api(*refused, httpx.Response(404, json={}), refusal(403, "forbidden"))
+    for _ in range(MAX_CONSECUTIVE_REFUSALS - 1):
+        fetcher._fetch_message(client, "m", sleep=sleep)
+    assert fetcher._fetch_message(client, "gone", sleep=sleep) is None
+    with pytest.raises(httpx.HTTPStatusError):
+        fetcher._fetch_message(client, "m", sleep=sleep)
