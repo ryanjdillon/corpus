@@ -19,7 +19,13 @@ import msgspec
 
 from .config import settings
 from .enricher import EnrichError, build_payload, chat_completion, model_options
-from .enrichment import ConfirmedSecret, SecretAudit, SecretSeverity, secret_audit_schema
+from .enrichment import (
+    MAX_ITEMS,
+    ConfirmedSecret,
+    SecretAudit,
+    SecretSeverity,
+    secret_audit_schema,
+)
 
 _SYSTEM = (
     "You are a security auditor examining one email or document from its owner's "
@@ -130,7 +136,8 @@ def merge_audits(audits: list[SecretAudit]) -> SecretAudit:
     """Combine chunk audits: a secret anywhere means the document contains one.
 
     Findings are kept per type at their worst severity, so a candidate confirmed
-    in one chunk is not diluted by the chunks where it was absent.
+    in one chunk is not diluted by the chunks where it was absent. The merge keeps
+    the schema's bound on findings, worst first.
     """
     order = list(SecretSeverity)
     best: dict[str, ConfirmedSecret] = {}
@@ -139,6 +146,5 @@ def merge_audits(audits: list[SecretAudit]) -> SecretAudit:
             kept = best.get(finding.type)
             if kept is None or order.index(finding.severity) < order.index(kept.severity):
                 best[finding.type] = finding
-    return SecretAudit(
-        contains_secret=any(a.contains_secret for a in audits), findings=list(best.values())
-    )
+    findings = sorted(best.values(), key=lambda f: order.index(f.severity))[:MAX_ITEMS]
+    return SecretAudit(contains_secret=any(a.contains_secret for a in audits), findings=findings)

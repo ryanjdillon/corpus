@@ -137,3 +137,14 @@ def test_decode_rejects_output_beyond_the_bounds():
     }
     with pytest.raises(msgspec.ValidationError):
         msgspec.json.decode(msgspec.json.encode(record), type=Enrichment)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [("one_line", "x" * 161), ("abstract", "y" * 401)],
+    ids=["one_line", "abstract"],
+)
+def test_decode_rejects_strings_beyond_the_bounds(field, value):
+    record = {"one_line": "x", "abstract": "y", "category": "personal", field: value}
+    with pytest.raises(msgspec.ValidationError):
+        enrichment.decode(msgspec.json.encode(record))

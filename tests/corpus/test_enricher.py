@@ -19,7 +19,7 @@ from corpus.enricher import (
     EnrichUnavailableError,
     cap_input,
 )
-from corpus.enrichment import Category, json_schema
+from corpus.enrichment import MAX_ITEMS, Category, json_schema
 
 _COMPLETION = {
     "choices": [
@@ -271,3 +271,10 @@ def test_inline_refs_resolves_nested_definitions():
     dumped = json.dumps(flat)
     assert "$ref" not in dumped and "$defs" not in dumped
     assert "personal" in json.dumps(flat["properties"]["category"])
+
+
+def test_inlined_schema_keeps_the_length_bounds():
+    # The llama.cpp path inlines $refs; its grammar needs the bounds to survive.
+    flat = enricher_mod.inline_refs(json_schema())
+    assert flat["properties"]["topics"]["maxItems"] == MAX_ITEMS
+    assert flat["properties"]["people"]["items"]["properties"]["name"]["maxLength"] == 120

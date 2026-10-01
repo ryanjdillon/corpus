@@ -15,7 +15,13 @@ from corpus import enricher as enricher_mod
 from corpus import scan
 from corpus import secret_audit as audit_mod
 from corpus.enricher import EnrichError, EnrichUnavailableError
-from corpus.enrichment import ConfirmedSecret, SecretAudit, SecretSeverity, secret_audit_schema
+from corpus.enrichment import (
+    MAX_ITEMS,
+    ConfirmedSecret,
+    SecretAudit,
+    SecretSeverity,
+    secret_audit_schema,
+)
 
 _COMPLETION = {
     "choices": [
@@ -232,3 +238,12 @@ def test_a_subject_too_long_to_repeat_is_dropped_from_chunks(monkeypatch):
 
     assert not any(c.startswith("Subject:") for c in chunks)
     assert any(_KEY in c for c in chunks)
+
+
+def test_merge_audits_keeps_the_findings_bound_worst_first():
+    findings = [
+        ConfirmedSecret(type=f"t{i}", severity=SecretSeverity.reference) for i in range(MAX_ITEMS)
+    ] + [ConfirmedSecret(type="live", severity=SecretSeverity.live)]
+    merged = audit_mod.merge_audits([SecretAudit(contains_secret=True, findings=findings)])
+    assert len(merged.findings) == MAX_ITEMS
+    assert merged.findings[0].type == "live"
