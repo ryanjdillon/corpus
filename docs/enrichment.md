@@ -56,14 +56,25 @@ lower its `context_tokens` by the difference when you do.
 The schema bounds cannot stop one kind of loop: guided decoding allows
 whitespace between any two JSON tokens, and a model can stall there, padding
 with spaces and newlines until it reaches the cap. Everything it wrote before
-the padding is intact, so a reply ending in at least 256 characters of
-whitespace (`STALL_PADDING_CHARS`) is recovered instead of rejected. The padding
-is dropped, as is a dangling `,` or `"key":`, and the open brackets are closed;
-fields the model never reached keep their schema defaults, and a warning is
-logged. A reply cut off inside a string or a value is not recovered and is
-rejected as before. The secret audit decodes the same way. (vLLM can forbid
-the padding outright with the server-wide `disable_any_whitespace`
-structured-outputs option; the per-request field is ignored.)
+the padding is intact, so an enrichment reply ending in at least 256 characters
+of whitespace (`STALL_PADDING_CHARS`) is recovered instead of rejected. The
+padding is dropped, as is a dangling `,`, `"key":` or unfilled `{`, and the
+open brackets are closed. A reply cut off inside a string, or one that is not a
+valid record once closed, is rejected as before.
+
+Fields the model never reached fail closed where it matters:
+`sensitivity_level` becomes `high` (`UNREACHED_ENRICHMENT`), so the sanitized
+tier withholds the record's free text rather than publishing it as
+non-sensitive. Other fields take their schema defaults. A recovered record is
+stored under `RECOVERED_SCHEMA_VERSION` (`<SCHEMA_VERSION>+recovered`), which
+counts as stale: `--upgrade-stale` enriches it again in full, and the run log
+reports how many were recovered.
+
+The secret audit is never recovered. A stall would leave later candidates
+without a verdict, and reading that as "no secret" would silently downgrade a
+real one, so a stalled audit is rejected. (vLLM can forbid the padding outright
+with the server-wide `disable_any_whitespace` structured-outputs option; the
+per-request field is ignored.)
 
 ## Models
 

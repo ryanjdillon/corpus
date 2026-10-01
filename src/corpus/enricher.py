@@ -18,12 +18,13 @@ import random
 import re
 import time
 from dataclasses import dataclass, field
+from typing import Any
 
 import httpx
 import msgspec
 
 from .config import settings
-from .enrichment import Enrichment, json_schema
+from .enrichment import Enrichment, SensitivityLevel, json_schema
 
 log = logging.getLogger("corpus.enrich")
 
@@ -192,15 +193,20 @@ STALL_PADDING_CHARS = 256
 _DANGLING_KEY = re.compile(r',?\s*"(?:[^"\\]|\\.)*"\s*:\s*$')
 
 
+#: Values for fields a stalled enrichment never reached. ``sensitivity_level``
+#: gates free text out of the sanitized tier, so an unknown level is the highest.
+UNREACHED_ENRICHMENT: dict[str, Any] = {"sensitivity_level": SensitivityLevel.high.value}
+
+
 def close_stalled(content: str) -> str | None:
     """Return ``content`` closed into complete JSON if the model stalled, else None.
 
     A stall leaves every value written so far intact, then pads with whitespace,
     so the prefix can be closed without losing anything: drop the padding, a
     dangling ``,`` or ``"key":``, and close the open brackets. Unfinished fields
-    are left to their schema defaults. A reply that ends inside a string (or
-    without the padding) was cut mid-content and is not repaired; nor is one
-    left mid-number or mid-literal, which still fails to decode.
+    are left to the caller (see :func:`decode_stalled`). A reply that ends
+    inside a string, or without the padding, was cut mid-content and is not
+    repaired. Whatever the closed text holds must still pass the schema.
     """
     body = content.rstrip()
     if len(content) - len(body) < STALL_PADDING_CHARS:
@@ -223,29 +229,32 @@ def close_stalled(content: str) -> str | None:
             closers.pop()
     if in_string or not closers:
         return None
-    body = _DANGLING_KEY.sub("", body).rstrip().removesuffix(",")
+    body = _DANGLING_KEY.sub("", body).rstrip()
+    if body.endswith("{"):
+        # An object opened but never filled would decode as a phantom empty item
+        # wherever its fields are all optional; drop it with its separator.
+        body = body[:-1].rstrip()
+        closers.pop()
+    body = body.removesuffix(",")
     return body + "".join(reversed(closers))
 
 
-def decode_guided[T](content: str, type_: type[T], what: str) -> T:
-    """Decode a guided-decoding reply into ``type_``, recovering a stalled one.
+def decode_stalled[T](content: str, type_: type[T], unreached: dict[str, Any]) -> T | None:
+    """Recover a reply that stalled in whitespace padding, or return None.
 
-    Raises ``EnrichError`` when the reply is unparseable even after recovery: a
-    bad record, not an outage, so the caller can skip it.
+    Fields the model never reached take ``unreached`` values where given (a
+    conservative choice for anything that gates access) and schema defaults
+    otherwise. None means the reply was not a stall or is not a valid record
+    even once closed.
     """
+    closed = close_stalled(content)
+    if closed is None:
+        return None
     try:
-        return msgspec.json.decode(content.encode(), type=type_)
-    except msgspec.DecodeError as exc:
-        closed = close_stalled(content)
-        if closed is not None:
-            try:
-                result = msgspec.json.decode(closed.encode(), type=type_)
-            except msgspec.DecodeError:
-                pass
-            else:
-                log.warning("recovered a %s stalled in whitespace padding", what)
-                return result
-        raise EnrichError(f"unparseable {what}: {exc}") from exc
+        fields = msgspec.json.decode(closed.encode())
+        return msgspec.convert({**unreached, **fields}, type=type_)
+    except (msgspec.DecodeError, msgspec.ValidationError):
+        return None
 
 
 def chat_completion(client: httpx.Client, payload: dict) -> str:
@@ -326,10 +335,29 @@ class Enricher:
         ``text`` is capped to ``max_input_chars``, and further to what fits the
         model's context when its ``context_tokens`` is configured.
         """
+        return self.enrich_reporting(text)[0]
+
+    def enrich_reporting(self, text: str) -> tuple[Enrichment, bool]:
+        """Like :meth:`enrich`, also reporting whether the reply was recovered.
+
+        A reply that stalled in whitespace padding is recovered (see
+        :func:`decode_stalled`) rather than rejected; the flag lets the caller
+        mark the record for re-enrichment.
+        """
         payload = build_payload(
             self.model, _SYSTEM, cap_input(text, self.input_limit()), "enrichment", self._schema
         )
-        return decode_guided(chat_completion(self._client, payload), Enrichment, "enrichment")
+        content = chat_completion(self._client, payload)
+        try:
+            return msgspec.json.decode(content.encode(), type=Enrichment), False
+        except msgspec.DecodeError as exc:
+            recovered = decode_stalled(content, Enrichment, UNREACHED_ENRICHMENT)
+            if recovered is None:
+                # Guided decoding should prevent this; if it slips through it is
+                # a bad record, not an outage -- skippable.
+                raise EnrichError(f"unparseable enrichment: {exc}") from exc
+            log.warning("recovered an enrichment stalled in whitespace padding")
+            return recovered, True
 
     def input_limit(self) -> int:
         """Characters of message text to send: the configured cap or the context budget.
