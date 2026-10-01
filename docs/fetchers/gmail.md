@@ -35,8 +35,10 @@ A backfill resumes from the same saved page on every run, so a single refused
 message would otherwise stop all later mail from being ingested.
 
 Quota errors (429, or 403 with reason `rateLimitExceeded` or
-`userRateLimitExceeded`) are retried with exponential backoff (1 s, 2 s, 4 s, …,
-at most 30 s) and fail the run only after the retries are used up.
+`userRateLimitExceeded`) are retried with exponential backoff (1 s, 2 s, 4 s, … up to
+60 s, about two minutes in all), or after Google's `Retry-After` when it sends
+one (1–120 s per attempt, so a long `Retry-After` can stretch the total), and fail the run only after the retries are used up. Gmail's per-user
+throttle can last a minute or more, typically after a burst of large downloads.
 
 Two kinds of refusal stop the run instead of skipping, because they apply to the
 whole account and skipping would move the sync cursor past every message:
