@@ -14,6 +14,10 @@ mcp = FastMCP(
     "corpus",
     host=settings.host,
     port=settings.mcp_port,
+    # Every tool is a self-contained query, so no session state is needed. A
+    # stateful server expires idle sessions, and a long-lived client (a gateway
+    # MCP proxy, an agent polling once a day) then gets 404 on its next call.
+    stateless_http=True,
     instructions=(
         "corpus indexes the user's own email and documents. For ANY question about "
         "their mail or documents — recent messages, who wrote, what arrived, finding "
