@@ -86,10 +86,12 @@ def project(doc_id: str, meta: dict | None, enr: dict | None, gate: str = "high"
     }
 
 
-def iter_enriched(read_dsn: str, source: str | None = None):
+def iter_enriched(read_dsn: str, source: str | None = None, *, connect=psycopg.connect):
     """Stream (id, meta, enrichment, enriched_at) for enriched documents, newest first.
 
-    Reads from the sensitive DB via a server-side cursor.
+    Reads from the sensitive DB via a server-side cursor. A source that has never
+    stored a document has no tables yet (the vector store creates them on first
+    insert), which reads as no documents rather than an error.
     """
     schema = settings.db_schema
     docs = f"{schema}.{settings.documents_table}"
@@ -104,10 +106,16 @@ def iter_enriched(read_dsn: str, source: str | None = None):
         f"JOIN {enr} e ON e.doc_id = d.id {where} "
         "ORDER BY d.meta->>'sent_at' DESC NULLS LAST, d.id"
     )
-    with psycopg.connect(read_dsn) as conn, conn.cursor(name="corpus_sync_scan") as cur:
-        cur.itersize = 500
-        cur.execute(sql, params)
-        yield from cur
+    with connect(read_dsn) as conn:
+        with conn.cursor() as check:
+            for table in (docs, enr):
+                check.execute("SELECT to_regclass(%s)", (table,))
+                if check.fetchone()[0] is None:
+                    return
+        with conn.cursor(name="corpus_sync_scan") as cur:
+            cur.itersize = 500
+            cur.execute(sql, params)
+            yield from cur
 
 
 def run_sync(
