@@ -92,7 +92,6 @@ class GmailFetcher:
     """Catalog a Gmail account over the API, using historyId for incremental sync."""
 
     def __init__(self, name: str) -> None:
-        self._known: Container[str] = frozenset()
         self._refused_in_a_row = 0
         self.name = name
         self.source = f"gmail:{name}"
@@ -112,7 +111,6 @@ class GmailFetcher:
 
         Messages whose key is in *known* are not downloaded.
         """
-        self._known = known
         api = httpx.Client(
             base_url=_API,
             headers={"Authorization": f"Bearer {self._access_token()}"},
@@ -131,16 +129,16 @@ class GmailFetcher:
             current_history = profile.get("historyId")
 
             if not cursor:
-                yield from self._backfill(api, wanted_ids)
+                yield from self._backfill(api, wanted_ids, known)
                 self._next_cursor = current_history
             elif cursor.startswith(_BACKFILL_PREFIX):
                 # Resume an interrupted backfill from the saved page token.
                 yield from self._backfill(
-                    api, wanted_ids, start_page=cursor[len(_BACKFILL_PREFIX) :]
+                    api, wanted_ids, known, start_page=cursor[len(_BACKFILL_PREFIX) :]
                 )
                 self._next_cursor = current_history
             else:
-                yield from self._incremental(api, cursor, wanted_ids, current_history)
+                yield from self._incremental(api, cursor, wanted_ids, current_history, known)
         finally:
             api.close()
 
@@ -163,7 +161,11 @@ class GmailFetcher:
         return resp.json()["access_token"]
 
     def _backfill(
-        self, api: httpx.Client, wanted_ids: list[str] | None, start_page: str | None = None
+        self,
+        api: httpx.Client,
+        wanted_ids: list[str] | None,
+        known: Container[str] = frozenset(),
+        start_page: str | None = None,
     ) -> Iterator[Record]:
         params: dict[str, object] = {"maxResults": 500}
         if wanted_ids:
@@ -174,7 +176,7 @@ class GmailFetcher:
                 params["pageToken"] = page
             data = api.get("/messages", params=params).raise_for_status().json()
             for m in data.get("messages", []):
-                if self._is_known(m["id"]):
+                if self._is_known(m["id"], known):
                     continue
                 rec = self._fetch_message(api, m["id"])
                 if rec:
@@ -184,8 +186,8 @@ class GmailFetcher:
                 break
             # Checkpoint the next page so an interrupted backfill resumes from
             # here instead of re-listing the whole mailbox. The ingest persists
-            # this after each flush; earlier pages are already stored, and
-            # existing_ids skips any overlap.
+            # this after each flush; earlier pages are already stored, and the
+            # known-id check above skips any overlap without downloading it.
             self._next_cursor = f"{_BACKFILL_PREFIX}{page}"
 
     def _incremental(
@@ -194,6 +196,7 @@ class GmailFetcher:
         cursor: str,
         wanted_ids: list[str] | None,
         current_history: str | None,
+        known: Container[str] = frozenset(),
     ) -> Iterator[Record]:
         params: dict[str, object] = {
             "startHistoryId": cursor,
@@ -210,7 +213,7 @@ class GmailFetcher:
             resp = api.get("/history", params=params)
             if resp.status_code == 404:
                 # historyId too old to be usable — re-backfill from scratch.
-                yield from self._backfill(api, wanted_ids)
+                yield from self._backfill(api, wanted_ids, known)
                 self._next_cursor = current_history
                 return
             data = resp.raise_for_status().json()
@@ -223,7 +226,7 @@ class GmailFetcher:
                     if wanted and not (set(msg.get("labelIds", [])) & wanted):
                         continue
                     seen.add(mid)
-                    if self._is_known(mid):
+                    if self._is_known(mid, known):
                         continue
                     rec = self._fetch_message(api, mid)
                     if rec:
@@ -234,13 +237,13 @@ class GmailFetcher:
                 break
         self._next_cursor = latest
 
-    def _is_known(self, mid: str) -> bool:
+    def _is_known(self, mid: str, known: Container[str]) -> bool:
         """Whether the store already has message *mid* (skip downloading it).
 
         The cost that matters: each raw download spends per-user quota, and a
         resumed page would otherwise re-download every message already stored.
         """
-        return Record.key_for(self.source, mid) in self._known
+        return Record.key_for(self.source, mid) in known
 
     def _fetch_message(
         self,
