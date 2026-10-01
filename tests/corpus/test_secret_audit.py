@@ -93,6 +93,15 @@ def test_unparseable_output_is_enrich_error(client):
         audit_mod.audit_secrets("x", [], model="local", client=client)
 
 
+def test_reply_stalled_in_whitespace_is_recovered(client):
+    content = '{"contains_secret": false, "findings": [' + " \n" * 3000
+    client.post.return_value = _response(
+        200, json_body={"choices": [{"message": {"content": content}, "finish_reason": "length"}]}
+    )
+
+    assert audit_mod.audit_secrets("x", [], model="local", client=client).findings == []
+
+
 def test_transport_error_is_unavailable(client, monkeypatch):
     monkeypatch.setattr(enricher_mod.settings, "enrich_retries", 2)
     monkeypatch.setattr(enricher_mod.time, "sleep", lambda *_: None)
