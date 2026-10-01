@@ -143,6 +143,12 @@ def build_payload(model: str, system: str, user: str, name: str, schema: dict) -
     payload = {
         "model": model,
         "temperature": 0,
+        # Bound the output to the budget reserved for it. Without a cap, a
+        # document that sends the model into a loop generates until the
+        # gateway's request timeout (a 504), which is retried as an outage and
+        # can stall a whole run; capped, the truncated output is unparseable
+        # and the record is rejected and skipped.
+        "max_tokens": OUTPUT_RESERVE_TOKENS,
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},

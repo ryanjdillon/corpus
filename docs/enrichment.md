@@ -35,6 +35,13 @@ record. If the secret audit fails for a document, the enrichment is kept and the
 audit is counted as `audit_failed`; configuring the audit model's
 `context_tokens` avoids the overflow case (see below).
 
+Every request caps the model's output at 4096 tokens (`max_tokens`; a model's
+`extra_body` can override it). Guided decoding guarantees the shape, not the
+length: a document can send a model into a loop that keeps generating, and an
+uncapped request then runs until the gateway's request timeout, is retried as an
+outage, and can stall the run. Capped, the cut-off output fails to parse and the
+document is rejected like any other.
+
 ## Models
 
 `CORPUS_ENRICH_MODEL` does the enrichment, and `CORPUS_AUDIT_MODEL` does the
