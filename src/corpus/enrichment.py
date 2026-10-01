@@ -14,6 +14,7 @@ from __future__ import annotations
 import enum
 import hashlib
 from datetime import date
+from typing import Annotated
 
 import msgspec
 
@@ -116,26 +117,41 @@ class Disposition(enum.Enum):
     review = "review"
 
 
+# Length bounds for guided decoding. The grammar enforces the schema, so a bound
+# makes an endless list or string impossible: the model has to close it. Without
+# them a newsletter can send a model into a loop that only the output-token cap
+# stops, and the record is lost. The bounds sit well above a legitimate record.
+#: A name or short label: a person, an organisation, a topic, a place.
+Name = Annotated[str, msgspec.Meta(max_length=120)]
+#: A sentence or two of free text.
+Text = Annotated[str, msgspec.Meta(max_length=400)]
+#: Items in an entity list.
+MAX_ITEMS = 12
+_LIST = msgspec.Meta(max_length=MAX_ITEMS)
+Names = Annotated[list[Name], _LIST]
+Texts = Annotated[list[Text], _LIST]
+
+
 class Person(msgspec.Struct):
     """A person referenced by the message."""
 
-    name: str
-    role: str | None = None  # best-effort: "classmate", "colleague", "vendor"
+    name: Name
+    role: Name | None = None  # best-effort: "classmate", "colleague", "vendor"
 
 
 class Appointment(msgspec.Struct):
     """An appointment or event referenced by the message."""
 
-    who: str | None = None
-    where: str | None = None
-    when: str | None = None  # ISO if parseable, else natural ("next Tue 3pm")
+    who: Name | None = None
+    where: Name | None = None
+    when: Name | None = None  # ISO if parseable, else natural ("next Tue 3pm")
 
 
 class Money(msgspec.Struct):
     """A monetary amount with its currency."""
 
     amount: float
-    currency: str
+    currency: Annotated[str, msgspec.Meta(max_length=8)]
 
 
 class Enrichment(msgspec.Struct):
@@ -145,8 +161,8 @@ class Enrichment(msgspec.Struct):
     """
 
     # --- summary (free text, secret-free) ---
-    one_line: str  # <=120 chars
-    abstract: str  # 2-3 sentences
+    one_line: Annotated[str, msgspec.Meta(max_length=160)]  # aim for <=120 chars
+    abstract: Text  # 2-3 sentences
 
     # --- classification (orthogonal axes) ---
     category: Category  # structural type
@@ -154,12 +170,12 @@ class Enrichment(msgspec.Struct):
     transactional_type: TransactionalType = TransactionalType.none
     unsubscribe_available: bool = False
 
-    key_points: list[str] = msgspec.field(default_factory=list)
+    key_points: Texts = msgspec.field(default_factory=list)
 
     # --- intent / action ---
     requires_action: bool = False
     action_type: ActionType = ActionType.none
-    action_summary: str | None = None
+    action_summary: Text | None = None
     deadline: date | None = None
     waiting_on: WaitingOn = WaitingOn.none
 
@@ -168,13 +184,13 @@ class Enrichment(msgspec.Struct):
     time_sensitive: bool = False
 
     # --- entities / topics / events ---
-    people: list[Person] = msgspec.field(default_factory=list)
-    organizations: list[str] = msgspec.field(default_factory=list)
-    topics: list[str] = msgspec.field(default_factory=list)
-    projects: list[str] = msgspec.field(default_factory=list)
-    locations: list[str] = msgspec.field(default_factory=list)
-    appointments: list[Appointment] = msgspec.field(default_factory=list)
-    monetary_amounts: list[Money] = msgspec.field(default_factory=list)
+    people: Annotated[list[Person], _LIST] = msgspec.field(default_factory=list)
+    organizations: Names = msgspec.field(default_factory=list)
+    topics: Names = msgspec.field(default_factory=list)
+    projects: Names = msgspec.field(default_factory=list)
+    locations: Names = msgspec.field(default_factory=list)
+    appointments: Annotated[list[Appointment], _LIST] = msgspec.field(default_factory=list)
+    monetary_amounts: Annotated[list[Money], _LIST] = msgspec.field(default_factory=list)
 
     # --- sensitivity (level only; the area is `domain`; secrets are section B) ---
     sensitivity_level: SensitivityLevel = SensitivityLevel.none
@@ -198,9 +214,9 @@ class ConfirmedSecret(msgspec.Struct):
     ``note`` describes it in words and MUST NOT contain the value itself.
     """
 
-    type: str
+    type: Name
     severity: SecretSeverity
-    note: str = ""
+    note: Text = ""
 
 
 class SecretAudit(msgspec.Struct):
@@ -210,7 +226,7 @@ class SecretAudit(msgspec.Struct):
     """
 
     contains_secret: bool
-    findings: list[ConfirmedSecret] = msgspec.field(default_factory=list)
+    findings: Annotated[list[ConfirmedSecret], _LIST] = msgspec.field(default_factory=list)
 
 
 def json_schema() -> dict:

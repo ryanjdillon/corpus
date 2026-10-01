@@ -35,6 +35,14 @@ record. If the secret audit fails for a document, the enrichment is kept and the
 audit is counted as `audit_failed`; configuring the audit model's
 `context_tokens` avoids the overflow case (see below).
 
+The schema also bounds what the model can write: each entity list holds at most
+12 items (`enrichment.MAX_ITEMS`), names and labels at most 120 characters, and
+free text 400 (one_line 160). Guided decoding enforces the schema, so a model
+that starts repeating itself inside a list, as newsletters tend to provoke, must
+close it instead of looping. Changing these bounds changes `SCHEMA_VERSION`, so
+existing records count as stale; `--upgrade-stale` re-enriches them when you
+want.
+
 Every request caps the model's output at 4096 tokens (`max_tokens`; a model's
 `extra_body` can override it). Guided decoding guarantees the shape, not the
 length: a document can send a model into a loop that keeps generating, and an

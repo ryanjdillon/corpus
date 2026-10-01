@@ -106,3 +106,34 @@ def test_secret_audit_decodes_findings():
 def test_secret_audit_defaults_empty_findings():
     audit = msgspec.json.decode(b'{"contains_secret": false}', type=SecretAudit)
     assert audit.findings == []
+
+
+def test_schema_bounds_every_list_and_free_text_field():
+    # Guided decoding enforces these, so a looping model has to close the list.
+    props = enrichment.json_schema()["$defs"]["Enrichment"]["properties"]
+    for field in (
+        "key_points",
+        "people",
+        "organizations",
+        "topics",
+        "projects",
+        "locations",
+        "appointments",
+        "monetary_amounts",
+    ):
+        assert props[field]["maxItems"] == enrichment.MAX_ITEMS, field
+    assert props["topics"]["items"]["maxLength"] == 120
+    assert props["abstract"]["maxLength"] == 400
+    audit = enrichment.secret_audit_schema()["$defs"]["SecretAudit"]["properties"]
+    assert audit["findings"]["maxItems"] == enrichment.MAX_ITEMS
+
+
+def test_decode_rejects_output_beyond_the_bounds():
+    record = {
+        "one_line": "x",
+        "abstract": "y",
+        "category": "personal",
+        "topics": [f"t{i}" for i in range(enrichment.MAX_ITEMS + 1)],
+    }
+    with pytest.raises(msgspec.ValidationError):
+        msgspec.json.decode(msgspec.json.encode(record), type=Enrichment)
