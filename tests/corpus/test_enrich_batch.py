@@ -15,7 +15,13 @@ from corpus import secret_audit
 from corpus.enrich_batch import run_audit, run_enrich
 from corpus.enrich_store import EnrichStore
 from corpus.enricher import Enricher, EnrichError
-from corpus.enrichment import Category, Enrichment, SecretAudit
+from corpus.enrichment import (
+    RECOVERED_SCHEMA_VERSION,
+    SCHEMA_VERSION,
+    Category,
+    Enrichment,
+    SecretAudit,
+)
 
 # Stored documents always carry meta["source"] (store.py sets it from
 # Record.source), and enrichment is gated on it, so the fixtures carry one too.
@@ -58,7 +64,10 @@ def store():
 def enricher():
     m = create_autospec(Enricher, instance=True)
     m.model = "local"  # an __init__ attribute, so set explicitly on the spec mock
-    m.enrich.return_value = Enrichment(one_line="x", abstract="y", category=Category.personal)
+    m.enrich_reporting.return_value = (
+        Enrichment(one_line="x", abstract="y", category=Category.personal),
+        False,
+    )
     return m
 
 
@@ -69,10 +78,24 @@ def audit():
     return m
 
 
+def test_recovered_enrichment_is_stored_as_stale(store, enricher, audit, documents, clean_doc):
+    # Kept, but under a version --upgrade-stale treats as not yet done.
+    enricher.enrich_reporting.return_value = (
+        Enrichment(one_line="x", abstract="y", category=Category.personal),
+        True,
+    )
+
+    r = run_enrich(store, documents=documents(clean_doc), enricher=enricher, audit=audit)
+
+    assert (r["enriched"], r["recovered"]) == (1, 1)
+    assert store.save_enrichment.call_args.args[3] == RECOVERED_SCHEMA_VERSION
+    assert RECOVERED_SCHEMA_VERSION != SCHEMA_VERSION
+
+
 def test_enriches_all_audits_only_flagged(store, enricher, audit, documents, key_doc, clean_doc):
     r = run_enrich(store, documents=documents(key_doc, clean_doc), enricher=enricher, audit=audit)
 
-    assert r == {"scanned": 2, "enriched": 2, "audited": 1, "audit_failed": 0, "skipped": 0, "ineligible": 0}
+    assert r == {"scanned": 2, "enriched": 2, "recovered": 0, "audited": 1, "audit_failed": 0, "skipped": 0, "ineligible": 0}
     assert store.save_enrichment.call_count == 2
     assert {c.args[0] for c in store.save_audit.call_args_list} == {"d1"}
     assert "aws_access_key" in store.save_audit.call_args.args[1]
@@ -145,7 +168,7 @@ def test_upgrade_stale_only_counts_current_schema_as_done(
 
 
 def test_rejection_is_recorded_with_reason_and_model(store, enricher, documents, clean_doc):
-    enricher.enrich.side_effect = EnrichError("400: context length exceeded")
+    enricher.enrich_reporting.side_effect = EnrichError("400: context length exceeded")
 
     run_enrich(store, documents=documents(clean_doc), enricher=enricher)
 
@@ -219,17 +242,17 @@ def test_skips_already_enriched(store, enricher, documents, key_doc):
 
     r = run_enrich(store, documents=documents(key_doc), enricher=enricher)
 
-    assert r == {"scanned": 1, "enriched": 0, "audited": 0, "audit_failed": 0, "skipped": 0, "ineligible": 0}
+    assert r == {"scanned": 1, "enriched": 0, "recovered": 0, "audited": 0, "audit_failed": 0, "skipped": 0, "ineligible": 0}
     store.save_enrichment.assert_not_called()
 
 
 def test_bad_record_is_skipped_not_fatal(store, enricher, documents, key_doc, clean_doc):
     # a per-record EnrichError must be skipped so it can't abort a long backfill
-    enricher.enrich.side_effect = EnrichError("bad message")
+    enricher.enrich_reporting.side_effect = EnrichError("bad message")
 
     r = run_enrich(store, documents=documents(key_doc, clean_doc), enricher=enricher)
 
-    assert r == {"scanned": 2, "enriched": 0, "audited": 0, "audit_failed": 0, "skipped": 2, "ineligible": 0}
+    assert r == {"scanned": 2, "enriched": 0, "recovered": 0, "audited": 0, "audit_failed": 0, "skipped": 2, "ineligible": 0}
     store.save_enrichment.assert_not_called()
 
 
@@ -298,8 +321,8 @@ def test_undeclared_source_is_never_enriched(store, enricher, audit, documents, 
     # though no filter was passed.
     r = run_enrich(store, documents=documents(video_doc), enricher=enricher, audit=audit)
 
-    assert r == {"scanned": 1, "enriched": 0, "audited": 0, "audit_failed": 0, "skipped": 0, "ineligible": 1}
-    enricher.enrich.assert_not_called()
+    assert r == {"scanned": 1, "enriched": 0, "recovered": 0, "audited": 0, "audit_failed": 0, "skipped": 0, "ineligible": 1}
+    enricher.enrich_reporting.assert_not_called()
     store.save_enrichment.assert_not_called()
 
 
@@ -318,12 +341,12 @@ def test_document_without_a_source_is_ineligible(store, enricher, documents):
     r = run_enrich(store, documents=documents(("d9", "text", {})), enricher=enricher)
 
     assert r["ineligible"] == 1
-    enricher.enrich.assert_not_called()
+    enricher.enrich_reporting.assert_not_called()
 
 
 def test_ineligible_is_counted_apart_from_skipped(store, enricher, documents, key_doc, video_doc):
     # "skipped" means a record that failed; conflating the two would hide either.
-    enricher.enrich.side_effect = EnrichError("bad message")
+    enricher.enrich_reporting.side_effect = EnrichError("bad message")
 
     r = run_enrich(store, documents=documents(key_doc, video_doc), enricher=enricher)
 
@@ -337,7 +360,7 @@ def test_explicit_ineligible_source_refuses(store, enricher, documents, video_do
         run_enrich(
             store, source="youtube:@chan", documents=documents(video_doc), enricher=enricher
         )
-    enricher.enrich.assert_not_called()
+    enricher.enrich_reporting.assert_not_called()
 
 
 def test_explicit_eligible_source_is_allowed(store, enricher, audit, documents, key_doc):
@@ -354,7 +377,7 @@ def test_force_does_not_override_policy(store, enricher, documents, video_doc):
     r = run_enrich(store, documents=documents(video_doc), enricher=enricher, force=True)
 
     assert r["ineligible"] == 1
-    enricher.enrich.assert_not_called()
+    enricher.enrich_reporting.assert_not_called()
 
 
 def test_run_audit_is_not_gated_by_enrichment_policy(store, audit, documents, video_doc):

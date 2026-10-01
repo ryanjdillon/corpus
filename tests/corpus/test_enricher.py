@@ -9,6 +9,7 @@ import json
 from unittest.mock import create_autospec
 
 import httpx
+import msgspec
 import pytest
 
 from corpus import enricher as enricher_mod
@@ -19,7 +20,7 @@ from corpus.enricher import (
     EnrichUnavailableError,
     cap_input,
 )
-from corpus.enrichment import MAX_ITEMS, Category, json_schema
+from corpus.enrichment import MAX_ITEMS, Category, SensitivityLevel, json_schema
 
 _COMPLETION = {
     "choices": [
@@ -186,6 +187,54 @@ def test_reply_stalled_short_of_a_valid_record_is_enrich_error(client, prefix):
 
     with pytest.raises(EnrichError):
         Enricher(model="local", client=client).enrich("x")
+
+
+_HEAD = '{"one_line": "hi", "abstract": "a note", "category": "personal", '
+
+
+def test_recovered_reply_is_reported(client, caplog):
+    client.post.return_value = _response(200, json_body=_stalled(_HEAD + '"topics": ['))
+
+    with caplog.at_level("WARNING", logger="corpus.enrich"):
+        _, recovered = Enricher(model="local", client=client).enrich_reporting("x")
+
+    assert recovered is True
+    assert "stalled" in caplog.text
+
+
+def test_complete_reply_is_not_reported_as_recovered(client):
+    _, recovered = Enricher(model="local", client=client).enrich_reporting("x")
+
+    assert recovered is False
+
+
+@pytest.mark.parametrize(
+    ("tail", "level"),
+    [
+        ('"topics": [', SensitivityLevel.high),
+        ('"sensitivity_level": "low", "suggested_disposition":', SensitivityLevel.low),
+    ],
+    ids=["unreached-is-high", "reached-is-kept"],
+)
+def test_recovered_sensitivity_fails_closed(client, tail, level):
+    # sensitivity_level gates free text out of the sanitized tier, so a level the
+    # model never wrote must not default to "none".
+    client.post.return_value = _response(200, json_body=_stalled(_HEAD + tail))
+
+    assert Enricher(model="local", client=client).enrich("x").sensitivity_level is level
+
+
+@pytest.mark.parametrize(
+    "tail",
+    ['"appointments": [{', '"appointments": [{"who": "Ola"}, {', '"people": [{"name":'],
+    ids=["first-item", "after-an-item", "dangling-nested-key"],
+)
+def test_recovery_drops_an_unfilled_object(client, tail):
+    client.post.return_value = _response(200, json_body=_stalled(_HEAD + tail))
+
+    result = Enricher(model="local", client=client).enrich("x")
+
+    assert {} not in [msgspec.to_builtins(a) for a in result.appointments + result.people]
 
 
 def test_short_trailing_whitespace_is_not_treated_as_a_stall(client):

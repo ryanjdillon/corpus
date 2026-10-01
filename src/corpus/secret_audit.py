@@ -15,9 +15,10 @@ worded description ever leave here, never the secret.
 from __future__ import annotations
 
 import httpx
+import msgspec
 
 from .config import settings
-from .enricher import build_payload, chat_completion, decode_guided, model_options
+from .enricher import EnrichError, build_payload, chat_completion, model_options
 from .enrichment import (
     MAX_ITEMS,
     ConfirmedSecret,
@@ -71,7 +72,14 @@ def audit_secrets(
             timeout=settings.enrich_timeout,
         )
     try:
-        return decode_guided(chat_completion(client, payload), SecretAudit, "secret audit")
+        content = chat_completion(client, payload)
+        # Strict: a stalled audit is rejected, never recovered. Candidates the
+        # model never reached would be left without a verdict, and reading that
+        # as "no secret" would silently downgrade a real one.
+        try:
+            return msgspec.json.decode(content.encode(), type=SecretAudit)
+        except msgspec.DecodeError as exc:
+            raise EnrichError(f"unparseable secret audit: {exc}") from exc
     finally:
         if owns:
             client.close()

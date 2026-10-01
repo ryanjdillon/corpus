@@ -93,13 +93,16 @@ def test_unparseable_output_is_enrich_error(client):
         audit_mod.audit_secrets("x", [], model="local", client=client)
 
 
-def test_reply_stalled_in_whitespace_is_recovered(client):
-    content = '{"contains_secret": false, "findings": [' + " \n" * 3000
+def test_reply_stalled_in_whitespace_is_enrich_error(client):
+    # Unlike enrichment, a stalled audit is never recovered: a candidate the model
+    # never reached would be left without a verdict.
+    content = '{"contains_secret": true, "findings": [{"type": "x",' + " \n" * 3000
     client.post.return_value = _response(
         200, json_body={"choices": [{"message": {"content": content}, "finish_reason": "length"}]}
     )
 
-    assert audit_mod.audit_secrets("x", [], model="local", client=client).findings == []
+    with pytest.raises(EnrichError):
+        audit_mod.audit_secrets("x", [], model="local", client=client)
 
 
 def test_transport_error_is_unavailable(client, monkeypatch):

@@ -30,7 +30,7 @@ import msgspec
 from . import scan
 from .config import settings
 from .enricher import Enricher, EnrichError
-from .enrichment import SCHEMA_VERSION
+from .enrichment import RECOVERED_SCHEMA_VERSION, SCHEMA_VERSION
 from .fetchers.policy import enrichable_kinds, may_enrich
 from .secret_audit import audit_secrets, audit_texts, merge_audits
 from .store import iter_documents
@@ -105,8 +105,8 @@ def run_enrich(
     enricher = enricher or Enricher()
     audit_model = settings.audit_model or enricher.model
     counts = {
-        "scanned": 0, "enriched": 0, "audited": 0, "audit_failed": 0, "skipped": 0,
-        "ineligible": 0,
+        "scanned": 0, "enriched": 0, "recovered": 0, "audited": 0, "audit_failed": 0,
+        "skipped": 0, "ineligible": 0,
     }
     excluded: set[str] = set()
 
@@ -140,10 +140,10 @@ def run_enrich(
         doc_id, content, meta = item
         text = _model_text(meta, content)
         try:
-            enrichment = enricher.enrich(text)
+            enrichment, recovered = enricher.enrich_reporting(text)
         except EnrichError as exc:
             log.warning("skipping %s: %s", doc_id, exc)
-            return doc_id, None, None, str(exc)
+            return doc_id, None, False, None, str(exc)
         candidates = scan.audit_candidates(content)
         # The audit gets the full text even when the enricher caps its own input: a
         # secret can sit past the cap, and the candidates came from a full-body scan.
@@ -158,18 +158,20 @@ def run_enrich(
                 result = _audit_windowed(audit, text, content, candidates, audit_model)
             except EnrichError as exc:
                 log.warning("audit skipped for %s: %s", doc_id, exc)
-        return doc_id, enrichment, candidates, result
+        return doc_id, enrichment, recovered, candidates, result
 
     def persist(res: tuple) -> None:
-        doc_id, enrichment, candidates, result = res
+        doc_id, enrichment, recovered, candidates, result = res
         if enrichment is None:  # a per-record EnrichError; ``result`` holds the reason
             counts["skipped"] += 1
             store.save_rejection(doc_id, result, enricher.model)
             return
-        store.save_enrichment(
-            doc_id, msgspec.to_builtins(enrichment), enricher.model, SCHEMA_VERSION
-        )
+        # A recovered record is kept but stored under a marked version, so it
+        # counts as stale: --upgrade-stale enriches it again in full.
+        version = RECOVERED_SCHEMA_VERSION if recovered else SCHEMA_VERSION
+        store.save_enrichment(doc_id, msgspec.to_builtins(enrichment), enricher.model, version)
         counts["enriched"] += 1
+        counts["recovered"] += recovered
         if candidates and result is None:
             counts["audit_failed"] += 1
         elif candidates:
@@ -196,8 +198,9 @@ def run_enrich(
         if own:
             enricher.close()
     log.info(
-        "enriched %d, audited %d (%d failed), skipped %d, ineligible %d of %d scanned",
-        counts["enriched"], counts["audited"], counts["audit_failed"], counts["skipped"],
+        "enriched %d (%d recovered), audited %d (%d failed), skipped %d, ineligible %d of %d "
+        "scanned",
+        counts["enriched"], counts["recovered"], counts["audited"], counts["audit_failed"], counts["skipped"],
         counts["ineligible"], counts["scanned"],
     )
     if excluded:

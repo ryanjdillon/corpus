@@ -257,6 +257,10 @@ def secret_audit_schema() -> dict:
 #: migration knows which schema produced it. Derived from the schema itself, so it
 #: changes automatically when the struct set changes — no manual bump.
 SCHEMA_VERSION = hashlib.sha1(msgspec.json.encode(json_schema())).hexdigest()[:12]
+#: Stored for a record recovered from a stalled reply (see
+#: ``enricher.decode_stalled``). It never equals ``SCHEMA_VERSION``, so the record
+#: counts as stale and ``--upgrade-stale`` enriches it again in full.
+RECOVERED_SCHEMA_VERSION = f"{SCHEMA_VERSION}+recovered"
 
 
 def decode(data: bytes | str) -> Enrichment:
