@@ -142,7 +142,7 @@ def ingest(source: str, batch_size: int = 50, *, fetcher: Fetcher | None = None)
             set_cursor(source, cursor)
 
     try:
-        for rec in fetcher.fetch(cursor):
+        for rec in fetcher.fetch(cursor, known=seen):
             if rec.key() in seen:
                 continue  # already stored (resume a partial backfill)
             batch.append(rec)

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Container, Iterator
 from typing import Protocol
 
 from ..models import Record
@@ -27,8 +27,13 @@ class Fetcher(Protocol):
 
     source: str
 
-    def fetch(self, cursor: str | None) -> Iterator[Record]:
-        """Yield records newer than `cursor` (all records if cursor is None)."""
+    def fetch(self, cursor: str | None, known: Container[str] = frozenset()) -> Iterator[Record]:
+        """Yield records newer than `cursor` (all records if cursor is None).
+
+        `known` holds the keys (``Record.key()``) the store already has. A
+        fetcher may skip downloading those; a resumed backfill then costs a
+        listing, not a re-download of everything it already stored.
+        """
         ...
 
     def next_cursor(self) -> str | None:

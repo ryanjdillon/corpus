@@ -81,3 +81,13 @@ def test_same_uidvalidity_resumes_after_the_cursor(fetcher, client):
 def test_folders_are_opened_read_only(fetcher, client):
     list(fetcher.fetch(None))
     client.select_folder.assert_called_once_with("INBOX", readonly=True)
+
+
+def test_known_uids_are_not_downloaded_but_advance_the_cursor(fetcher, client):
+    client.search.return_value = [1, 2, 3]
+    client.fetch.return_value = {2: {b"RFC822": _raw("two")}}
+    known = {"imap:unit::INBOX:7:1", "imap:unit::INBOX:7:3"}
+    records = list(fetcher.fetch(None, known=known))
+    assert [r.source_uid for r in records] == ["INBOX:7:2"]
+    assert client.fetch.call_args.args[0] == [2]
+    assert fetcher.next_cursor() == '{"INBOX": "7:3"}'

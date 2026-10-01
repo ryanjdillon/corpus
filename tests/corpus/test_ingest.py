@@ -30,7 +30,7 @@ def make_fetcher():
     def _make(records: list[Record], cursor: str | None = "1:2") -> Fetcher:
         fetcher = create_autospec(Fetcher, instance=True)
         fetcher.source = "imap:test"
-        fetcher.fetch.side_effect = lambda _cursor: iter(records)
+        fetcher.fetch.side_effect = lambda _cursor, known=frozenset(): iter(records)
         fetcher.next_cursor.return_value = cursor
         return fetcher
 
@@ -167,6 +167,9 @@ def test_ingest_is_idempotent(pg, fake_embeddings, make_fetcher):
     from corpus.store import get_document_store
 
     assert get_document_store().count_documents() == 2
+    # The second run tells the fetcher what is already stored, so it can skip
+    # downloading those records.
+    assert fetcher.fetch.call_args.kwargs["known"] == {r.key() for r in _records(2)}
 
 
 @pytest.mark.integration

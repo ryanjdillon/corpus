@@ -20,7 +20,7 @@ import base64
 import logging
 import os
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Container, Iterator
 from datetime import UTC, datetime
 
 import httpx
@@ -92,6 +92,7 @@ class GmailFetcher:
     """Catalog a Gmail account over the API, using historyId for incremental sync."""
 
     def __init__(self, name: str) -> None:
+        self._known: Container[str] = frozenset()
         self._refused_in_a_row = 0
         self.name = name
         self.source = f"gmail:{name}"
@@ -106,8 +107,12 @@ class GmailFetcher:
         self._label_names: dict[str, str] = {}
         self._account: str | None = None
 
-    def fetch(self, cursor: str | None) -> Iterator[Record]:
-        """Yield records for a full backfill or an incremental sync from the cursor."""
+    def fetch(self, cursor: str | None, known: Container[str] = frozenset()) -> Iterator[Record]:
+        """Yield records for a full backfill or an incremental sync from the cursor.
+
+        Messages whose key is in *known* are not downloaded.
+        """
+        self._known = known
         api = httpx.Client(
             base_url=_API,
             headers={"Authorization": f"Bearer {self._access_token()}"},
@@ -169,6 +174,8 @@ class GmailFetcher:
                 params["pageToken"] = page
             data = api.get("/messages", params=params).raise_for_status().json()
             for m in data.get("messages", []):
+                if self._is_known(m["id"]):
+                    continue
                 rec = self._fetch_message(api, m["id"])
                 if rec:
                     yield rec
@@ -216,6 +223,8 @@ class GmailFetcher:
                     if wanted and not (set(msg.get("labelIds", [])) & wanted):
                         continue
                     seen.add(mid)
+                    if self._is_known(mid):
+                        continue
                     rec = self._fetch_message(api, mid)
                     if rec:
                         yield rec
@@ -224,6 +233,14 @@ class GmailFetcher:
             if not page:
                 break
         self._next_cursor = latest
+
+    def _is_known(self, mid: str) -> bool:
+        """Whether the store already has message *mid* (skip downloading it).
+
+        The cost that matters: each raw download spends per-user quota, and a
+        resumed page would otherwise re-download every message already stored.
+        """
+        return Record.key_for(self.source, mid) in self._known
 
     def _fetch_message(
         self,
