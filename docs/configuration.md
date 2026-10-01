@@ -61,26 +61,38 @@ and [Gmail](fetchers/gmail.md).
 
 ## scan-gate
 
-`corpus scan-gate` redacts PII and secrets from LLM request bodies before they
-leave the network. It speaks Envoy's external-processing (`ext_proc`) gRPC
-protocol, so any Envoy-based proxy can call it.
+`corpus scan-gate` applies the egress policy (`corpus.egress.policy`) to LLM
+request bodies before they leave the network. The policy is gateway-neutral; a
+protocol adapter connects it to a gateway. The only adapter today is
+`envoy-ext-proc`, Envoy's external-processing gRPC protocol, which any
+Envoy-based proxy can call.
 
 | Variable | Purpose |
 |---|---|
-| `CORPUS_SCAN_GATE_PORT` | gRPC port (default `9002`) |
+| `CORPUS_SCAN_GATE_ADAPTER` | gateway protocol adapter (default `envoy-ext-proc`) |
+| `CORPUS_SCAN_GATE_PORT` | listen port (default `9002`) |
 | `CORPUS_SCAN_GATE_WORKERS` | concurrent request streams (default `8`) |
-| `CORPUS_SCAN_GATE_FAIL_OPEN` | pass a body the gate cannot parse (e.g. multipart audio) through unchanged; the default blocks it |
+| `CORPUS_SCAN_GATE_FAIL_OPEN` | pass a body that is not JSON (e.g. multipart audio) through unchanged; the default refuses it |
 | `CORPUS_SCAN_GATE_BLOCK_TYPES` | comma-separated secret types refused with a 403 instead of redacted (default `private_key`) |
-| `CORPUS_SCAN_GATE_GRPC_MAX_MESSAGE_BYTES` | largest gRPC message accepted and returned (default 50 MiB) |
+| `CORPUS_SCAN_GATE_SKIP_MODELS` | comma-separated model names passed unscanned because they are served locally (default none) |
+| `CORPUS_SCAN_GATE_BATCH_CLIENTS` | comma-separated client ids of batch jobs (default none) |
+| `CORPUS_SCAN_GATE_BATCH_MAX_BYTES` | largest body a batch client may send to a scanned model; larger gets a 413 (default `65536`) |
+| `CORPUS_SCAN_GATE_GRPC_MAX_MESSAGE_BYTES` | envoy-ext-proc: largest gRPC message accepted and returned (default 50 MiB) |
 
-The gate expects the request body in `Buffered` processing mode, where the proxy
-sends the whole body as one gRPC message, so
-`CORPUS_SCAN_GATE_GRPC_MAX_MESSAGE_BYTES` must be at least the proxy's body buffer
-limit. A chat request with an inline image easily exceeds grpc's 4 MiB default.
-When it does, the gate refuses the stream, and the proxy then passes the body
-through unscanned or refuses the request, depending on its own fail-open setting. Only the `text` of
-each message and content part is redacted. Image and audio parts pass through
-byte-identical.
+For each body, in order: a body that is not a JSON object is refused (or passed,
+when failing open); a model in `SKIP_MODELS` passes unscanned; a batch client's
+oversized body gets a 413; otherwise every message's text is redacted, and a
+finding in `BLOCK_TYPES` gets a 403. Refusals carry an OpenAI-style JSON error.
+`SKIP_MODELS` takes exact names, not patterns, so a typo can only make the gate
+scan more. The client id is the caller's `x-client-id` request header, which the
+gateway sets after authenticating the API key.
+
+The envoy-ext-proc adapter expects the request body in `Buffered` processing
+mode, where the proxy sends the whole body as one gRPC message, so
+`CORPUS_SCAN_GATE_GRPC_MAX_MESSAGE_BYTES` must be at least the proxy's body
+buffer limit. Request headers must be sent too (the default), so the adapter sees
+`x-client-id`. Only the `text` of each message and content part is redacted;
+image and audio parts pass through byte-identical.
 
 ## Sanitized tier
 
