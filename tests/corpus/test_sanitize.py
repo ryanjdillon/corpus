@@ -134,20 +134,39 @@ def test_run_sync_default_embedder(monkeypatch, store, documents):
     assert r == {"scanned": 0, "synced": 0, "skipped": 0}
 
 
-def test_iter_enriched_joins_documents_and_enrichments(monkeypatch):
-    rows = [("d1", {"source": "gmail:personal"}, {"one_line": "x"}, "v1")]
+@pytest.fixture
+def cursor():
     cur = create_autospec(psycopg.Cursor, instance=True)
-    cur.__iter__.return_value = iter(rows)
-    conn = create_autospec(psycopg.Connection, instance=True)
-    # create_autospec does not spec method return values, so wire the two
-    # ``with`` context managers (connect() -> conn, conn.cursor(name=...) -> cur).
-    conn.__enter__.return_value = conn
-    conn.cursor.return_value.__enter__.return_value = cur
-    monkeypatch.setattr(sanitize.psycopg, "connect", lambda dsn: conn)
+    cur.fetchone.return_value = ("corpus.documents",)  # tables exist by default
+    cur.__iter__.return_value = iter([])
+    return cur
 
-    out = list(sanitize.iter_enriched("dsn", source="gmail:personal"))
+
+@pytest.fixture
+def connect(cursor):
+    conn = create_autospec(psycopg.Connection, instance=True)
+    # create_autospec does not spec method return values, so wire the
+    # ``with`` context managers: connect() -> conn, conn.cursor(...) -> cursor.
+    conn.__enter__.return_value = conn
+    conn.cursor.return_value.__enter__.return_value = cursor
+    return create_autospec(psycopg.connect, return_value=conn)
+
+
+def test_iter_enriched_joins_documents_and_enrichments(connect, cursor):
+    rows = [("d1", {"source": "gmail:personal"}, {"one_line": "x"}, "v1")]
+    cursor.__iter__.return_value = iter(rows)
+
+    out = list(sanitize.iter_enriched("dsn", source="gmail:personal", connect=connect))
 
     assert out == rows
-    sql, params = cur.execute.call_args.args
+    sql, params = cursor.execute.call_args.args
     assert "JOIN" in sql and "enrichments" in sql and "e.enrichment IS NOT NULL" in sql
     assert params == ["gmail:personal"]
+
+
+def test_iter_enriched_is_empty_before_the_first_ingest(connect, cursor):
+    # A mailbox that has never received mail has no documents table yet.
+    cursor.fetchone.return_value = (None,)
+
+    assert list(sanitize.iter_enriched("dsn", connect=connect)) == []
+    assert all("to_regclass" in c.args[0] for c in cursor.execute.call_args_list)
