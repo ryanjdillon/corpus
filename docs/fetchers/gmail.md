@@ -42,7 +42,7 @@ Two kinds of refusal stop the run instead of skipping, because they apply to the
 whole account and skipping would move the sync cursor past every message:
 
 - `dailyLimitExceeded` (the daily quota) or `insufficientPermissions`;
-- the same refusal for five messages in a row (e.g. a token whose scope cannot
+- a refusal for five messages in a row (e.g. a token whose scope cannot
   read raw mail, which still lists messages fine).
 
 The next run resumes from the saved page once the cause is fixed.
