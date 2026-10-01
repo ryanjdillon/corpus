@@ -209,8 +209,8 @@ def test_backfill_skips_downloading_known_messages(fetcher):
     listing = httpx.Response(200, json={"messages": [{"id": "a"}, {"id": "b"}, {"id": "c"}]})
     client, calls = api(listing, ok("b"))
     fetcher._label_names = {}
-    fetcher._known = {"gmail:unit::a", "gmail:unit::c"}
-    assert [r.source_uid for r in fetcher._backfill(client, None)] == ["b"]
+    known = {"gmail:unit::a", "gmail:unit::c"}
+    assert [r.source_uid for r in fetcher._backfill(client, None, known)] == ["b"]
     assert calls() == 2  # one list call, one download
 
 
@@ -224,7 +224,6 @@ def test_incremental_skips_downloading_known_messages(fetcher):
     )
     client, calls = api(history, ok("b"))
     fetcher._label_names = {}
-    fetcher._known = {"gmail:unit::a"}
-    records = list(fetcher._incremental(client, "1000", None, "2000"))
+    records = list(fetcher._incremental(client, "1000", None, "2000", {"gmail:unit::a"}))
     assert [r.source_uid for r in records] == ["b"]
     assert calls() == 2
