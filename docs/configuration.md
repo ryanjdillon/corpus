@@ -112,6 +112,7 @@ sender. `corpus index` serves that database to cloud-side consumers over MCP.
 | `CORPUS_INDEX_DATABASE_URL` | DSN the index server reads with (a read-only role) |
 | `CORPUS_SANITIZED_DB_SCHEMA` | schema of the sanitized `messages` table; empty means `CORPUS_DB_SCHEMA` |
 | `CORPUS_INDEX_SENSITIVITY_GATE` | sensitivity at which free-text summaries are withheld (default `high`) |
+| `CORPUS_TIER_ACCESS` | JSON map of tier name to the principals allowed to reach its MCP surface, e.g. `{"sanitized": ["orchestrator"]}`; a tier without an entry grants no one |
 
 Set `CORPUS_SANITIZED_DB_SCHEMA` when several raw schemas feed one sanitized
 view. For example, one raw schema per mailbox (`mbx_kasserar`, `mbx_post`, …) can
