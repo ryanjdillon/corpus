@@ -25,3 +25,15 @@ python scripts/gmail_oauth.py client_secret.json
 Sync uses Gmail's `historyId`: the first run backfills and records the mailbox's
 current `historyId`; later runs pull only changes since, falling back to a full
 backfill if the `historyId` has expired.
+
+## Per-message errors
+
+A message that disappears between listing and fetching (404) is skipped. Gmail
+also refuses some individual messages with a 403 whose reason is not a quota
+error; those are skipped too, with the message id and Google's reason logged.
+A backfill resumes from the same saved page on every run, so a single refused
+message would otherwise stop all later mail from being ingested.
+
+Quota errors (429, or 403 with reason `rateLimitExceeded` or
+`userRateLimitExceeded`) are retried with exponential backoff (1 s, 2 s, 4 s, …,
+at most 30 s) and fail the run only after the retries are used up.

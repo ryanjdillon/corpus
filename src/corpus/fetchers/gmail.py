@@ -19,7 +19,8 @@ from __future__ import annotations
 import base64
 import logging
 import os
-from collections.abc import Iterator
+import time
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 
 import httpx
@@ -41,6 +42,22 @@ _BACKFILL_PREFIX = "backfill:"
 
 def _env(name: str, key: str, default: str = "") -> str:
     return os.environ.get(f"CORPUS_GMAIL_{name.upper()}_{key}", default)
+
+
+# Gmail signals quota exhaustion with 403 (or 429) and one of these reasons.
+_RATE_LIMIT_REASONS = frozenset({"rateLimitExceeded", "userRateLimitExceeded"})
+
+
+def _error_reason(resp: httpx.Response) -> str:
+    """Return the Google API error reason of a failed response, or ``""``."""
+    if resp.is_success:
+        return ""
+    try:
+        error = resp.json().get("error", {})
+        errors = error.get("errors") or []
+        return (errors[0].get("reason") if errors else None) or error.get("status") or ""
+    except (ValueError, AttributeError):
+        return ""
 
 
 class GmailFetcher:
@@ -179,10 +196,37 @@ class GmailFetcher:
                 break
         self._next_cursor = latest
 
-    def _fetch_message(self, api: httpx.Client, mid: str) -> Record | None:
-        resp = api.get(f"/messages/{mid}", params={"format": "raw"})
-        if resp.status_code == 404:
-            return None  # deleted between listing and fetch
+    def _fetch_message(
+        self,
+        api: httpx.Client,
+        mid: str,
+        *,
+        attempts: int = 5,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> Record | None:
+        for attempt in range(attempts):
+            resp = api.get(f"/messages/{mid}", params={"format": "raw"})
+            if resp.status_code == 404:
+                return None  # deleted between listing and fetch
+            reason = _error_reason(resp)
+            rate_limited = resp.status_code == 429 or (
+                resp.status_code == 403 and reason in _RATE_LIMIT_REASONS
+            )
+            if rate_limited and attempt < attempts - 1:
+                sleep(min(2.0**attempt, 30.0))
+                continue
+            if resp.status_code == 403 and not rate_limited:
+                # Gmail refuses some single messages outright (403 with a
+                # non-quota reason). Skipping one must not abort the whole
+                # backfill; it resumes from the same page each run, so a fatal
+                # 403 would block every later message forever.
+                log.warning(
+                    "gmail: skipping message %s refused by the API (403 %s)",
+                    mid,
+                    reason or "no reason given",
+                )
+                return None
+            break
         d = resp.raise_for_status().json()
         try:
             raw = base64.urlsafe_b64decode(d["raw"])
@@ -194,9 +238,7 @@ class GmailFetcher:
             log.warning("gmail: skipping unprocessable message %s", mid, exc_info=True)
             return None
 
-    def _to_record(
-        self, mid: str, thread_id: str | None, raw: bytes, labels: list[str]
-    ) -> Record:
+    def _to_record(self, mid: str, thread_id: str | None, raw: bytes, labels: list[str]) -> Record:
         parsed = mailparser.parse_from_bytes(raw)
         headers = {k: str(v) for k, v in (parsed.headers or {}).items()}
         sent_at: datetime | None = parsed.date
