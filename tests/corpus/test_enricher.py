@@ -145,6 +145,60 @@ def test_output_cut_off_or_missing_is_enrich_error(client, content):
         Enricher(model="local", client=client).enrich("x")
 
 
+def _stalled(prefix: str) -> dict:
+    # A guided reply that stopped making progress: valid JSON so far, then
+    # whitespace padding until the output budget ran out.
+    content = prefix + " \n\t" * 3000
+    return {"choices": [{"message": {"content": content}, "finish_reason": "length"}]}
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        '{"one_line": "hi", "abstract": "a note", "category": "personal", "topics": [',
+        '{"one_line": "hi", "abstract": "a note", "category": "personal", "topics": ["a",',
+        '{"one_line": "hi", "abstract": "a note", "category": "personal", "topics": ["a"], "people": [{"name": "Ola"}',
+        '{"one_line": "hi", "abstract": "a note", "category": "personal", "importance":',
+        '{"one_line": "hi", "abstract": "a \\"quoted [note\\"", "category": "personal", "topics": [',
+    ],
+    ids=["open-list", "dangling-comma", "nested-object", "dangling-key", "escaped-quote"],
+)
+def test_reply_stalled_in_whitespace_keeps_what_was_written(client, prefix):
+    client.post.return_value = _response(200, json_body=_stalled(prefix))
+
+    result = Enricher(model="local", client=client).enrich("x")
+
+    assert result.one_line == "hi"
+    assert result.category is Category.personal
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        '{"one_line": "hi", "abstract": "padding inside a string ',
+        '{"one_line": "hi", "abstract": "a note", "category": "personal", "importance": "hi',
+        '{"one_line": "hi", "abstract": "a note"',
+    ],
+    ids=["mid-string", "mid-enum", "missing-required-field"],
+)
+def test_reply_stalled_short_of_a_valid_record_is_enrich_error(client, prefix):
+    client.post.return_value = _response(200, json_body=_stalled(prefix))
+
+    with pytest.raises(EnrichError):
+        Enricher(model="local", client=client).enrich("x")
+
+
+def test_short_trailing_whitespace_is_not_treated_as_a_stall(client):
+    # A cut-off reply with ordinary formatting whitespace is still rejected.
+    content = '{"one_line": "hi", "abstract": "a note", "category": "personal", "topics": [\n  '
+    client.post.return_value = _response(
+        200, json_body={"choices": [{"message": {"content": content}, "finish_reason": "length"}]}
+    )
+
+    with pytest.raises(EnrichError):
+        Enricher(model="local", client=client).enrich("x")
+
+
 def test_missing_model_raises(client):
     with pytest.raises(ValueError):
         Enricher(model="", client=client)

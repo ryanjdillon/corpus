@@ -53,6 +53,18 @@ document is rejected like any other. The same 4096 is the output reserve that
 `max_tokens` above it can make prompt plus output exceed that model's context;
 lower its `context_tokens` by the difference when you do.
 
+The schema bounds cannot stop one kind of loop: guided decoding allows
+whitespace between any two JSON tokens, and a model can stall there, padding
+with spaces and newlines until it reaches the cap. Everything it wrote before
+the padding is intact, so a reply ending in at least 256 characters of
+whitespace (`STALL_PADDING_CHARS`) is recovered instead of rejected. The padding
+is dropped, as is a dangling `,` or `"key":`, and the open brackets are closed;
+fields the model never reached keep their schema defaults, and a warning is
+logged. A reply cut off inside a string or a value is not recovered and is
+rejected as before. The secret audit decodes the same way. (vLLM can forbid
+the padding outright with the server-wide `disable_any_whitespace`
+structured-outputs option; the per-request field is ignored.)
+
 ## Models
 
 `CORPUS_ENRICH_MODEL` does the enrichment, and `CORPUS_AUDIT_MODEL` does the

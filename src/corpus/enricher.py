@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import random
+import re
 import time
 from dataclasses import dataclass, field
 
@@ -182,6 +183,71 @@ class EnrichUnavailableError(Exception):
     """
 
 
+#: Trailing whitespace that marks a stalled reply rather than formatting. Guided
+#: decoding lets a model emit whitespace between any two tokens, and a model can
+#: get stuck there -- padding until it runs out of output budget. Pretty-printed
+#: JSON never ends in a run this long.
+STALL_PADDING_CHARS = 256
+
+_DANGLING_KEY = re.compile(r',?\s*"(?:[^"\\]|\\.)*"\s*:\s*$')
+
+
+def close_stalled(content: str) -> str | None:
+    """Return ``content`` closed into complete JSON if the model stalled, else None.
+
+    A stall leaves every value written so far intact, then pads with whitespace,
+    so the prefix can be closed without losing anything: drop the padding, a
+    dangling ``,`` or ``"key":``, and close the open brackets. Unfinished fields
+    are left to their schema defaults. A reply that ends inside a string (or
+    without the padding) was cut mid-content and is not repaired; nor is one
+    left mid-number or mid-literal, which still fails to decode.
+    """
+    body = content.rstrip()
+    if len(content) - len(body) < STALL_PADDING_CHARS:
+        return None
+    closers: list[str] = []
+    in_string = escaped = False
+    for ch in body:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+        elif ch == '"':
+            in_string = True
+        elif ch in "{[":
+            closers.append("}" if ch == "{" else "]")
+        elif ch in "}]" and closers:
+            closers.pop()
+    if in_string or not closers:
+        return None
+    body = _DANGLING_KEY.sub("", body).rstrip().removesuffix(",")
+    return body + "".join(reversed(closers))
+
+
+def decode_guided[T](content: str, type_: type[T], what: str) -> T:
+    """Decode a guided-decoding reply into ``type_``, recovering a stalled one.
+
+    Raises ``EnrichError`` when the reply is unparseable even after recovery: a
+    bad record, not an outage, so the caller can skip it.
+    """
+    try:
+        return msgspec.json.decode(content.encode(), type=type_)
+    except msgspec.DecodeError as exc:
+        closed = close_stalled(content)
+        if closed is not None:
+            try:
+                result = msgspec.json.decode(closed.encode(), type=type_)
+            except msgspec.DecodeError:
+                pass
+            else:
+                log.warning("recovered a %s stalled in whitespace padding", what)
+                return result
+        raise EnrichError(f"unparseable {what}: {exc}") from exc
+
+
 def chat_completion(client: httpx.Client, payload: dict) -> str:
     """POST one chat completion and return the assistant message content.
 
@@ -263,13 +329,7 @@ class Enricher:
         payload = build_payload(
             self.model, _SYSTEM, cap_input(text, self.input_limit()), "enrichment", self._schema
         )
-        content = chat_completion(self._client, payload)
-        try:
-            return msgspec.json.decode(content.encode(), type=Enrichment)
-        except msgspec.DecodeError as exc:
-            # Guided decoding should prevent this; if it slips through it is
-            # a bad record, not an outage — skippable.
-            raise EnrichError(f"unparseable enrichment: {exc}") from exc
+        return decode_guided(chat_completion(self._client, payload), Enrichment, "enrichment")
 
     def input_limit(self) -> int:
         """Characters of message text to send: the configured cap or the context budget.
