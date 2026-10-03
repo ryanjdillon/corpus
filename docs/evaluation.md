@@ -34,6 +34,10 @@ output, and the run measures the gate plus the model rather than the model alone
 Run against the model server directly, or expect those failures and compare runs
 made the same way.
 
+If the endpoint becomes unavailable mid-run, `run` still writes every row it has
+and exits 3. The documents it never reached carry the error `not attempted (run
+aborted)`, so the partial file scores (they count as invalid outputs).
+
 `run` writes `outputs/<model>-<SCHEMA_VERSION>-<timestamp>.jsonl`; `score` prints
 a markdown table and writes the JSON report next to the outputs. Useful `run`
 flags: `--limit N`, `--only hard_case=injection` (any top-level fixture field, or

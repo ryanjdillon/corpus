@@ -554,18 +554,36 @@ class FakeEnricher:
         """Nothing to release."""
 
 
+class RunAborted(Exception):
+    """Raise when the endpoint became unavailable mid-run; carries the rows so far.
+
+    The documents that were not reached are present as ``not attempted`` rows,
+    so a partial output is still a complete, scoreable file.
+    """
+
+    def __init__(self, rows: list[dict], cause: Exception) -> None:
+        super().__init__(str(cause))
+        self.rows = rows
+        self.cause = cause
+
+
 def run_records(records: list[dict], enricher, audit: Callable, *,
                 concurrency: int | None = None, meter: UsageMeter | None = None) -> list[dict]:
     """Run ``records`` through ``run_enrich`` and return one output row per record.
 
     ``enricher`` and ``audit`` are the collaborators ``run_enrich`` would use in
     production (or fakes of them); they are metered here and otherwise untouched.
+    Raises :class:`RunAborted`, holding every row, if the endpoint goes away.
     """
     meter = meter or UsageMeter()
     metered = MeteredEnricher(enricher, meter)
     audit_calls: dict[str, dict] = {}
     audit_model = settings.audit_model or metered.model
     store = RecordingStore()
+
+    def rows() -> list[dict]:
+        return [_row(rec, metered, store, audit_calls, audit_model) for rec in records]
+
     try:
         run_enrich(
             store,
@@ -575,9 +593,9 @@ def run_records(records: list[dict], enricher, audit: Callable, *,
             concurrency=concurrency,
             force=True,
         )
-    finally:
-        rows = [_row(rec, metered, store, audit_calls, audit_model) for rec in records]
-    return rows
+    except EnrichUnavailableError as exc:
+        raise RunAborted(rows(), exc) from exc
+    return rows()
 
 
 def _row(rec: dict, metered: MeteredEnricher, store: RecordingStore,
@@ -746,9 +764,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     try:
         with stack:
             rows = run_records(records, enricher, audit, concurrency=args.concurrency, meter=meter)
-    except EnrichUnavailableError as exc:
-        print(f"endpoint unavailable, run aborted: {exc}", file=sys.stderr)
-        return 3
+    except RunAborted as exc:
+        print(f"endpoint unavailable, run aborted: {exc.cause}; writing the partial output",
+              file=sys.stderr)
+        rows, status = exc.rows, 3
     finally:
         if client is not None:
             client.close()

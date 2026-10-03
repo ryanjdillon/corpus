@@ -23,7 +23,7 @@ import pytest
 
 from corpus import scan
 from corpus.config import settings
-from corpus.enricher import Enricher, build_payload
+from corpus.enricher import Enricher, EnrichUnavailableError, build_payload
 from corpus.enrichment import (
     RECOVERED_SCHEMA_VERSION,
     SCHEMA_VERSION,
@@ -354,6 +354,19 @@ def test_model_options_override_drives_the_production_payload(monkeypatch):
     assert settings.model_options == {"other": {"context_tokens": 9}}
 
 
+def test_model_options_override_is_undone_when_the_body_raises(monkeypatch):
+    monkeypatch.setattr(settings, "model_options", {"kept": {"context_tokens": 9}})
+
+    with pytest.raises(RuntimeError), ev.model_options_override("fresh", {"a": 1}, True):
+        assert "fresh" in settings.model_options
+        raise RuntimeError("boom")
+    assert settings.model_options == {"kept": {"context_tokens": 9}}
+
+    with pytest.raises(RuntimeError), ev.model_options_override("kept", {"a": 1}, True):
+        raise RuntimeError("boom")
+    assert settings.model_options == {"kept": {"context_tokens": 9}}
+
+
 def test_model_options_override_layers_on_configured_options(monkeypatch):
     configured = {"m": {"context_tokens": 8192, "extra_body": {"top_k": 1}}}
     monkeypatch.setattr(settings, "model_options", configured)
@@ -666,6 +679,60 @@ def test_run_prints_what_it_is_about_to_send_before_the_first_request(
     preamble = stderr_at_first_request[0]
     assert ("eval: model=m audit_model=audit-m api_base=http://localhost:8080/v1 records=3"
             in preamble)
+
+
+def test_run_never_writes_the_api_key_to_rows_reports_or_output(
+        tmp_path, capsys, mock_endpoint, monkeypatch):
+    key = "sk-test-KEY-0123456789"
+    monkeypatch.setattr(settings, "openai_api_key", key)
+
+    assert ev.main(["run", "--model", "m", "--api-base", "http://localhost:8080/v1",
+                    "--only", "hard_case=injection", "--limit", "3",
+                    "--out-dir", str(tmp_path)]) == 0
+    [out] = tmp_path.glob("m-*.jsonl")
+    assert ev.main(["score", str(out), "--resamples", "10"]) == 0
+
+    assert {auth for _, auth, _, _ in mock_endpoint} == {f"Bearer {key}"}  # it was used ...
+    captured = capsys.readouterr()
+    written = "".join(p.read_text() for p in tmp_path.iterdir())
+    for text in (captured.out, captured.err, written):  # ... and went nowhere else
+        assert key not in text
+
+
+def test_aborted_run_writes_the_partial_output_and_exits_3(tmp_path, capsys, monkeypatch):
+    class Dies:
+        calls = 0
+
+        def __init__(self, model, client=None):
+            self.model = model
+
+        def enrich_reporting(self, text):
+            Dies.calls += 1
+            if Dies.calls == 2:
+                raise EnrichUnavailableError("connection refused")
+            return Enrichment(one_line="x", abstract="y", category=Category.personal), False
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(ev, "Enricher", Dies)
+    monkeypatch.setattr(settings, "model_options", {})
+
+    status = ev.main(["run", "--model", "m", "--api-base", "http://localhost:8080/v1",
+                      "--only", "hard_case=injection", "--limit", "4", "--concurrency", "1",
+                      "--out-dir", str(tmp_path)])
+
+    assert status == 3
+    assert "run aborted" in capsys.readouterr().err
+    [out] = tmp_path.glob("m-*.jsonl")
+    rows = [json.loads(line) for line in out.read_text().splitlines()]
+    assert len(rows) == 4
+    assert [r["error"] is None for r in rows] == [True, False, False, False]
+    assert rows[1]["error"] == "endpoint unavailable: connection refused"
+    assert {r["error"] for r in rows[2:]} == {"not attempted (run aborted)"}
+    assert {r["label"] for r in rows} == {"m"}
+    assert settings.model_options == {}  # the overrides were undone on the way out
+    assert ev.main(["score", str(out), "--resamples", "10"]) == 0  # and it is scoreable
 
 
 # --------------------------------------------------------------------------- #
