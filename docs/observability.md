@@ -18,8 +18,8 @@ in the pipeline.
 
 ## Diagnosing a shedding enrichment endpoint
 
-A steady concurrency-16 backfill sheds roughly one request per few hundred as a
-5xx. The enricher [rides those out](configuration.md#riding-out-a-busy-enrichment-endpoint),
+A model server under enough concurrent load can shed a request as a 5xx. The
+enricher [rides those out](configuration.md#riding-out-a-busy-enrichment-endpoint),
 so the only trace they leave is a `corpus.enrich` warning per attempt. Each one
 carries the evidence needed to say *which layer* shed the request without access
 to the server:
@@ -31,14 +31,18 @@ to the server:
 
 | Signal | Reads as |
 |---|---|
-| `server=`/`via=` naming a proxy, and no upstream service time | the gateway answered; the request never reached the model server |
-| an upstream service time (`x-envoy-upstream-service-time`) | the model server answered, so the 5xx is its own |
-| `retry-after` set | deliberate admission control on queue depth, not a crash |
+| `server=`/`via=` naming a proxy, and no upstream service time | a gateway answered; the request likely never reached the model server |
+| an upstream service time (`x-envoy-upstream-service-time`) | the request reached the model server, so the 5xx came from behind the gateway |
+| `retry-after` set | a layer shedding load deliberately rather than crashing |
 | elapsed in milliseconds | shed at admission, before any queueing |
-| elapsed at the gateway's upstream timeout | queued behind a full server until the proxy gave up |
-| body is the model server's JSON error envelope | the model server (vLLM `{"object": "error", …}`) |
-| body is an HTML or proxy-shaped error page | the gateway |
-| `TransportError` rather than an HTTP status | nothing answered — connection reset or client-side timeout |
+| elapsed near a timeout | queued until a timeout fired |
+| body is JSON in the model server's own error format | the model server (vLLM, for example, returns `{"object": "error", …}`) |
+| body is an HTML or proxy-shaped error page | a proxy or gateway |
+| `TransportError` rather than an HTTP status | nothing answered: connection reset or client-side timeout |
+
+These are hints, not proof: which headers a proxy or model server sets depends on
+the deployment. A 4xx is not retried and does not appear here; it fails that record
+straight away.
 
 Count and cluster a pass from its log:
 
@@ -51,7 +55,7 @@ Timestamps bunched into a few seconds implicate a model swap on a shared GPU —
 the endpoint is briefly gone, not overloaded. Timestamps spread evenly across the
 pass implicate a concurrency limit sitting below the offered load, and the
 attribution fields then say whether that limit is the gateway's queue or the
-model server's batch (`max_num_seqs`, KV-cache headroom). Either remedy is a
-server-side tunable and belongs with the deployment config, not here; raising
+model server's own capacity (for vLLM, e.g. `max_num_seqs` or KV-cache
+headroom). Either remedy is a server-side tunable and belongs with the deployment config, not here; raising
 `CORPUS_ENRICH_CONCURRENCY` before that is settled just moves more load onto
 whichever limit is already binding.
