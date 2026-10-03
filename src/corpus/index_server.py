@@ -18,6 +18,10 @@ mcp = FastMCP(
     "corpus-index",
     host=settings.host,
     port=settings.mcp_port,
+    # Every tool is a self-contained query, so no session state is needed. A
+    # stateful server expires idle sessions, and a long-lived client (a gateway
+    # MCP proxy, an agent polling once a day) then gets 404 on its next call.
+    stateless_http=True,
     instructions=(
         "Sanitized priority signal over the owner's private corpus. You receive "
         "secret-free summaries and classification only — never raw message bodies. "

@@ -27,15 +27,19 @@ def test_json_schema_lists_enum_values():
         assert value in dumped
 
 
-def test_json_schema_forces_classification_axes_required():
-    # The axes carry struct defaults, but the guided-decoding schema must mark them
-    # required so the model decides each instead of omitting them (which collapsed
-    # every record to domain="other", transactional_type="none", ...).
+def test_json_schema_forces_every_field_required():
+    # Fields carry struct defaults, but the guided-decoding schema must mark all of
+    # them required: an optional field is one the grammar lets the model skip (the
+    # axes collapsed to their defaults; vLLM dropped entities, llama.cpp deadlines).
     schema = enrichment.json_schema()
     enr = schema["$defs"]["Enrichment"] if "$defs" in schema else schema
-    required = set(enr["required"])
-    for axis in ("domain", "transactional_type", "requires_action", "importance", "sensitivity_level"):
-        assert axis in required
+    assert set(enr["required"]) == set(enr["properties"])
+    for field in ("domain", "deadline", "people", "organizations", "monetary_amounts"):
+        assert field in enr["required"]
+    # Nested structs too: Person.role and every Appointment field were skippable.
+    for name in ("Person", "Appointment", "Money"):
+        nested = schema["$defs"][name]
+        assert set(nested["required"]) == set(nested["properties"])
 
 
 def test_decode_applies_defaults_to_minimal_output():
@@ -102,3 +106,45 @@ def test_secret_audit_decodes_findings():
 def test_secret_audit_defaults_empty_findings():
     audit = msgspec.json.decode(b'{"contains_secret": false}', type=SecretAudit)
     assert audit.findings == []
+
+
+def test_schema_bounds_every_list_and_free_text_field():
+    # Guided decoding enforces these, so a looping model has to close the list.
+    props = enrichment.json_schema()["$defs"]["Enrichment"]["properties"]
+    for field in (
+        "key_points",
+        "people",
+        "organizations",
+        "topics",
+        "projects",
+        "locations",
+        "appointments",
+        "monetary_amounts",
+    ):
+        assert props[field]["maxItems"] == enrichment.MAX_ITEMS, field
+    assert props["topics"]["items"]["maxLength"] == 120
+    assert props["abstract"]["maxLength"] == 400
+    audit = enrichment.secret_audit_schema()["$defs"]["SecretAudit"]["properties"]
+    assert audit["findings"]["maxItems"] == enrichment.MAX_ITEMS
+
+
+def test_decode_rejects_output_beyond_the_bounds():
+    record = {
+        "one_line": "x",
+        "abstract": "y",
+        "category": "personal",
+        "topics": [f"t{i}" for i in range(enrichment.MAX_ITEMS + 1)],
+    }
+    with pytest.raises(msgspec.ValidationError):
+        msgspec.json.decode(msgspec.json.encode(record), type=Enrichment)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [("one_line", "x" * 161), ("abstract", "y" * 401)],
+    ids=["one_line", "abstract"],
+)
+def test_decode_rejects_strings_beyond_the_bounds(field, value):
+    record = {"one_line": "x", "abstract": "y", "category": "personal", field: value}
+    with pytest.raises(msgspec.ValidationError):
+        enrichment.decode(msgspec.json.encode(record))

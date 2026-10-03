@@ -18,3 +18,10 @@ def test_run_is_callable():
     from corpus import mcp_server
 
     assert callable(mcp_server.run)
+
+
+def test_serves_stateless_http():
+    from corpus import mcp_server
+
+    # Idle sessions must not expire under long-lived clients (they would get 404).
+    assert mcp_server.mcp.settings.stateless_http is True

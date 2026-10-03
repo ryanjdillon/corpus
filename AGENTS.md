@@ -157,7 +157,8 @@ Use Conventional Commit messages (`feat:`, `fix:`, `docs:`, `refactor:`,
 `pytest` runs the unit tests; `pytest -m integration` runs the Docker-backed
 tier. Keep both green. Coverage is ratcheted in CI (see
 `.github/coverage-baseline.txt`): it may not drop, and any increase must raise
-the baseline in the same change.
+the baseline in the same change. Locally, `just cov` skips enforcement (with an
+advisory line) when the Docker tier was skipped; CI still enforces it.
 
 ## Before opening a PR
 

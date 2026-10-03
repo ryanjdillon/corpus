@@ -35,6 +35,11 @@ downloaded. Unit tests are the default; the integration tier is opt-in.
 Coverage is ratcheted against `.github/coverage-baseline.txt`: it may not drop,
 and any increase must raise the baseline in the same change.
 
+Locally, `just cov` (part of `just check`) does not enforce the baseline when the
+Docker-backed tests were skipped, because the unit tier alone covers less than the
+baseline; it prints an advisory line instead. CI always has Docker and always
+enforces it, so a green `just check` without Docker is not proof of green CI.
+
 ## Commits
 
 Use [Conventional Commits](https://www.conventionalcommits.org/). This is

@@ -55,5 +55,6 @@ nav:
       - Gmail: fetchers/gmail.md
       - Enrichment policy: fetchers/policy.md
   - Database: database.md
+  - Enrichment: enrichment.md
   - Observability: observability.md
   - Development: development.md

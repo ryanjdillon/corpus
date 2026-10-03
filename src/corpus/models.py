@@ -33,7 +33,12 @@ class Record(BaseModel):
 
     def key(self) -> str:
         """Return the globally-unique key "source::source_uid"."""
-        return f"{self.source}::{self.source_uid}"
+        return self.key_for(self.source, self.source_uid)
+
+    @staticmethod
+    def key_for(source: str, source_uid: str) -> str:
+        """Return the key a record from *source* with *source_uid* would have."""
+        return f"{source}::{source_uid}"
 
 
 class Classification(BaseModel):
