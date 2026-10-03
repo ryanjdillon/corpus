@@ -72,3 +72,17 @@ def test_context_manager_closes(store, conn):
     with store as s:
         assert s is not None
     conn.close.assert_called_once()
+
+
+def test_schema_parameter_names_the_table(monkeypatch, conn, cursor):
+    # Several raw mailbox schemas can project into one shared sanitized schema.
+    monkeypatch.setattr(store_base.psycopg, "connect", lambda *a, **k: conn)
+    store = sanitized_store.SanitizedStore(dsn=DSN, schema="kbl")
+    assert "INSERT INTO kbl.messages" in store._sql
+    assert any("kbl.messages" in c.args[0] for c in cursor.execute.call_args_list)
+
+
+def test_sanitized_schema_defaults_to_the_raw_schema():
+    settings = sanitized_store.settings
+    expected = settings.sanitized_db_schema or settings.db_schema
+    assert sanitized_store.sanitized_schema() == expected

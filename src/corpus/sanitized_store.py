@@ -55,6 +55,11 @@ def _ddl(schema: str, dim: int) -> str:
     """
 
 
+def sanitized_schema() -> str:
+    """Return the sanitized tier's schema: ``sanitized_db_schema``, else ``db_schema``."""
+    return settings.sanitized_db_schema or settings.db_schema
+
+
 class SanitizedStore(Store):
     """The sanitized tier's store: the ``messages`` table in ``ai_sanitized``.
 
@@ -62,12 +67,15 @@ class SanitizedStore(Store):
     incremental resume. Raw email columns do not exist here by construction.
     """
 
-    def __init__(self, dsn: str | None = None) -> None:
-        """Open the sanitized DB (from *dsn* or ``CORPUS_SANITIZED_DATABASE_URL``)."""
+    def __init__(self, dsn: str | None = None, schema: str | None = None) -> None:
+        """Open the sanitized DB (from *dsn* or ``CORPUS_SANITIZED_DATABASE_URL``).
+
+        *schema* defaults to :func:`sanitized_schema`.
+        """
         dsn = dsn or settings.sanitized_database_url
         if not dsn:
             raise RuntimeError("CORPUS_SANITIZED_DATABASE_URL not set (sync disabled)")
-        self._schema = settings.db_schema
+        self._schema = schema or sanitized_schema()
         super().__init__(dsn)
         cols = ", ".join(COLS)
         placeholders = ", ".join(["%s"] * len(COLS))

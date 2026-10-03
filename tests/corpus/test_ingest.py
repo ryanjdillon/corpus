@@ -30,7 +30,7 @@ def make_fetcher():
     def _make(records: list[Record], cursor: str | None = "1:2") -> Fetcher:
         fetcher = create_autospec(Fetcher, instance=True)
         fetcher.source = "imap:test"
-        fetcher.fetch.side_effect = lambda _cursor: iter(records)
+        fetcher.fetch.side_effect = lambda _cursor, known=frozenset(): iter(records)
         fetcher.next_cursor.return_value = cursor
         return fetcher
 
@@ -59,17 +59,24 @@ def _records(n: int, bad_index: int | None = None) -> list[Record]:
 # --------------------------------------------------------------------------- #
 # unit
 # --------------------------------------------------------------------------- #
+def _record(body: str) -> Record:
+    return Record(source="imap:test", source_uid="x", kind="email", subject="s", body_text=body)
+
+
 def test_embed_text_is_length_capped():
-    # A message whose body is one giant unbroken "word" (e.g. inline base64)
-    # must still produce a bounded embed input.
-    rec = Record(
-        source="imap:test",
-        source_uid="x",
-        kind="email",
-        subject="s",
-        body_text="A" * (_MAX_EMBED_CHARS * 3),
-    )
-    assert len(_embed_text(rec)) == _MAX_EMBED_CHARS
+    # Long ordinary words that survive cleaning still produce a bounded input.
+    body = " ".join(["abcdefghijklmnopqrstuvwxyz0123456789"] * 400)
+    assert len(_embed_text(_record(body))) == _MAX_EMBED_CHARS
+
+
+def test_embed_text_drops_giant_unbroken_strings():
+    # A giant unbroken "word" (e.g. inline base64) is dropped, not embedded.
+    assert _embed_text(_record("hello " + "A" * 10_000 + " world")) == "s\n\nhello world"
+
+
+def test_embed_text_drops_urls():
+    body = "see https://example.com/track?id=abc&u=1 and www.example.org/x now"
+    assert _embed_text(_record(body)) == "s\n\nsee and now"
 
 
 # --------------------------------------------------------------------------- #
@@ -160,6 +167,9 @@ def test_ingest_is_idempotent(pg, fake_embeddings, make_fetcher):
     from corpus.store import get_document_store
 
     assert get_document_store().count_documents() == 2
+    # The second run tells the fetcher what is already stored, so it can skip
+    # downloading those records.
+    assert fetcher.fetch.call_args.kwargs["known"] == {r.key() for r in _records(2)}
 
 
 @pytest.mark.integration

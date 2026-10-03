@@ -15,7 +15,10 @@ FOLDERS selects which mailboxes to catalog: a comma-separated list, or unset
 
 Incremental sync is tracked per folder: the cursor is a JSON object mapping each
 folder to "<uidvalidity>:<uid>" (its highest seen UID). A UIDVALIDITY change for
-a folder resets that folder's UID window.
+a folder resets that folder's UID window. Record ids carry the UIDVALIDITY too
+("<folder>:<uidvalidity>:<uid>"): after a change the server may reuse old UIDs,
+and an id without the validity would collide with an already-stored message and
+be skipped.
 """
 
 from __future__ import annotations
@@ -23,8 +26,9 @@ from __future__ import annotations
 import json
 import logging
 import os
-from collections.abc import Iterator
+from collections.abc import Callable, Container, Iterator
 from datetime import UTC, datetime
+from urllib.parse import quote
 
 import mailparser
 from imapclient import IMAPClient
@@ -44,8 +48,9 @@ def _env(name: str, key: str, default: str = "") -> str:
 class ImapFetcher:
     """Catalog an IMAP account, tracking incremental sync per folder by UID."""
 
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, *, connect: Callable[..., IMAPClient] = IMAPClient) -> None:
         self.name = name
+        self._connect = connect
         self.source = f"imap:{name}"
         self.host = _env(name, "HOST")
         self.port = int(_env(name, "PORT", "993"))
@@ -63,11 +68,14 @@ class ImapFetcher:
             raise ValueError(f"IMAP fetcher {name!r} missing host/user/password env")
         self._next_cursor: str | None = None
 
-    def fetch(self, cursor: str | None) -> Iterator[Record]:
-        """Yield records newer than the cursor across the account's folders."""
+    def fetch(self, cursor: str | None, known: Container[str] = frozenset()) -> Iterator[Record]:
+        """Yield records newer than the cursor across the account's folders.
+
+        UIDs whose record key is in *known* are not downloaded.
+        """
         state = self._load_cursor(cursor)
         new_state = dict(state)
-        with IMAPClient(self.host, port=self.port, ssl=self.ssl) as client:
+        with self._connect(self.host, port=self.port, ssl=self.ssl) as client:
             client.login(self.user, self.password)
             for folder in self._resolve_folders(client):
                 prev_validity, prev_uid = self._parse_folder_cursor(state.get(folder))
@@ -77,14 +85,22 @@ class ImapFetcher:
                 same = validity == prev_validity
                 start_uid = prev_uid + 1 if same else 1
                 max_uid = prev_uid if same else 0
-                uids = [u for u in client.search(["UID", f"{start_uid}:*"]) if u >= start_uid]
+                listed = [u for u in client.search(["UID", f"{start_uid}:*"]) if u >= start_uid]
+                uids = [
+                    u
+                    for u in listed
+                    if Record.key_for(self.source, f"{folder}:{validity}:{u}") not in known
+                ]
+                # Already-stored UIDs still advance this folder's cursor.
+                for uid in set(listed) - set(uids):
+                    max_uid = max(max_uid, uid)
                 if uids:
                     for uid, data in client.fetch(uids, ["RFC822"]).items():
                         raw = data.get(b"RFC822")
                         if not raw:
                             continue
                         try:
-                            record = self._to_record(folder, uid, raw)
+                            record = self._to_record(folder, validity, uid, raw)
                         except Exception:
                             # Skip one unparseable message rather than abort.
                             log.warning(
@@ -111,7 +127,7 @@ class ImapFetcher:
             discovered.append(name)
         return discovered
 
-    def _to_record(self, folder: str, uid: int, raw: bytes) -> Record:
+    def _to_record(self, folder: str, validity: int, uid: int, raw: bytes) -> Record:
         parsed = mailparser.parse_from_bytes(raw)
         headers = {k: str(v) for k, v in (parsed.headers or {}).items()}
         sent_at: datetime | None = parsed.date
@@ -122,9 +138,8 @@ class ImapFetcher:
         body = parsed.text_plain[0] if parsed.text_plain else (parsed.body or "")
         return Record(
             source=self.source,
-            # Folder-qualified so ids stay unique across folders (UIDs are only
-            # unique within a folder).
-            source_uid=f"{folder}:{uid}",
+            # A UID is unique only within one folder and one UIDVALIDITY epoch.
+            source_uid=f"{folder}:{validity}:{uid}",
             kind="email",
             account=self.user,
             folder=folder,
@@ -134,7 +149,8 @@ class ImapFetcher:
             subject=as_text(parsed.subject),
             sent_at=sent_at,
             headers=headers,
-            uri=f"imap://{self.host}/{folder}/{uid}",
+            # RFC 5092 IMAP URL.
+            uri=f"imap://{self.host}/{quote(folder)};UIDVALIDITY={validity}/;UID={uid}",
             body_text=body or "",
         )
 

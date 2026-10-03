@@ -24,8 +24,11 @@ class StorageTier:
     Attributes:
         name: Stable tier identifier, e.g. ``"sensitive"`` or ``"sanitized"``.
         dsn: Postgres DSN for this tier's backing store.
-        tool: Name of the MCP surface that exposes this tier (a gateway route).
-        access: Principals (gateway ``x-client-id`` values) allowed to reach the tool.
+        tool: Name of the MCP surface that exposes this tier.
+        access: Principals allowed to reach the tool. These are opaque identifiers
+            from the deployment (``CORPUS_TIER_ACCESS``). How a principal is
+            authenticated (an API-key client id at a gateway, an OIDC claim) is the
+            deployment's and the policy decision point's concern, not corpus's.
         projection: Name of the projection that derives this tier's rows from the
             tier above, or ``None`` for a source tier populated directly by ingest.
     """
@@ -37,34 +40,41 @@ class StorageTier:
     projection: str | None = None
 
 
-def tiers() -> list[StorageTier]:
+def tiers(access: dict[str, list[str]] | None = None) -> list[StorageTier]:
     """Return the configured trust tiers, most sensitive first.
 
-    DSNs come from configuration so the same code serves any isolation posture
-    (same instance / separate instance / managed Postgres); a deployment need only
-    point each tier's DSN at the right store.
+    DSNs and access lists come from configuration, so the same code serves any
+    isolation posture and any identity scheme: a deployment points each tier's DSN
+    at the right store and names who may reach it. *access* maps a tier name to its
+    principals and defaults to ``settings.tier_access``; a tier with no entry
+    grants no one.
     """
+    access = settings.tier_access if access is None else access
+
+    def granted(name: str) -> tuple[str, ...]:
+        return tuple(access.get(name, ()))
+
     return [
         StorageTier(
             name="sensitive",
             dsn=settings.database_url,
             tool="corpus-local",
-            access=("pi-local", "corpus-summary"),
+            access=granted("sensitive"),
             projection=None,
         ),
         StorageTier(
             name="sanitized",
             dsn=settings.sanitized_database_url,
             tool="corpus-index",
-            access=("orchestrator", "pi"),
+            access=granted("sanitized"),
             projection="sanitize",
         ),
     ]
 
 
-def tier(name: str) -> StorageTier:
+def tier(name: str, access: dict[str, list[str]] | None = None) -> StorageTier:
     """Return the tier named *name*, or raise :class:`KeyError` if undefined."""
-    for t in tiers():
+    for t in tiers(access):
         if t.name == name:
             return t
     raise KeyError(f"no storage tier named {name!r}")

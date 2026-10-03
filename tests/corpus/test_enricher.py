@@ -9,11 +9,18 @@ import json
 from unittest.mock import create_autospec
 
 import httpx
+import msgspec
 import pytest
 
 from corpus import enricher as enricher_mod
-from corpus.enricher import Enricher, EnrichError, EnrichUnavailableError
-from corpus.enrichment import Category, json_schema
+from corpus.enricher import (
+    OUTPUT_RESERVE_TOKENS,
+    Enricher,
+    EnrichError,
+    EnrichUnavailableError,
+    cap_input,
+)
+from corpus.enrichment import MAX_ITEMS, Category, SensitivityLevel, json_schema
 
 _COMPLETION = {
     "choices": [
@@ -28,9 +35,11 @@ _COMPLETION = {
 }
 
 
-def _response(status: int, *, json_body=None, text: str | None = None) -> httpx.Response:
+def _response(
+    status: int, *, json_body=None, text: str | None = None, headers: dict | None = None
+) -> httpx.Response:
     request = httpx.Request("POST", "http://gw/v1/chat/completions")
-    return httpx.Response(status, json=json_body, text=text, request=request)
+    return httpx.Response(status, json=json_body, text=text, headers=headers, request=request)
 
 
 @pytest.fixture
@@ -115,6 +124,40 @@ def test_a_negative_backoff_cap_degrades_to_no_wait(client, monkeypatch):
     assert client.post.call_count == 3
 
 
+def test_a_shed_request_is_logged_with_what_answered_it(client, monkeypatch, caplog):
+    # Which layer shed the request is the whole question when the endpoint 503s
+    # under load, and retrying past it must not throw that evidence away.
+    monkeypatch.setattr(enricher_mod.settings, "enrich_retries", 2)
+    monkeypatch.setattr(enricher_mod.time, "sleep", lambda *_: None)
+    client.post.return_value = _response(
+        503,
+        text="upstream connect error",
+        headers={"server": "envoy", "retry-after": "1", "x-request-id": "abc123"},
+    )
+
+    with pytest.raises(EnrichUnavailableError) as excinfo, caplog.at_level("WARNING"):
+        Enricher(model="local", client=client).enrich("x")
+
+    assert "server='envoy'" in caplog.text
+    assert "retry-after='1'" in caplog.text
+    assert "x-request-id='abc123'" in caplog.text
+    assert "upstream connect error" in caplog.text
+    assert "HTTP 503 in " in caplog.text  # elapsed separates shedding from a timeout
+    assert "HTTP 503" in str(excinfo.value)
+
+
+def test_a_dropped_connection_is_described_by_kind(client, monkeypatch, caplog):
+    monkeypatch.setattr(enricher_mod.settings, "enrich_retries", 2)
+    monkeypatch.setattr(enricher_mod.time, "sleep", lambda *_: None)
+    client.post.side_effect = httpx.ReadTimeout("timed out")
+
+    with pytest.raises(EnrichUnavailableError) as excinfo, caplog.at_level("WARNING"):
+        Enricher(model="local", client=client).enrich("x")
+
+    assert "ReadTimeout in " in caplog.text
+    assert "ReadTimeout" in str(excinfo.value)
+
+
 def test_unparseable_output_is_enrich_error(client):
     client.post.return_value = _response(
         200, json_body={"choices": [{"message": {"content": "not json"}}]}
@@ -124,6 +167,252 @@ def test_unparseable_output_is_enrich_error(client):
         Enricher(model="local", client=client).enrich("x")
 
 
+@pytest.mark.parametrize(
+    "content",
+    ['{"one_line": "hi", "abstract": "a loop that never clo', None],
+    ids=["truncated-at-the-cap", "no-content"],
+)
+def test_output_cut_off_or_missing_is_enrich_error(client, content):
+    # What a capped runaway returns: a JSON object cut off mid-string (or, for a
+    # reasoning model that spent its budget thinking, no content at all).
+    client.post.return_value = _response(
+        200, json_body={"choices": [{"message": {"content": content}, "finish_reason": "length"}]}
+    )
+    with pytest.raises(EnrichError):
+        Enricher(model="local", client=client).enrich("x")
+
+
+def _stalled(prefix: str) -> dict:
+    # A guided reply that stopped making progress: valid JSON so far, then
+    # whitespace padding until the output budget ran out.
+    content = prefix + " \n\t" * 3000
+    return {"choices": [{"message": {"content": content}, "finish_reason": "length"}]}
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        '{"one_line": "hi", "abstract": "a note", "category": "personal", "topics": [',
+        '{"one_line": "hi", "abstract": "a note", "category": "personal", "topics": ["a",',
+        '{"one_line": "hi", "abstract": "a note", "category": "personal", "topics": ["a"], "people": [{"name": "Ola"}',
+        '{"one_line": "hi", "abstract": "a note", "category": "personal", "importance":',
+        '{"one_line": "hi", "abstract": "a \\"quoted [note\\"", "category": "personal", "topics": [',
+    ],
+    ids=["open-list", "dangling-comma", "nested-object", "dangling-key", "escaped-quote"],
+)
+def test_reply_stalled_in_whitespace_keeps_what_was_written(client, prefix):
+    client.post.return_value = _response(200, json_body=_stalled(prefix))
+
+    result = Enricher(model="local", client=client).enrich("x")
+
+    assert result.one_line == "hi"
+    assert result.category is Category.personal
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        '{"one_line": "hi", "abstract": "padding inside a string ',
+        '{"one_line": "hi", "abstract": "a note", "category": "personal", "importance": "hi',
+        '{"one_line": "hi", "abstract": "a note"',
+        '["not", "an", "object",',
+    ],
+    ids=["mid-string", "mid-enum", "missing-required-field", "not-an-object"],
+)
+def test_reply_stalled_short_of_a_valid_record_is_enrich_error(client, prefix):
+    client.post.return_value = _response(200, json_body=_stalled(prefix))
+
+    with pytest.raises(EnrichError):
+        Enricher(model="local", client=client).enrich("x")
+
+
+_HEAD = '{"one_line": "hi", "abstract": "a note", "category": "personal", '
+
+
+def test_recovered_reply_is_reported(client):
+    client.post.return_value = _response(200, json_body=_stalled(_HEAD + '"topics": ['))
+
+    _, recovered = Enricher(model="local", client=client).enrich_reporting("x")
+
+    assert recovered is True
+
+
+def test_complete_reply_is_not_reported_as_recovered(client):
+    _, recovered = Enricher(model="local", client=client).enrich_reporting("x")
+
+    assert recovered is False
+
+
+@pytest.mark.parametrize(
+    ("tail", "level"),
+    [
+        ('"topics": [', SensitivityLevel.high),
+        ('"sensitivity_level": "low", "suggested_disposition":', SensitivityLevel.low),
+    ],
+    ids=["unreached-is-high", "reached-is-kept"],
+)
+def test_recovered_sensitivity_fails_closed(client, tail, level):
+    # sensitivity_level gates free text out of the sanitized tier, so a level the
+    # model never wrote must not default to "none".
+    client.post.return_value = _response(200, json_body=_stalled(_HEAD + tail))
+
+    assert Enricher(model="local", client=client).enrich("x").sensitivity_level is level
+
+
+@pytest.mark.parametrize(
+    "tail",
+    ['"appointments": [{', '"appointments": [{"who": "Ola"}, {', '"people": [{"name":'],
+    ids=["first-item", "after-an-item", "dangling-nested-key"],
+)
+def test_recovery_drops_an_unfilled_object(client, tail):
+    client.post.return_value = _response(200, json_body=_stalled(_HEAD + tail))
+
+    result = Enricher(model="local", client=client).enrich("x")
+
+    assert {} not in [msgspec.to_builtins(a) for a in result.appointments + result.people]
+
+
+def test_short_trailing_whitespace_is_not_treated_as_a_stall(client):
+    # A cut-off reply with ordinary formatting whitespace is still rejected.
+    content = '{"one_line": "hi", "abstract": "a note", "category": "personal", "topics": [\n  '
+    client.post.return_value = _response(
+        200, json_body={"choices": [{"message": {"content": content}, "finish_reason": "length"}]}
+    )
+
+    with pytest.raises(EnrichError):
+        Enricher(model="local", client=client).enrich("x")
+
+
 def test_missing_model_raises(client):
     with pytest.raises(ValueError):
         Enricher(model="", client=client)
+
+
+def test_input_is_uncapped_by_default(client, monkeypatch):
+    monkeypatch.setattr(enricher_mod.settings, "enrich_max_input_chars", 0)
+    text = "Subject: invoice\n\n" + "x" * 5000
+
+    Enricher(model="local", client=client).enrich(text)
+
+    assert client.post.call_args.kwargs["json"]["messages"][1]["content"] == text
+
+
+def test_cap_keeps_the_head_and_marks_the_cut(client):
+    text = "Subject: invoice\n\n" + "x" * 5000
+
+    Enricher(model="local", client=client, max_input_chars=64).enrich(text)
+
+    sent = client.post.call_args.kwargs["json"]["messages"][1]["content"]
+    assert len(sent) == 64
+    assert sent.startswith("Subject: invoice")
+    assert sent.endswith("[truncated]")
+
+
+def test_cap_comes_from_the_setting(client, monkeypatch):
+    # The operator-facing deliverable is the env var, so exercise the settings
+    # branch rather than only the injected override.
+    monkeypatch.setattr(enricher_mod.settings, "enrich_max_input_chars", 64)
+    text = "Subject: invoice\n\n" + "x" * 5000
+
+    Enricher(model="local", client=client).enrich(text)
+
+    sent = client.post.call_args.kwargs["json"]["messages"][1]["content"]
+    assert len(sent) == 64
+    assert sent.startswith("Subject: invoice")
+
+
+def test_cap_leaves_text_within_the_limit_untouched():
+    assert cap_input("Subject: hi\n\nshort", 64) == "Subject: hi\n\nshort"
+
+
+def test_cap_smaller_than_the_note_is_still_honoured():
+    assert cap_input("abcdefghij", 4) == "abcd"
+
+
+# --------------------------------------------------------------------------- #
+# Per-model options (CORPUS_MODEL_OPTIONS)
+# --------------------------------------------------------------------------- #
+@pytest.fixture
+def options(monkeypatch):
+    """Set CORPUS_MODEL_OPTIONS for the test."""
+
+    def set_options(value: dict) -> None:
+        monkeypatch.setattr(enricher_mod.settings, "model_options", value)
+
+    return set_options
+
+
+def test_unconfigured_model_is_called_as_before(client):
+    Enricher(model="local", client=client).enrich("Hello")
+
+    body = client.post.call_args.kwargs["json"]
+    assert body["response_format"]["json_schema"]["schema"] == json_schema()
+    assert "reasoning_effort" not in body
+
+
+def test_output_is_capped_to_the_reserved_budget(client):
+    # An uncapped request can generate until the gateway times out.
+    Enricher(model="local", client=client).enrich("Hello")
+    assert client.post.call_args.kwargs["json"]["max_tokens"] == OUTPUT_RESERVE_TOKENS
+
+
+def test_a_model_option_can_override_the_output_cap(client, options):
+    options({"local": {"extra_body": {"max_tokens": 1024}}})
+    Enricher(model="local", client=client).enrich("Hello")
+    assert client.post.call_args.kwargs["json"]["max_tokens"] == 1024
+
+
+def test_options_inline_refs_and_merge_extra_body(client, options):
+    options({"bonsai": {"inline_schema_refs": True, "extra_body": {"reasoning_effort": "none"}}})
+
+    Enricher(model="bonsai", client=client).enrich("Hello")
+
+    body = client.post.call_args.kwargs["json"]
+    sent = json.dumps(body["response_format"]["json_schema"]["schema"])
+    assert "$ref" not in sent and "$defs" not in sent
+    assert body["reasoning_effort"] == "none"
+
+
+def test_unknown_option_key_fails_loudly(client, options):
+    options({"bonsai": {"reasoning": "none"}})
+
+    with pytest.raises(ValueError, match="unknown CORPUS_MODEL_OPTIONS keys"):
+        Enricher(model="bonsai", client=client).enrich("Hello")
+
+
+def test_context_budget_caps_input_below_the_configured_cap(client, options):
+    options({"small": {"context_tokens": 8192}})
+    e = Enricher(model="small", client=client, max_input_chars=100_000)
+
+    limit = e.input_limit()
+    e.enrich("x" * 50_000)
+
+    assert 0 < limit < 100_000
+    assert len(client.post.call_args.kwargs["json"]["messages"][1]["content"]) <= limit
+
+
+def test_tighter_configured_cap_wins_over_the_context_budget(client, options):
+    options({"big": {"context_tokens": 262_144}})
+
+    assert Enricher(model="big", client=client, max_input_chars=32_000).input_limit() == 32_000
+
+
+def test_close_closes_the_client(client):
+    Enricher(model="local", client=client).close()
+
+    client.close.assert_called_once()
+
+
+def test_inline_refs_resolves_nested_definitions():
+    flat = enricher_mod.inline_refs(json_schema())
+
+    dumped = json.dumps(flat)
+    assert "$ref" not in dumped and "$defs" not in dumped
+    assert "personal" in json.dumps(flat["properties"]["category"])
+
+
+def test_inlined_schema_keeps_the_length_bounds():
+    # The llama.cpp path inlines $refs; its grammar needs the bounds to survive.
+    flat = enricher_mod.inline_refs(json_schema())
+    assert flat["properties"]["topics"]["maxItems"] == MAX_ITEMS
+    assert flat["properties"]["people"]["items"]["properties"]["name"]["maxLength"] == 120

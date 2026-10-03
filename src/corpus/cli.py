@@ -74,7 +74,18 @@ def ingest(source: str, batch_size: int) -> None:
 @click.option("--account", default=None, help="filter by account address")
 @click.option("--limit", default=0, type=int, help="enrich at most N messages (0 = all)")
 @click.option("--force", is_flag=True, help="re-enrich documents already stored")
-def enrich(source: str | None, account: str | None, limit: int, force: bool) -> None:
+@click.option(
+    "--upgrade-stale", is_flag=True,
+    help="also re-enrich documents enriched under an older schema version",
+)
+@click.option(
+    "--retry-rejected", is_flag=True,
+    help="also retry documents this model previously rejected",
+)
+def enrich(
+    source: str | None, account: str | None, limit: int, force: bool, upgrade_stale: bool,
+    retry_rejected: bool,
+) -> None:
     """Batch-enrich stored documents with summary and classification.
 
     Also runs an LLM secret audit on any document with flagged candidates.
@@ -85,7 +96,10 @@ def enrich(source: str | None, account: str | None, limit: int, force: bool) -> 
 
     try:
         with EnrichStore() as store:
-            r = run_enrich(store, source=source, account=account, limit=limit, force=force)
+            r = run_enrich(
+                store, source=source, account=account, limit=limit, force=force,
+                upgrade_stale=upgrade_stale, retry_rejected=retry_rejected,
+            )
         msg = f"enriched {r['enriched']}, audited {r['audited']} of {r['scanned']} scanned"
         if r["ineligible"]:
             msg += f" ({r['ineligible']} not enrichable by source policy)"
@@ -192,11 +206,12 @@ def scan(source: str | None, account: str | None, limit: int, json_out: str | No
 
 @main.command(name="scan-gate")
 def scan_gate_cmd() -> None:
-    """Run the ext_proc egress redaction gate (gRPC).
+    """Run the egress gate behind the configured gateway adapter.
 
-    Envoy streams request bodies here on the path to untrusted providers; the gate
-    redacts PII/secrets (redact-by-default) and blocks the highest-confidence
-    classes outright. Reports types + counts, never values.
+    The gateway sends LLM request bodies here on the way to model providers. The
+    gate redacts PII/secrets (redact-by-default), refuses the highest-confidence
+    classes and oversized batch bodies, and passes local models unscanned.
+    Reports types + counts, never values.
     """
     telemetry.configure("corpus-scan-gate")
     from .scan_gate import serve
