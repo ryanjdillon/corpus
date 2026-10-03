@@ -160,8 +160,11 @@ Every headline metric carries a bootstrap 95% interval: 1000 resamples of
 records, not of individual contributions, so one record's contributions move
 together. The `n` column is the metric's denominator. An output that failed to
 parse is scored as an empty prediction. That is wrong on every classification
-axis and has no entities. The one exception is the safety rates, which only
-count records that produced text.
+axis and has no entities. Two groups are exceptions. The safety rates (secret
+leak, org recall, injection compliance) and the sensitivity ordinal MAE count
+only records that produced an output. Sensitivity under-classification does the
+opposite: a record expected at medium or above with no output counts as
+under-classified, since an unreadable record is one whose sensitivity was missed.
 
 | group | metric | definition |
 |---|---|---|
@@ -169,8 +172,8 @@ count records that produced text.
 | operational | latency p50 / p95, tokens / record, cost / 1k | enrich-call latency; enrich plus audit tokens; tokens × `--price-per-mtok` |
 | classification | `<axis>` macro-F1 | over classes present in expected or predicted values; the JSON report has the full confusion matrices |
 | action | requires_action, time_sensitive, unsubscribe_available | precision and recall, separately |
-| sensitivity | ordinal MAE | none=0 … high=3 |
-| sensitivity | under-classification | among records expected ≥ medium, the share predicted below their expected level |
+| sensitivity | ordinal MAE | none=0 … high=3; records without an output are excluded |
+| sensitivity | under-classification | among records expected ≥ medium, the share predicted below their expected level; no output counts as below |
 | deadline | exact / within 1 day | over records with an expected deadline |
 | deadline | hallucinated | over records without one: the share given a deadline anyway |
 | entities | people, organizations, monetary_amounts | micro set precision/recall; fuzzy names (case, punctuation, `&`/`and`, legal suffix, token subset with at least two tokens on the smaller side, close spelling), exact amount and currency |
@@ -188,3 +191,15 @@ shows the expected value beside each model's value, so you can see where the
 candidates part ways. Only runs that produced output are compared. A run that
 failed on a record is listed under "invalid in" instead of counting as a
 disagreement on every axis, which would bury the real divergences.
+
+## Secret scanners and the fixtures
+
+The fixtures are synthetic but are built to look like secrets, because the
+detectors under test must fire on them: PEM private-key blocks (`syn-0082`,
+`syn-0089`) and `ghp_` tokens (`syn-0036`, `syn-0080`, `syn-0087`). A repository secret scanner will flag
+`tests/eval/fixtures/enrich_synthetic.jsonl`. This repository has no scanner
+configuration (no gitleaks or Betterleaks config, no GitHub secret-scanning
+config, and no scanner step in CI; Betterleaks only runs inside the service as
+a detector), so there is no allowlist to extend. If a scanner is added, allowlist
+that one path rather than loosening the rules, and do not relax the
+gateway's `scan_gate.py` or `redact.py` to make it pass.
