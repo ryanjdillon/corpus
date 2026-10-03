@@ -607,6 +607,32 @@ def test_bootstrap_interval_brackets_the_point_estimate():
     assert point == pytest.approx(1 / 3)
 
 
+def test_bootstrap_interval_covers_the_true_rate_and_narrows_with_n():
+    """Draw from a known Bernoulli(0.3): the 95% interval must behave like one."""
+    true_p = 0.3
+    rng = random.Random(42)
+    draws = [[(float(rng.random() < true_p), 1.0)] for _ in range(2000)]
+
+    widths = {}
+    for n in (40, 160, 640, 2000):
+        point, lo, hi, count = ev.bootstrap(draws[:n], ev._ratio, 1000, random.Random(0))
+        assert count == n
+        assert lo <= point <= hi
+        assert lo <= true_p <= hi
+        widths[n] = hi - lo
+
+    assert widths[40] > widths[160] > widths[640] > widths[2000]
+    # Close to the normal-approximation width, 3.92 * sqrt(p(1-p)/n).
+    for n in (640, 2000):
+        expected = 3.92 * (true_p * (1 - true_p) / n) ** 0.5
+        assert widths[n] == pytest.approx(expected, rel=0.25)
+
+
+def test_bootstrap_of_a_constant_collapses_and_an_empty_metric_has_no_interval():
+    assert ev.bootstrap([[(1.0, 1.0)]] * 30, ev._ratio, 200, random.Random(0)) == (1.0, 1.0, 1.0, 30)
+    assert ev.bootstrap([[], []], ev._ratio, 200, random.Random(0)) == (None, None, None, 0)
+
+
 def test_disagreement_list_sorted_by_axes_that_differ(fixtures):
     lunch, key, order = fixtures
     run_a = [_row(f, _pred(f)) for f in fixtures]
@@ -669,6 +695,52 @@ def test_score_rejects_output_with_invalid_label(fixtures, tmp_path):
 
     with pytest.raises(ev.FixtureError, match="labels.category='spam'"):
         ev.load_outputs(path)
+
+
+def test_check_subcommand_reports_coverage_for_the_committed_set(capsys):
+    assert ev.main(["check"]) == 0
+
+    out = capsys.readouterr().out
+    assert "category: " in out and "sensitivity_level: " in out
+    assert "hard_case: fp_secret=15" in out
+    assert " records valid" in out
+
+
+def test_check_subcommand_fails_on_an_under_covered_set(fixtures, tmp_path, capsys):
+    path = tmp_path / "small.jsonl"
+    path.write_text("".join(json.dumps(f) + "\n" for f in fixtures))
+
+    assert ev.main(["check", "--fixtures", str(path)]) == 1
+
+    captured = capsys.readouterr()
+    assert "3 records valid" in captured.out
+    assert "under-covered:" in captured.err and "category=bulk (0)" in captured.err
+
+
+def test_check_subcommand_raises_on_an_invalid_record(fixtures, tmp_path):
+    bad = copy.deepcopy(fixtures[0])
+    bad["labels"]["domain"] = "finance"
+    path = tmp_path / "bad.jsonl"
+    path.write_text(json.dumps(bad) + "\n")
+
+    with pytest.raises(ev.FixtureError, match=r"labels.domain='finance'"):
+        ev.main(["check", "--fixtures", str(path)])
+
+
+def test_check_rejects_duplicate_ids_and_texts(fixtures, tmp_path):
+    dup_id = copy.deepcopy(fixtures[0])
+    dup_id["body"] += " (different text)"
+    path = tmp_path / "dup.jsonl"
+    path.write_text("".join(json.dumps(f) + "\n" for f in (fixtures[0], dup_id)))
+
+    with pytest.raises(ev.FixtureError, match="duplicate fixture id"):
+        ev.main(["check", "--fixtures", str(path)])
+
+    dup_text = copy.deepcopy(fixtures[0])
+    dup_text["id"] = "other"
+    path.write_text("".join(json.dumps(f) + "\n" for f in (fixtures[0], dup_text)))
+    with pytest.raises(ev.FixtureError, match="duplicate subject\\+body"):
+        ev.main(["check", "--fixtures", str(path)])
 
 
 def test_fake_run_end_to_end(tmp_path, capsys):
