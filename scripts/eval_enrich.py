@@ -247,6 +247,9 @@ def coverage_gaps(records: Iterable[dict], minimum: int = MIN_PER_VALUE) -> list
 def select(records: list[dict], only: str | None = None, limit: int = 0) -> list[dict]:
     """Filter records by an ``only`` expression (``field=value``) and a limit.
 
+    A ``limit`` smaller than the selection draws a deterministic sample spread
+    across the categories rather than the file head (see :func:`_stratified`).
+
     ``field`` is a top-level fixture key (``hard_case``, ``kind``, ``injection``)
     or ``labels.<axis>``; ``hard_case=none`` selects the ordinary records.
     """
@@ -266,7 +269,28 @@ def select(records: list[dict], only: str | None = None, limit: int = 0) -> list
             return str(value).lower() == want.lower()
 
         records = [r for r in records if matches(get(r))]
-    return records[:limit] if limit else records
+    return _stratified(records, limit) if 0 < limit < len(records) else records
+
+
+def _stratified(records: list[dict], limit: int) -> list[dict]:
+    """Return ``limit`` records spread round-robin across the ``category`` strata.
+
+    The fixture file is ordered by hard case, so its head is not representative.
+    Within a category the pick is by id hash, which is deterministic and
+    independent of file order; the result keeps file order.
+    """
+    groups: dict[str, list[dict]] = {}
+    for rec in sorted(records, key=lambda r: hashlib.sha256(r["id"].encode()).hexdigest()):
+        groups.setdefault(rec["labels"]["category"], []).append(rec)
+    queues = [groups[name] for name in sorted(groups)]
+    picked: set[str] = set()
+    depth = 0
+    while len(picked) < limit:
+        for queue in queues:
+            if depth < len(queue) and len(picked) < limit:
+                picked.add(queue[depth]["id"])
+        depth += 1
+    return [r for r in records if r["id"] in picked]
 
 
 def model_text(rec: dict) -> str:
@@ -1409,7 +1433,7 @@ def main(argv: list[str] | None = None) -> int:
     run = sub.add_parser("run", help="enrich fixtures against an endpoint; write an output file")
     run.add_argument("--fixtures", type=Path, default=DEFAULT_FIXTURES)
     run.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
-    run.add_argument("--limit", type=int, default=0, help="first N selected fixtures (0 = all)")
+    run.add_argument("--limit", type=int, default=0, help="N selected fixtures, sampled evenly across categories (0 = all)")
     run.add_argument("--only", default=None,
                      help="field=value filter, e.g. hard_case=injection or labels.domain=bills")
     run.add_argument("--model", default=None, help="default CORPUS_ENRICH_MODEL")

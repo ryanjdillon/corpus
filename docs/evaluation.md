@@ -40,9 +40,11 @@ aborted)`, so the partial file scores (they count as invalid outputs).
 
 `run` writes `outputs/<model>-<SCHEMA_VERSION>-<timestamp>.jsonl`; `score` prints
 a markdown table and writes the JSON report next to the outputs. Useful `run`
-flags: `--limit N`, `--only hard_case=injection` (any top-level fixture field, or
-`labels.<axis>`, e.g. `--only labels.domain=bills`; `hard_case=none` selects the
-ordinary records), `--model`, `--api-base`, `--allow-remote`, `--concurrency`.
+flags: `--limit N` (a deterministic sample spread evenly across the categories,
+not the head of the file, which is ordered by hard case),
+`--only hard_case=injection` (any top-level fixture field, or `labels.<axis>`,
+e.g. `--only labels.domain=bills`; `hard_case=none` selects the ordinary
+records), `--model`, `--api-base`, `--allow-remote`, `--concurrency`.
 `run --fake` swaps the endpoint for a deterministic noisy oracle, to check the
 harness itself.
 

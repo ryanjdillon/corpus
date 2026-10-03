@@ -13,6 +13,7 @@ import importlib
 import json
 import random
 import sys
+from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import create_autospec
@@ -178,6 +179,34 @@ def test_select_filters_by_hard_case_and_limit(fixtures):
         ev.select(fixtures, "injection")
 
 
+def test_limit_samples_across_categories_not_the_file_head():
+    records = ev.load_fixtures(ev.DEFAULT_FIXTURES)
+    categories = {r["labels"]["category"] for r in records}
+
+    sample = ev.select(records, limit=len(categories) * 2)
+
+    assert len(sample) == len(categories) * 2
+    counts = Counter(r["labels"]["category"] for r in sample)
+    assert set(counts) == categories and set(counts.values()) == {2}
+    assert [r["hard_case"] for r in sample] != [r["hard_case"] for r in records[:len(sample)]]
+    assert sum(r["hard_case"] is None for r in sample) > len(sample) / 3  # ordinary mail too
+    # Deterministic, a subset of the selection, and in file order.
+    assert sample == ev.select(records, limit=len(categories) * 2)
+    ids = [r["id"] for r in records]
+    assert [ids.index(r["id"]) for r in sample] == sorted(ids.index(r["id"]) for r in sample)
+
+
+def test_limit_composes_with_only_and_larger_limits_select_everything():
+    records = ev.load_fixtures(ev.DEFAULT_FIXTURES)
+
+    ordinary = ev.select(records, "hard_case=none", limit=10)
+    everything = ev.select(records, limit=len(records) + 5)
+
+    assert len(ordinary) == 10 and all(r["hard_case"] is None for r in ordinary)
+    assert everything == records
+    assert ev.select(records, limit=0) == records
+
+
 # --------------------------------------------------------------------------- #
 # run
 # --------------------------------------------------------------------------- #
@@ -324,8 +353,7 @@ def test_run_applies_request_variants_to_the_audit_model_too(
 
     assert ev.main(["run", "--model", "m", "--api-base", "http://localhost:8080/v1",
                     "--extra-body", '{"reasoning_effort": "none"}', "--inline-schema-refs",
-                    "--only", "hard_case=injection", "--limit", "2",
-                    "--out-dir", str(tmp_path)]) == 0
+                    "--only", "hard_case=recovery_code", "--out-dir", str(tmp_path)]) == 0
 
     by_model = {m: b for _, _, m, b in mock_endpoint}
     assert set(by_model) == {"m", "audit-m"}
