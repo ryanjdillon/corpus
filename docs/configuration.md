@@ -38,6 +38,11 @@ Raise `CORPUS_ENRICH_RETRIES` where the endpoint shares a GPU with other work an
 can be gone for longer; enrichment is resumable either way, so a run that does
 give up continues from `enriched_ids` on the next pass.
 
+Riding a 5xx out hides it, so each retry is logged with the response's
+attribution detail — see
+[diagnosing a shedding endpoint](observability.md#diagnosing-a-shedding-enrichment-endpoint)
+for reading those lines before changing `CORPUS_ENRICH_CONCURRENCY`.
+
 ## Capping enrichment input
 
 Enrichment sends the subject plus the whole body. On a KV-cache-bound backend —
