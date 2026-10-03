@@ -38,6 +38,7 @@ from contextlib import ExitStack, contextmanager
 from datetime import UTC, date, datetime, timedelta
 from difflib import SequenceMatcher
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -627,6 +628,15 @@ def model_options_override(model: str, extra_body: dict, inline_schema_refs: boo
             settings.model_options[model] = previous
 
 
+#: Hosts ``run`` talks to without ``--allow-remote``: the machine it is running on.
+LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def is_local(api_base: str) -> bool:
+    """Return whether ``api_base`` points at this machine (loopback only)."""
+    return (urlsplit(api_base).hostname or "") in LOCAL_HOSTS
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     """Run the selected fixtures and write one output file."""
     try:
@@ -657,9 +667,24 @@ def cmd_run(args: argparse.Namespace) -> int:
         if not model:
             print("no model configured (set CORPUS_ENRICH_MODEL or --model)", file=sys.stderr)
             return 2
+        api_base = args.api_base or settings.openai_api_base
+        if not is_local(api_base) and not args.allow_remote:
+            print(
+                f"refusing to send {len(records)} fixtures and the API key to {api_base}: "
+                "not a loopback host. Pass --allow-remote if that endpoint is intended "
+                "(the model and base URL may have come from CORPUS_ENRICH_MODEL / "
+                "CORPUS_OPENAI_API_BASE in the environment).",
+                file=sys.stderr,
+            )
+            return 2
+        print(
+            f"eval: model={model} audit_model={settings.audit_model or model} "
+            f"api_base={api_base} records={len(records)}",
+            file=sys.stderr,
+        )
         options = stack.enter_context(model_options_override(model, extra, args.inline_schema_refs))
         client = httpx.Client(
-            base_url=args.api_base or settings.openai_api_base,
+            base_url=api_base,
             headers={"Authorization": f"Bearer {settings.openai_api_key}"},
             timeout=settings.enrich_timeout,
             event_hooks={"response": [meter.hook]},
@@ -1287,6 +1312,9 @@ def main(argv: list[str] | None = None) -> int:
                      help="field=value filter, e.g. hard_case=injection or labels.domain=bills")
     run.add_argument("--model", default=None, help="default CORPUS_ENRICH_MODEL")
     run.add_argument("--api-base", default=None, help="default CORPUS_OPENAI_API_BASE")
+    run.add_argument("--allow-remote", action="store_true",
+                     help="permit a non-loopback endpoint (the API key and every fixture "
+                          "are sent there); the gateway needs this")
     run.add_argument("--concurrency", type=int, default=None,
                      help="in-flight requests (default CORPUS_ENRICH_CONCURRENCY); "
                           "1 gives uncontended latency")

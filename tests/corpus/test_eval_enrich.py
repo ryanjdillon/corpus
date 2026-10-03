@@ -505,6 +505,95 @@ def test_fake_run_end_to_end(tmp_path, capsys):
     assert out.with_suffix(".report.json").exists()
 
 
+def _llm_handler(seen: list | None = None):
+    """A chat endpoint that answers enrichment and audit requests validly."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if seen is not None:
+            seen.append((str(request.url), request.headers.get("authorization"), body["model"]))
+        name = body["response_format"]["json_schema"]["name"]
+        content = (
+            {"one_line": "x", "abstract": "y", "category": "personal"}
+            if name == "enrichment" else {"contains_secret": False, "findings": []}
+        )
+        return httpx.Response(200, json={
+            "model": body["model"], "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+            "choices": [{"message": {"content": json.dumps(content)}}],
+        })
+
+    return handler
+
+
+@pytest.fixture
+def mock_endpoint(monkeypatch):
+    """Route ``run``'s httpx client through a mock transport; return the requests it saw."""
+    seen: list = []
+    real = httpx.Client
+    monkeypatch.setattr(
+        ev.httpx, "Client",
+        lambda **kw: real(transport=httpx.MockTransport(_llm_handler(seen)), **kw))
+    monkeypatch.setattr(settings, "enrich_model", "")
+    monkeypatch.setattr(settings, "audit_model", "")
+    return seen
+
+
+@pytest.mark.parametrize("host,local", [
+    ("http://localhost:8080/v1", True), ("http://127.0.0.1:8000/v1", True),
+    ("http://[::1]:8000/v1", True), ("http://gateway.example/v1", False),
+    ("http://llm.svc.cluster.local/v1", False), ("http://localhost.example/v1", False),
+])
+def test_only_loopback_counts_as_local(host, local):
+    assert ev.is_local(host) is local
+
+
+def test_run_refuses_a_remote_endpoint_without_allow_remote(tmp_path, capsys, mock_endpoint):
+    argv = ["run", "--model", "m", "--api-base", "http://gateway.example/v1",
+            "--only", "hard_case=injection", "--limit", "2", "--out-dir", str(tmp_path)]
+
+    assert ev.main(argv) == 2
+
+    err = capsys.readouterr().err
+    assert "refusing" in err and "gateway.example" in err and "--allow-remote" in err
+    assert mock_endpoint == []  # nothing was sent
+    assert list(tmp_path.iterdir()) == []
+
+    assert ev.main([*argv, "--allow-remote"]) == 0
+    assert mock_endpoint  # the same invocation goes out once it is explicit
+
+
+def test_run_refuses_a_remote_base_taken_from_the_environment(
+        tmp_path, capsys, mock_endpoint, monkeypatch):
+    monkeypatch.setattr(settings, "enrich_model", "env-model")
+    monkeypatch.setattr(settings, "openai_api_base", "https://api.vendor.example/v1")
+
+    assert ev.main(["run", "--limit", "2", "--out-dir", str(tmp_path)]) == 2
+
+    assert "api.vendor.example" in capsys.readouterr().err
+    assert mock_endpoint == []
+
+
+def test_run_prints_what_it_is_about_to_send_before_the_first_request(
+        tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(settings, "audit_model", "audit-m")
+    stderr_at_first_request = []
+
+    def spy(request):
+        stderr_at_first_request.append(capsys.readouterr().err)
+        return _llm_handler()(request)
+
+    real = httpx.Client
+    monkeypatch.setattr(ev.httpx, "Client", lambda **kw: real(
+        transport=httpx.MockTransport(spy), **kw))
+
+    assert ev.main(["run", "--model", "m", "--api-base", "http://localhost:8080/v1",
+                    "--only", "hard_case=injection", "--limit", "3",
+                    "--out-dir", str(tmp_path)]) == 0
+
+    preamble = stderr_at_first_request[0]
+    assert ("eval: model=m audit_model=audit-m api_base=http://localhost:8080/v1 records=3"
+            in preamble)
+
+
 # --------------------------------------------------------------------------- #
 # generator
 # --------------------------------------------------------------------------- #

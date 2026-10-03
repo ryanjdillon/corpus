@@ -9,21 +9,38 @@ Postgres.
 ```sh
 # 1. Run each candidate (point the env at its endpoint first).
 CORPUS_OPENAI_API_BASE=http://gpu-box:8000/v1 CORPUS_ENRICH_MODEL=qwen3-8b \
-  just eval-enrich run
+  just eval-enrich run --allow-remote
 CORPUS_OPENAI_API_BASE=http://laptop:8080/v1 CORPUS_ENRICH_MODEL=gemma-3-12b-q4 \
-  just eval-enrich run --concurrency 1
+  just eval-enrich run --allow-remote --concurrency 1
 
 # 2. Score and compare.
 just eval-enrich score outputs/qwen3-8b-*.jsonl outputs/gemma-3-12b-q4-*.jsonl \
   --price-per-mtok 0.20
 ```
 
+**What `run` sends, and where.** The model and the endpoint default to
+`CORPUS_ENRICH_MODEL` and `CORPUS_OPENAI_API_BASE`, so a stray environment would
+otherwise decide where the fixtures and the bearer key go. `run` therefore prints
+the model, the audit model (`CORPUS_AUDIT_MODEL`, else the model), the API base,
+and the record count to stderr before its first request, and refuses any host
+other than `localhost`, `127.0.0.1`, or `::1` unless `--allow-remote` is passed
+(exit 2). Going through the gateway or any other machine needs the flag.
+`--fake` never touches the network.
+
+**Through the gateway.** The gateway's scan gate rejects bodies containing a
+`private_key` with a 403 (`scan_gate_block_types`). Those fixtures (`syn-0082`,
+`syn-0089`, and the like) therefore show up as `EnrichError` failures in the
+output, and the run measures the gate plus the model rather than the model alone.
+Run against the model server directly, or expect those failures and compare runs
+made the same way.
+
 `run` writes `outputs/<model>-<SCHEMA_VERSION>-<timestamp>.jsonl`; `score` prints
 a markdown table and writes the JSON report next to the outputs. Useful `run`
 flags: `--limit N`, `--only hard_case=injection` (any top-level fixture field, or
 `labels.<axis>`, e.g. `--only labels.domain=bills`; `hard_case=none` selects the
-ordinary records), `--model`, `--api-base`, `--concurrency`. `run --fake` swaps
-the endpoint for a deterministic noisy oracle, to check the harness itself.
+ordinary records), `--model`, `--api-base`, `--allow-remote`, `--concurrency`.
+`run --fake` swaps the endpoint for a deterministic noisy oracle, to check the
+harness itself.
 
 Requests are built by production's own `build_payload`, so the eval sends the
 shape production sends (including the `max_tokens` output cap). Two flags set
