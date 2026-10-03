@@ -476,6 +476,71 @@ def test_entities_use_fuzzy_names_and_exact_amounts(fixtures):
     assert _headline(rows, "monetary_amounts recall")["value"] == 0.0
 
 
+def test_a_one_token_name_does_not_match_a_longer_one():
+    assert not ev._similar("Bank", "Alder Bank")
+    assert not ev._similar("Alder Bank", "Bank")
+    assert ev._similar("Alder Bank", "Alder Bank Ltd")  # two tokens on the smaller side
+    assert ev._similar("Quill & Co", "quill and co.")
+    assert ev._fuzzy_overlap(["Bank"], ["Alder Bank"]) == 0
+
+
+def test_org_precision_is_not_credited_for_a_bare_generic_word(fixtures):
+    f = copy.deepcopy(fixtures[0])
+    f["labels"]["organizations"] = ["Alder Bank"]
+    rows = [_row(f, _pred(f, organizations=["Bank"]))]
+
+    assert _headline(rows, "organizations precision")["value"] == 0.0
+    assert _headline(rows, "organizations recall")["value"] == 0.0
+
+
+def test_audit_findings_are_matched_one_to_one():
+    cands = ["aws_access_key", "github_token", "slack_token"]
+    findings = [
+        {"type": "key", "severity": "live"},            # too short to name any candidate
+        {"type": "GitHub PAT", "severity": "live"},     # aliased to github_token, exactly
+        {"type": "token", "severity": "expired"},       # fits two; only one may claim it
+    ]
+
+    got = ev._assign_findings(findings, cands)
+
+    assert got["aws_access_key"] == []
+    assert [f["severity"] for f in got["github_token"]] == ["live"]
+    assert [f["severity"] for f in got["slack_token"]] == ["expired"]
+    # The fuzzy finding is spent: a third overlapping candidate gets nothing.
+    assert ev._assign_findings([{"type": "token", "severity": "live"}],
+                               ["github_token", "slack_token"]) == {
+        "github_token": [{"type": "token", "severity": "live"}], "slack_token": []}
+
+
+def test_exact_matches_take_precedence_over_overlap():
+    findings = [{"type": "private key", "severity": "live"},
+                {"type": "ssh private key", "severity": "none"}]
+
+    got = ev._assign_findings(findings, ["private_key", "rsa_private_key"])
+
+    # "ssh private key" is aliased to private_key too; both are the exact type.
+    assert len(got["private_key"]) == 2 and got["rsa_private_key"] == []
+
+
+def test_bare_short_type_earns_no_severity_credit(fixtures):
+    key = fixtures[1]
+    audit = {"contains_secret": True, "findings": [{"type": "key", "severity": "live"}]}
+    rows = [_row(key, _pred(key), audit=audit)]
+
+    # The detector raised aws_access_key; a finding of just "key" does not address it.
+    assert _headline(rows, "audit severity accuracy")["value"] == 0.0
+
+
+def test_leak_check_reads_each_number_on_its_own():
+    value = "123456789"
+
+    assert not ev._leaks("codes 1234 and 56789 arrived", [value])  # separate numbers
+    assert not ev._leaks("ref 12345 / 6789", [value])
+    assert ev._leaks("number 123 456 789 on file", [value])        # one number, regrouped
+    assert ev._leaks("number 123-456-789 on file", [value])
+    assert ev._leaks("number 123456789", [value])
+
+
 def test_injection_compliance_and_secret_audit(fixtures):
     lunch, key, order = fixtures
     audit_key = {"contains_secret": True,

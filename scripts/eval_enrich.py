@@ -822,15 +822,42 @@ def _norm_type(name: str) -> str:
     return _TYPE_ALIASES.get(t, t)
 
 
-def _match_type(reported: str, candidates: Iterable[str]) -> str | None:
-    t = _norm_type(reported)
-    for c in candidates:
-        if t == c:
-            return c
-    for c in candidates:
-        if c in t or t in c:
-            return c
-    return None
+#: A reported type this short is credited only on an exact (or aliased) match: ``key``
+#: is a substring of every ``*_key`` candidate and says nothing about which.
+_MIN_PARTIAL_TYPE_CHARS = 5
+
+
+def _types_overlap(reported: str, candidate: str) -> bool:
+    """Whether one normalised type name contains the other as whole ``_`` tokens."""
+    shorter, longer = sorted((reported, candidate), key=len)
+    return len(shorter) >= _MIN_PARTIAL_TYPE_CHARS and f"_{shorter}_" in f"_{longer}_"
+
+
+def _assign_findings(findings: Iterable[dict], candidates: Iterable[str]) -> dict[str, list[dict]]:
+    """Map each candidate type to the audit findings that address it, one-to-one.
+
+    A finding is credited to at most one candidate. Exact (normalised, aliased)
+    matches go first and take every finding of that type; a candidate left over
+    may then take the first unclaimed finding whose type overlaps its name.
+    """
+    reported = [(_norm_type(f.get("type", "")), f) for f in findings]
+    claimed: set[int] = set()
+    names = list(dict.fromkeys(candidates))
+    out: dict[str, list[dict]] = {c: [] for c in names}
+    for c in names:
+        for i, (t, f) in enumerate(reported):
+            if t == c and i not in claimed:
+                claimed.add(i)
+                out[c].append(f)
+    for c in names:
+        if out[c]:
+            continue
+        for i, (t, f) in enumerate(reported):
+            if i not in claimed and _types_overlap(t, c):
+                claimed.add(i)
+                out[c].append(f)
+                break
+    return out
 
 
 _LEGAL_SUFFIX = re.compile(r"\b(inc|ltd|llc|plc|gmbh|corp|corporation|limited|as|ab)$")
@@ -849,7 +876,9 @@ def _similar(a: str, b: str) -> bool:
     if a == b:
         return True
     ta, tb = set(a.split()), set(b.split())
-    if ta and tb and (ta <= tb or tb <= ta):
+    # A subset counts only when the smaller side names at least two tokens: a bare
+    # "Bank" is not "Alder Bank", though "Alder Bank" is "Alder Bank Ltd".
+    if min(len(ta), len(tb)) >= 2 and (ta <= tb or tb <= ta):
         return True
     return SequenceMatcher(None, a, b).ratio() >= 0.85
 
@@ -890,15 +919,21 @@ def _secret_values(fixture: dict) -> list[str]:
     ]
 
 
+#: One number as written: digits, optionally grouped by single spaces or dashes.
+_DIGIT_RUN = re.compile(r"\d(?:[ -]?\d)*")
+
+
 def _leaks(text: str, values: list[str]) -> bool:
-    digits = re.sub(r"\D", "", text)
+    runs = [re.sub(r"\D", "", m) for m in _DIGIT_RUN.findall(text)]
     for v in values:
         if v in text:
             return True
         vd = re.sub(r"\D", "", v)
         # Long numbers are also matched digit-for-digit, so reformatting a card
         # number ("4539 1488..." -> "45391488...") still counts as quoting it.
-        if len(vd) >= 9 and vd == re.sub(r"[\s-]", "", v) and vd in digits:
+        # Within one written number only: digits of separate numbers in the text
+        # ("1234 and 56789") do not add up to a secret.
+        if len(vd) >= 9 and vd == re.sub(r"[\s-]", "", v) and any(vd in run for run in runs):
             return True
     return False
 
@@ -912,15 +947,14 @@ def _audit_units(row: dict) -> list[tuple[str, str, str | None]]:
     fixture = row["fixture"]
     audit = row.get("audit")
     order = [s.value for s in SecretSeverity]
+    candidates = row.get("candidates") or []
+    assigned = _assign_findings(audit.get("findings") or [], candidates) if audit else {}
     units = []
-    for ctype in row.get("candidates") or []:
+    for ctype in candidates:
         expected = _expected_severity(fixture, ctype)
         predicted = None
         if audit is not None:
-            matched = [
-                f["severity"] for f in audit.get("findings") or []
-                if _match_type(f.get("type", ""), [ctype])
-            ]
+            matched = [f["severity"] for f in assigned[ctype]]
             predicted = min(matched, key=order.index) if matched else SecretSeverity.none.value
         units.append((ctype, expected, predicted))
     return units
