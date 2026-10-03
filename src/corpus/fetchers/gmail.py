@@ -19,7 +19,8 @@ from __future__ import annotations
 import base64
 import logging
 import os
-from collections.abc import Iterator
+import time
+from collections.abc import Callable, Container, Iterator
 from datetime import UTC, datetime
 
 import httpx
@@ -43,10 +44,55 @@ def _env(name: str, key: str, default: str = "") -> str:
     return os.environ.get(f"CORPUS_GMAIL_{name.upper()}_{key}", default)
 
 
+# Gmail signals short-term quota exhaustion with 403 (or 429) and one of these
+# reasons; waiting helps.
+_RATE_LIMIT_REASONS = frozenset({"rateLimitExceeded", "userRateLimitExceeded"})
+# Quota or access refusals that apply to every message, not one; waiting within
+# a run does not help, and skipping would drop the whole mailbox.
+_FATAL_REASONS = frozenset({"dailyLimitExceeded", "insufficientPermissions"})
+# Consecutive per-message refusals after which the refusal is clearly not about
+# individual messages (e.g. a token whose scope cannot read raw mail).
+MAX_CONSECUTIVE_REFUSALS = 5
+
+
+def _error_reason(resp: httpx.Response) -> str:
+    """Return the Google API error reason of a failed response, or ``""``."""
+    if resp.is_success:
+        return ""
+    try:
+        error = resp.json().get("error", {})
+        errors = error.get("errors") or []
+        return (errors[0].get("reason") if errors else None) or error.get("status") or ""
+    except (ValueError, AttributeError):
+        return ""
+
+
+def _error_message(resp: httpx.Response) -> str:
+    """Return Google's error message (e.g. how long to wait), or ``""``."""
+    try:
+        return str(resp.json().get("error", {}).get("message", ""))[:200]
+    except (ValueError, AttributeError):
+        return ""
+
+
+def _retry_delay(resp: httpx.Response, attempt: int) -> float:
+    """Seconds to wait before retrying a rate-limited request.
+
+    Exponential (1, 2, 4, … s, capped at 60) unless the response carries a
+    ``Retry-After`` of seconds, which is used instead (at least 1, at most 120).
+    An HTTP-date ``Retry-After`` falls back to the exponential wait.
+    """
+    retry_after = resp.headers.get("retry-after", "")
+    if retry_after.isdigit():
+        return min(max(float(retry_after), 1.0), 120.0)
+    return min(2.0**attempt, 60.0)
+
+
 class GmailFetcher:
     """Catalog a Gmail account over the API, using historyId for incremental sync."""
 
     def __init__(self, name: str) -> None:
+        self._refused_in_a_row = 0
         self.name = name
         self.source = f"gmail:{name}"
         self.client_id = _env(name, "CLIENT_ID")
@@ -60,8 +106,11 @@ class GmailFetcher:
         self._label_names: dict[str, str] = {}
         self._account: str | None = None
 
-    def fetch(self, cursor: str | None) -> Iterator[Record]:
-        """Yield records for a full backfill or an incremental sync from the cursor."""
+    def fetch(self, cursor: str | None, known: Container[str] = frozenset()) -> Iterator[Record]:
+        """Yield records for a full backfill or an incremental sync from the cursor.
+
+        Messages whose key is in *known* are not downloaded.
+        """
         api = httpx.Client(
             base_url=_API,
             headers={"Authorization": f"Bearer {self._access_token()}"},
@@ -80,16 +129,16 @@ class GmailFetcher:
             current_history = profile.get("historyId")
 
             if not cursor:
-                yield from self._backfill(api, wanted_ids)
+                yield from self._backfill(api, wanted_ids, known)
                 self._next_cursor = current_history
             elif cursor.startswith(_BACKFILL_PREFIX):
                 # Resume an interrupted backfill from the saved page token.
                 yield from self._backfill(
-                    api, wanted_ids, start_page=cursor[len(_BACKFILL_PREFIX) :]
+                    api, wanted_ids, known, start_page=cursor[len(_BACKFILL_PREFIX) :]
                 )
                 self._next_cursor = current_history
             else:
-                yield from self._incremental(api, cursor, wanted_ids, current_history)
+                yield from self._incremental(api, cursor, wanted_ids, current_history, known)
         finally:
             api.close()
 
@@ -112,7 +161,11 @@ class GmailFetcher:
         return resp.json()["access_token"]
 
     def _backfill(
-        self, api: httpx.Client, wanted_ids: list[str] | None, start_page: str | None = None
+        self,
+        api: httpx.Client,
+        wanted_ids: list[str] | None,
+        known: Container[str] = frozenset(),
+        start_page: str | None = None,
     ) -> Iterator[Record]:
         params: dict[str, object] = {"maxResults": 500}
         if wanted_ids:
@@ -123,6 +176,8 @@ class GmailFetcher:
                 params["pageToken"] = page
             data = api.get("/messages", params=params).raise_for_status().json()
             for m in data.get("messages", []):
+                if self._is_known(m["id"], known):
+                    continue
                 rec = self._fetch_message(api, m["id"])
                 if rec:
                     yield rec
@@ -131,8 +186,8 @@ class GmailFetcher:
                 break
             # Checkpoint the next page so an interrupted backfill resumes from
             # here instead of re-listing the whole mailbox. The ingest persists
-            # this after each flush; earlier pages are already stored, and
-            # existing_ids skips any overlap.
+            # this after each flush; earlier pages are already stored, and the
+            # known-id check above skips any overlap without downloading it.
             self._next_cursor = f"{_BACKFILL_PREFIX}{page}"
 
     def _incremental(
@@ -141,6 +196,7 @@ class GmailFetcher:
         cursor: str,
         wanted_ids: list[str] | None,
         current_history: str | None,
+        known: Container[str] = frozenset(),
     ) -> Iterator[Record]:
         params: dict[str, object] = {
             "startHistoryId": cursor,
@@ -157,7 +213,7 @@ class GmailFetcher:
             resp = api.get("/history", params=params)
             if resp.status_code == 404:
                 # historyId too old to be usable — re-backfill from scratch.
-                yield from self._backfill(api, wanted_ids)
+                yield from self._backfill(api, wanted_ids, known)
                 self._next_cursor = current_history
                 return
             data = resp.raise_for_status().json()
@@ -170,6 +226,8 @@ class GmailFetcher:
                     if wanted and not (set(msg.get("labelIds", [])) & wanted):
                         continue
                     seen.add(mid)
+                    if self._is_known(mid, known):
+                        continue
                     rec = self._fetch_message(api, mid)
                     if rec:
                         yield rec
@@ -179,11 +237,68 @@ class GmailFetcher:
                 break
         self._next_cursor = latest
 
-    def _fetch_message(self, api: httpx.Client, mid: str) -> Record | None:
-        resp = api.get(f"/messages/{mid}", params={"format": "raw"})
-        if resp.status_code == 404:
-            return None  # deleted between listing and fetch
+    def _is_known(self, mid: str, known: Container[str]) -> bool:
+        """Whether the store already has message *mid* (skip downloading it).
+
+        The cost that matters: each raw download spends per-user quota, and a
+        resumed page would otherwise re-download every message already stored.
+        """
+        return Record.key_for(self.source, mid) in known
+
+    def _fetch_message(
+        self,
+        api: httpx.Client,
+        mid: str,
+        *,
+        attempts: int = 8,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> Record | None:
+        for attempt in range(attempts):
+            resp = api.get(f"/messages/{mid}", params={"format": "raw"})
+            if resp.status_code == 404:
+                return None  # deleted between listing and fetch
+            reason = _error_reason(resp)
+            rate_limited = resp.status_code == 429 or (
+                resp.status_code == 403 and reason in _RATE_LIMIT_REASONS
+            )
+            if rate_limited and attempt < attempts - 1:
+                # Gmail's per-user throttle can last a minute or two, so back
+                # off well beyond a few seconds; honour Retry-After if given.
+                sleep(_retry_delay(resp, attempt))
+                continue
+            if rate_limited:
+                log.error(
+                    "gmail: still rate-limited after %d attempts (%s %s): %s",
+                    attempts,
+                    resp.status_code,
+                    reason or "no reason given",
+                    _error_message(resp),
+                )
+            if resp.status_code == 403 and not rate_limited and reason not in _FATAL_REASONS:
+                # Gmail refuses some single messages outright (403 with a
+                # non-quota reason). Skipping one must not abort the whole
+                # backfill; it resumes from the same page each run, so a fatal
+                # 403 would block every later message forever. But a refusal
+                # that repeats for message after message is about the account,
+                # not the messages: skipping then would move the cursor past
+                # the whole mailbox, so stop instead.
+                self._refused_in_a_row += 1
+                if self._refused_in_a_row >= MAX_CONSECUTIVE_REFUSALS:
+                    log.error(
+                        "gmail: %d messages in a row refused (403 %s); stopping",
+                        self._refused_in_a_row,
+                        reason or "no reason given",
+                    )
+                    resp.raise_for_status()
+                log.warning(
+                    "gmail: skipping message %s refused by the API (403 %s)",
+                    mid,
+                    reason or "no reason given",
+                )
+                return None
+            break
         d = resp.raise_for_status().json()
+        self._refused_in_a_row = 0
         try:
             raw = base64.urlsafe_b64decode(d["raw"])
             label_names = [self._label_names.get(i, i) for i in d.get("labelIds", [])]
@@ -194,9 +309,7 @@ class GmailFetcher:
             log.warning("gmail: skipping unprocessable message %s", mid, exc_info=True)
             return None
 
-    def _to_record(
-        self, mid: str, thread_id: str | None, raw: bytes, labels: list[str]
-    ) -> Record:
+    def _to_record(self, mid: str, thread_id: str | None, raw: bytes, labels: list[str]) -> Record:
         parsed = mailparser.parse_from_bytes(raw)
         headers = {k: str(v) for k, v in (parsed.headers or {}).items()}
         sent_at: datetime | None = parsed.date

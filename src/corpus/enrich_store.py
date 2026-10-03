@@ -30,7 +30,13 @@ CREATE TABLE IF NOT EXISTS {table} (
     audit_model       text,
     scan_version      text,
     audited_at        timestamptz
-)
+);
+-- A document the enrichment model rejected (4xx or unparseable output). Recorded
+-- per model so a run on that model does not re-send it every time, while a
+-- different model still gets a try. Added in place for existing tables.
+ALTER TABLE {table} ADD COLUMN IF NOT EXISTS rejected_reason text;
+ALTER TABLE {table} ADD COLUMN IF NOT EXISTS rejected_model text;
+ALTER TABLE {table} ADD COLUMN IF NOT EXISTS rejected_at timestamptz;
 """
 
 
@@ -46,9 +52,20 @@ class EnrichStore(Store):
         """Return the idempotent DDL that lazily creates the enrichments table."""
         return _DDL.format(table=self._table)
 
-    def enriched_ids(self) -> set[str]:
-        """Return doc ids that already have an enrichment, so a batch can resume."""
-        rows = self._read(f"SELECT doc_id FROM {self._table} WHERE enrichment IS NOT NULL")
+    def enriched_ids(self, schema_version: str | None = None) -> set[str]:
+        """Return doc ids that already have an enrichment, so a batch can resume.
+
+        With ``schema_version``, only records produced under that schema count as
+        done, so records from an older schema are picked up again and upgraded.
+        """
+        if schema_version is None:
+            rows = self._read(f"SELECT doc_id FROM {self._table} WHERE enrichment IS NOT NULL")
+        else:
+            rows = self._read(
+                f"SELECT doc_id FROM {self._table} "
+                "WHERE enrichment IS NOT NULL AND schema_version = %s",
+                (schema_version,),
+            )
         return {row[0] for row in rows}
 
     def save_enrichment(self, doc_id: str, enrichment: dict, model: str, schema_version: str) -> None:
@@ -62,10 +79,34 @@ class EnrichStore(Store):
                 enrichment       = EXCLUDED.enrichment,
                 enrichment_model = EXCLUDED.enrichment_model,
                 schema_version   = EXCLUDED.schema_version,
-                enriched_at      = now()
+                enriched_at      = now(),
+                rejected_reason  = NULL,
+                rejected_model   = NULL,
+                rejected_at      = NULL
             """,
             (doc_id, Json(enrichment), model, schema_version),
         )
+
+    def save_rejection(self, doc_id: str, reason: str, model: str) -> None:
+        """Record that *model* rejected *doc_id*; any existing enrichment is kept."""
+        self._write(
+            f"""
+            INSERT INTO {self._table} (doc_id, rejected_reason, rejected_model, rejected_at)
+            VALUES (%s, %s, %s, now())
+            ON CONFLICT (doc_id) DO UPDATE SET
+                rejected_reason = EXCLUDED.rejected_reason,
+                rejected_model  = EXCLUDED.rejected_model,
+                rejected_at     = now()
+            """,
+            (doc_id, reason[:1000], model),
+        )
+
+    def rejected_ids(self, model: str) -> set[str]:
+        """Return doc ids that *model* rejected, so a run on it can pass them over."""
+        rows = self._read(
+            f"SELECT doc_id FROM {self._table} WHERE rejected_model = %s", (model,)
+        )
+        return {row[0] for row in rows}
 
     def save_audit(self, doc_id: str, candidates: list[str], audit: dict, model: str, scan_version: str) -> None:
         """Upsert the secret-audit verdict for *doc_id* (types/severity only, never values)."""

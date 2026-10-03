@@ -98,6 +98,12 @@ def test_backfill_yields_records_with_labels(gmail_env, mock_httpx):
     assert fetcher.next_cursor() == "1000"  # mailbox historyId recorded
 
 
+def test_fetch_passes_known_ids_to_the_backfill(gmail_env, mock_httpx):
+    fetcher = build_fetcher("gmail:test")
+    records = list(fetcher.fetch(None, known={"gmail:test::m1"}))
+    assert [r.source_uid for r in records] == ["m2"]
+
+
 def test_label_filter_restricts_backfill(gmail_env, mock_httpx, monkeypatch):
     monkeypatch.setenv("CORPUS_GMAIL_TEST_LABELS", "Receipts")
     fetcher = build_fetcher("gmail:test")
