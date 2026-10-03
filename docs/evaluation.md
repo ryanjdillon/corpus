@@ -46,7 +46,13 @@ Requests are built by production's own `build_payload`, so the eval sends the
 shape production sends (including the `max_tokens` output cap). Two flags set
 the per-model request options that `CORPUS_MODEL_OPTIONS` sets in production
 (see [Enrichment](enrichment.md#models)); they layer on whatever is configured
-for the model, and apply to the audit when it runs on the same model.
+for the model. The secret audit runs on `CORPUS_AUDIT_MODEL` when that is set
+(else on the enrichment model), and its requests read that model's own options,
+so `run` applies both flags to the audit model as well and says so on stderr.
+Every row records `audit_model`, `audit_model_options` and `audit_chunks`, and the
+report header names the audit model, so a run whose audit went elsewhere is
+visible. A document longer than the audit model's context is audited in several
+chunks; the row sums their latency and tokens.
 
 `--extra-body JSON` sets the model's `extra_body`, merged into every chat
 request, for provider knobs the enricher does not send by default. An example is

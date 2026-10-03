@@ -289,6 +289,14 @@ class UsageMeter:
     def __init__(self) -> None:
         self._local = threading.local()
 
+    def begin(self, doc_key: str) -> None:
+        """Mark the document the current thread is working on."""
+        self._local.doc = doc_key
+
+    def current(self) -> str | None:
+        """Return the document the current thread is working on, if one was marked."""
+        return getattr(self._local, "doc", None)
+
     def hook(self, response: httpx.Response) -> None:
         """Record usage from a successful ``/chat/completions`` response."""
         if not response.is_success or not response.request.url.path.endswith("/chat/completions"):
@@ -321,7 +329,9 @@ class MeteredEnricher:
     """Wrap an enricher, recording latency, usage, errors, and recovery per input text.
 
     Keyed by input text because that is all ``run_enrich`` passes to the
-    enricher; ``load_fixtures`` guarantees the texts are unique. It exposes only
+    enricher; ``load_fixtures`` guarantees the texts are unique. It also tells
+    the meter which document the thread is on, so the audit calls that follow
+    (one per chunk, for a long document) are attributed to it. It exposes only
     what ``run_enrich`` calls (``enrich_reporting``), so a call that bypassed the
     metering cannot happen by delegation.
     """
@@ -338,6 +348,7 @@ class MeteredEnricher:
         Returns what the wrapped enricher does: the enrichment and whether the
         reply was recovered from a stall (DIL-608).
         """
+        self._meter.begin(text)
         self._meter.take()
         start = time.perf_counter()
         call: dict = {"error": None, "recovered": False}
@@ -347,6 +358,9 @@ class MeteredEnricher:
             return enrichment, recovered
         except EnrichError as exc:
             call["error"] = str(exc)
+            raise
+        except EnrichUnavailableError as exc:
+            call["error"] = f"endpoint unavailable: {exc}"
             raise
         finally:
             call["latency_s"] = time.perf_counter() - start
@@ -359,7 +373,13 @@ class MeteredEnricher:
 
 
 def metered_audit(audit: Callable, meter: UsageMeter, calls: dict[str, dict]) -> Callable:
-    """Wrap an ``audit_secrets``-shaped callable, recording its calls into ``calls``."""
+    """Wrap an ``audit_secrets``-shaped callable, recording its calls into ``calls``.
+
+    A document longer than the audit model's context is audited in several
+    chunks, each a separate call with different text. They are keyed by the
+    document the thread is on (set by :class:`MeteredEnricher`) and summed, so
+    the row carries the whole audit's latency and tokens, not the last chunk's.
+    """
 
     def wrapped(text: str, candidates, *, model: str | None = None) -> SecretAudit:
         meter.take()
@@ -367,8 +387,18 @@ def metered_audit(audit: Callable, meter: UsageMeter, calls: dict[str, dict]) ->
         try:
             return audit(text, candidates, model=model)
         finally:
-            call = {"latency_s": time.perf_counter() - start, **meter.take()}
-            calls[text] = call
+            elapsed = time.perf_counter() - start
+            taken = meter.take()
+            call = calls.setdefault(
+                meter.current() or text,
+                {"latency_s": 0.0, "usage": None, "model": None, "chunks": 0},
+            )
+            call["latency_s"] += elapsed
+            call["chunks"] += 1
+            call["model"] = taken["model"] or call["model"]
+            if taken["usage"]:
+                total = call["usage"] or {"prompt_tokens": 0, "completion_tokens": 0}
+                call["usage"] = {k: total[k] + taken["usage"][k] for k in total}
 
     return wrapped
 
@@ -534,6 +564,7 @@ def run_records(records: list[dict], enricher, audit: Callable, *,
     meter = meter or UsageMeter()
     metered = MeteredEnricher(enricher, meter)
     audit_calls: dict[str, dict] = {}
+    audit_model = settings.audit_model or metered.model
     store = RecordingStore()
     try:
         run_enrich(
@@ -545,12 +576,12 @@ def run_records(records: list[dict], enricher, audit: Callable, *,
             force=True,
         )
     finally:
-        rows = [_row(rec, metered, store, audit_calls) for rec in records]
+        rows = [_row(rec, metered, store, audit_calls, audit_model) for rec in records]
     return rows
 
 
 def _row(rec: dict, metered: MeteredEnricher, store: RecordingStore,
-         audit_calls: dict[str, dict]) -> dict:
+         audit_calls: dict[str, dict], audit_model: str) -> dict:
     text = model_text(rec)
     call = metered.calls.get(text)
     audit_call = audit_calls.get(text) or {}
@@ -564,7 +595,10 @@ def _row(rec: dict, metered: MeteredEnricher, store: RecordingStore,
     return {
         "id": rec["id"],
         "model": metered.model,
+        "audit_model": audit_model,
         "response_model": (call or {}).get("model"),
+        "audit_response_model": audit_call.get("model"),
+        "audit_chunks": audit_call.get("chunks", 0),
         "schema_version": SCHEMA_VERSION,
         "scan_version": scan.SCAN_VERSION,
         "enrichment": store.enrichments.get(rec["id"]),
@@ -657,6 +691,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 2
     meter = UsageMeter()
     options: dict = {}
+    audit_options: dict = {}
     client = None
     stack = ExitStack()
     if args.fake:
@@ -677,12 +712,23 @@ def cmd_run(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 2
+        audit_model = settings.audit_model or model
         print(
-            f"eval: model={model} audit_model={settings.audit_model or model} "
+            f"eval: model={model} audit_model={audit_model} "
             f"api_base={api_base} records={len(records)}",
             file=sys.stderr,
         )
         options = stack.enter_context(model_options_override(model, extra, args.inline_schema_refs))
+        audit_options = options
+        if audit_model != model:
+            # run_enrich audits on CORPUS_AUDIT_MODEL, whose requests read their
+            # own model options: apply the same variant there so the whole run
+            # is measured under it, and say so.
+            audit_options = stack.enter_context(
+                model_options_override(audit_model, extra, args.inline_schema_refs))
+            if extra or args.inline_schema_refs:
+                print(f"eval: --extra-body / --inline-schema-refs also applied to the audit "
+                      f"model {audit_model}", file=sys.stderr)
         client = httpx.Client(
             base_url=api_base,
             headers={"Authorization": f"Bearer {settings.openai_api_key}"},
@@ -709,6 +755,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     for row in rows:
         row["label"] = label
         row["model_options"] = options
+        row["audit_model_options"] = audit_options
     write_rows(rows, path)
     failed = sum(r["error"] is not None for r in rows)
     recovered = sum(bool(r["recovered"]) for r in rows)
@@ -1136,6 +1183,7 @@ def score_rows(rows: list[dict], *, price_per_mtok: float | None = None,
     return {
         "model": rows[0]["model"] if rows else None,
         "response_models": models,
+        "audit_models": sorted({r["audit_model"] for r in rows if r.get("audit_model")}),
         "schema_versions": sorted({r["schema_version"] for r in rows}),
         "records": len(rows),
         "headline": headline,
@@ -1206,6 +1254,7 @@ def render_markdown(report: dict, top: int = 20) -> str:
         lines.append(
             f"- **{name}**: {r['records']} records, model `{r['model']}` "
             f"(responding: {', '.join(map(str, r['response_models']))}), "
+            f"audit model {', '.join(r['audit_models']) or 'n/a'}, "
             f"schema {', '.join(r['schema_versions'])}"
         )
     lines += ["", "Point estimate [bootstrap 95% CI]; n is the metric's denominator.", ""]

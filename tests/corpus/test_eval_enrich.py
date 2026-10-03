@@ -90,7 +90,7 @@ def _row(fixture: dict, enrichment: dict | None, *, audit: dict | None = None,
          model: str = "m") -> dict:
     """An output row as ``run`` writes it, with the prediction supplied directly."""
     return {
-        "id": fixture["id"], "model": model, "response_model": model,
+        "id": fixture["id"], "model": model, "audit_model": model, "response_model": model,
         "schema_version": SCHEMA_VERSION, "scan_version": scan.SCAN_VERSION,
         "enrichment": enrichment, "error": None if enrichment else "bad",
         "candidates": scan.audit_candidates(fixture["body"]), "audit": audit,
@@ -265,6 +265,79 @@ def test_run_meters_tokens_and_responding_model_through_real_clients(fixtures):
     assert key["usage"]["enrich"] == {"prompt_tokens": 321, "completion_tokens": 45}
     assert key["usage"]["audit"] == {"prompt_tokens": 77, "completion_tokens": 45}
     assert key["latency_s"]["enrich"] >= 0
+
+
+def test_audit_calls_on_a_multi_chunk_document_are_metered_per_document(fixtures, monkeypatch):
+    """A windowed audit calls the model once per chunk; the row must sum them (DIL-603)."""
+    monkeypatch.setattr("corpus.enrich_batch.audit_texts",
+                        lambda text, content, spans, model: ["chunk-a", "chunk-b", "chunk-c"])
+    meter = ev.UsageMeter()
+    seen: list[str] = []
+
+    def audit(text, candidates, *, model=None):
+        seen.append(text)
+        meter.record({"prompt_tokens": 100, "completion_tokens": 7}, "served-audit")
+        return SecretAudit(contains_secret=False)
+
+    enricher = create_autospec(Enricher, instance=True)
+    enricher.model = "m"
+    enricher.enrich_reporting.return_value = (
+        Enrichment(one_line="x", abstract="y", category=Category.personal), False)
+
+    rows = ev.run_records(fixtures, enricher, audit, concurrency=2, meter=meter)
+
+    key = next(r for r in rows if r["id"] == "t-key")
+    assert seen.count("chunk-a") == 2  # t-key and t-order both overflowed
+    assert key["usage"]["audit"] == {"prompt_tokens": 300, "completion_tokens": 21}
+    assert key["audit_chunks"] == 3
+    assert key["audit_response_model"] == "served-audit"
+    assert key["latency_s"]["audit"] is not None
+    # A document with no candidates is never audited, and says so.
+    lunch = next(r for r in rows if r["id"] == "t-lunch")
+    assert lunch["usage"]["audit"] is None and lunch["audit_chunks"] == 0
+
+
+def test_rows_record_the_audit_model(fixtures, monkeypatch):
+    enricher = create_autospec(Enricher, instance=True)
+    enricher.model = "enrich-m"
+    enricher.enrich_reporting.return_value = (
+        Enrichment(one_line="x", abstract="y", category=Category.personal), False)
+    audit = create_autospec(ev.audit_secrets, return_value=SecretAudit(contains_secret=False))
+
+    monkeypatch.setattr(settings, "audit_model", "")
+    same = ev.run_records(fixtures, enricher, audit, concurrency=1)
+    monkeypatch.setattr(settings, "audit_model", "audit-m")
+    redirected = ev.run_records(fixtures, enricher, audit, concurrency=1)
+
+    assert {r["audit_model"] for r in same} == {"enrich-m"}
+    assert {r["audit_model"] for r in redirected} == {"audit-m"}
+    assert {c.kwargs["model"] for c in audit.call_args_list[-2:]} == {"audit-m"}
+    report = ev.score_rows(redirected, resamples=10)
+    assert report["audit_models"] == ["audit-m"]
+    assert "audit model audit-m" in ev.render_markdown({"runs": {"x": report}})
+
+
+def test_run_applies_request_variants_to_the_audit_model_too(
+        tmp_path, capsys, mock_endpoint, monkeypatch):
+    monkeypatch.setattr(settings, "audit_model", "audit-m")
+    monkeypatch.setattr(settings, "model_options", {})
+
+    assert ev.main(["run", "--model", "m", "--api-base", "http://localhost:8080/v1",
+                    "--extra-body", '{"reasoning_effort": "none"}', "--inline-schema-refs",
+                    "--only", "hard_case=injection", "--limit", "2",
+                    "--out-dir", str(tmp_path)]) == 0
+
+    by_model = {m: b for _, _, m, b in mock_endpoint}
+    assert set(by_model) == {"m", "audit-m"}
+    for body in by_model.values():
+        assert body["reasoning_effort"] == "none"
+        assert "$ref" not in json.dumps(body["response_format"])
+    assert "also applied to the audit model audit-m" in capsys.readouterr().err
+    [out] = tmp_path.glob("m-*.jsonl")
+    row = json.loads(out.read_text().splitlines()[0])
+    assert row["audit_model"] == "audit-m"
+    assert row["audit_model_options"]["extra_body"] == {"reasoning_effort": "none"}
+    assert settings.model_options == {}  # both overrides were undone
 
 
 def test_model_options_override_drives_the_production_payload(monkeypatch):
@@ -510,7 +583,8 @@ def _llm_handler(seen: list | None = None):
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         if seen is not None:
-            seen.append((str(request.url), request.headers.get("authorization"), body["model"]))
+            seen.append((str(request.url), request.headers.get("authorization"), body["model"],
+                         body))
         name = body["response_format"]["json_schema"]["name"]
         content = (
             {"one_line": "x", "abstract": "y", "category": "personal"}
