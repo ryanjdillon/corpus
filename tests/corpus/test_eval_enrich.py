@@ -18,11 +18,20 @@ from pathlib import Path
 from unittest.mock import create_autospec
 
 import httpx
+import msgspec
 import pytest
 
 from corpus import scan
-from corpus.enricher import Enricher
-from corpus.enrichment import SCHEMA_VERSION, Category, Enrichment, SecretAudit
+from corpus.config import settings
+from corpus.enricher import Enricher, build_payload
+from corpus.enrichment import (
+    RECOVERED_SCHEMA_VERSION,
+    SCHEMA_VERSION,
+    Category,
+    Enrichment,
+    SecretAudit,
+    json_schema,
+)
 
 SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
@@ -115,6 +124,26 @@ def test_committed_fixtures_are_valid_and_stratified():
     assert bulky < len(records) / 4
 
 
+def test_gold_labels_fit_the_live_schema_bounds():
+    """A gold label the schema's bounds (DIL-605) would truncate or reject is a scorer bug.
+
+    Guided decoding cannot emit a name over ``Name``'s length or more than
+    ``MAX_ITEMS`` entities, so a fixture demanding that would mark a correct
+    answer wrong. Validate every gold label against the live ``Enrichment``.
+    """
+    for rec in ev.load_fixtures(ev.DEFAULT_FIXTURES):
+        labels = rec["labels"]
+        gold = {
+            **labels,
+            "one_line": "x", "abstract": "y",
+            "people": [{"name": n} for n in labels["people"]],
+        }
+        try:
+            msgspec.convert(gold, Enrichment)
+        except msgspec.ValidationError as exc:
+            pytest.fail(f"{rec['id']}: gold label outside the schema bounds: {exc}")
+
+
 def test_invalid_enum_label_fails_loudly(fixtures):
     bad = copy.deepcopy(fixtures[0])
     bad["labels"]["domain"] = "finance"
@@ -155,8 +184,8 @@ def test_select_filters_by_hard_case_and_limit(fixtures):
 def test_run_reuses_run_enrich_and_records_schema_and_model(fixtures):
     enricher = create_autospec(Enricher, instance=True)
     enricher.model = "fake-model"
-    enricher.enrich.return_value = Enrichment(one_line="x", abstract="y",
-                                              category=Category.personal)
+    enricher.enrich_reporting.return_value = (
+        Enrichment(one_line="x", abstract="y", category=Category.personal), False)
     audit = create_autospec(ev.audit_secrets, return_value=SecretAudit(contains_secret=True))
 
     rows = ev.run_records(fixtures, enricher, audit, concurrency=2)
@@ -167,13 +196,47 @@ def test_run_reuses_run_enrich_and_records_schema_and_model(fixtures):
     assert all(r["enrichment"]["one_line"] == "x" for r in rows)
     # Only the records whose body trips the candidate gate are audited.
     assert [r["id"] for r in rows if r["audit"] is not None] == ["t-key", "t-order"]
-    assert enricher.enrich.call_count == 3
+    assert enricher.enrich_reporting.call_count == 3
+    assert not any(r["recovered"] for r in rows)
+
+
+def test_run_records_which_replies_were_recovered(fixtures):
+    """A recovered reply (DIL-608) is stored under the marked version and flagged per row."""
+    enricher = create_autospec(Enricher, instance=True)
+    enricher.model = "fake-model"
+    enrichment = Enrichment(one_line="x", abstract="y", category=Category.personal)
+    enricher.enrich_reporting.side_effect = lambda text: (enrichment, "deploy key" in text)
+    audit = create_autospec(ev.audit_secrets, return_value=SecretAudit(contains_secret=False))
+
+    rows = ev.run_records(fixtures, enricher, audit, concurrency=1)
+
+    assert {r["id"]: r["recovered"] for r in rows} == {
+        "t-lunch": False, "t-key": True, "t-order": False}
+    assert RECOVERED_SCHEMA_VERSION != SCHEMA_VERSION
+    report = ev.score_rows(rows, resamples=20)
+    assert report["recovered"] == {"count": 1, "ids": ["t-key"]}
+    assert "recovered from a stalled reply: 1 ['t-key']" in ev.render_markdown(
+        {"runs": {"m": report}, "disagreements": []})
+
+
+def test_metered_enricher_exposes_only_the_metered_entry_point(fixtures):
+    """Nothing reaches the wrapped enricher except through ``enrich_reporting``."""
+    inner = create_autospec(Enricher, instance=True)
+    inner.model = "m"
+    inner.enrich_reporting.return_value = (Enrichment(one_line="x", abstract="y",
+                                                      category=Category.personal), True)
+    metered = ev.MeteredEnricher(inner, ev.UsageMeter())
+
+    assert not hasattr(metered, "enrich")
+    assert metered.enrich_reporting("text")[1] is True
+    assert metered.calls["text"]["recovered"] is True
 
 
 def test_run_meters_tokens_and_responding_model_through_real_clients(fixtures):
     """Usage comes from the wire, via the response hook, not from the enricher API."""
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
+        assert body["max_tokens"] > 0  # the request is production's own, output cap included
         name = body["response_format"]["json_schema"]["name"]
         content = (
             {"one_line": "x", "abstract": "y", "category": "personal"}
@@ -204,52 +267,31 @@ def test_run_meters_tokens_and_responding_model_through_real_clients(fixtures):
     assert key["latency_s"]["enrich"] >= 0
 
 
-def test_extra_body_is_merged_into_chat_requests_only():
-    seen = []
+def test_model_options_override_drives_the_production_payload(monkeypatch):
+    monkeypatch.setattr(settings, "model_options", {"other": {"context_tokens": 9}})
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen.append((request.url.path, json.loads(request.content or b"{}")))
-        return httpx.Response(200, json={"ok": True})
+    with ev.model_options_override("m", {"reasoning_effort": "none"}, True) as options:
+        payload = build_payload("m", "sys", "user", "enrichment", json_schema())
 
-    transport = ev.ExtraBodyTransport({"reasoning_effort": "none"}, httpx.MockTransport(handler))
-    with httpx.Client(base_url="http://llm.test/v1", transport=transport) as client:
-        client.post("/chat/completions", json={"model": "m", "temperature": 0})
-        client.post("/embeddings", json={"model": "m"})
-
-    assert seen == [
-        ("/v1/chat/completions", {"model": "m", "temperature": 0, "reasoning_effort": "none"}),
-        ("/v1/embeddings", {"model": "m"}),
-    ]
+    assert options == {"extra_body": {"reasoning_effort": "none"}, "inline_schema_refs": True}
+    assert payload["reasoning_effort"] == "none"
+    assert payload["max_tokens"] > 0  # the production output cap rides along
+    assert "$ref" not in json.dumps(payload["response_format"])
+    # Restored on exit, and other models' options are never touched.
+    assert settings.model_options == {"other": {"context_tokens": 9}}
 
 
-def test_inline_refs_resolves_nested_definitions():
-    from corpus.enrichment import json_schema
+def test_model_options_override_layers_on_configured_options(monkeypatch):
+    configured = {"m": {"context_tokens": 8192, "extra_body": {"top_k": 1}}}
+    monkeypatch.setattr(settings, "model_options", configured)
 
-    schema = json_schema()
-    flat = ev.inline_refs(schema)
+    with ev.model_options_override("m", {"reasoning_effort": "none"}, False) as options:
+        assert options == {"context_tokens": 8192,
+                           "extra_body": {"top_k": 1, "reasoning_effort": "none"}}
+        payload = build_payload("m", "sys", "user", "enrichment", json_schema())
+        assert "$ref" in json.dumps(payload["response_format"])
 
-    assert "$ref" not in json.dumps(flat) and "$defs" not in json.dumps(flat)
-    props = flat["properties"]
-    assert set(props["category"]["enum"]) == {c.value for c in Category}
-    assert flat["required"] == schema["$defs"]["Enrichment"]["required"]
-
-
-def test_transport_inlines_schema_refs_on_request():
-    seen = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen.append(json.loads(request.content))
-        return httpx.Response(200, json={"ok": True})
-
-    transport = ev.ExtraBodyTransport({}, httpx.MockTransport(handler), inline_schema_refs=True)
-    schema = {"$ref": "#/$defs/T", "$defs": {"T": {"type": "object", "properties": {
-        "k": {"$ref": "#/$defs/K"}}}, "K": {"enum": ["a", "b"]}}}
-    with httpx.Client(base_url="http://llm.test/v1", transport=transport) as client:
-        client.post("/chat/completions", json={
-            "response_format": {"type": "json_schema", "json_schema": {"schema": schema}}})
-
-    sent = seen[0]["response_format"]["json_schema"]["schema"]
-    assert sent == {"type": "object", "properties": {"k": {"enum": ["a", "b"]}}}
+    assert settings.model_options == {"m": {"context_tokens": 8192, "extra_body": {"top_k": 1}}}
 
 
 def test_output_path_is_model_schema_timestamp(tmp_path):

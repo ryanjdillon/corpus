@@ -25,21 +25,31 @@ flags: `--limit N`, `--only hard_case=injection` (any top-level fixture field, o
 ordinary records), `--model`, `--api-base`, `--concurrency`. `run --fake` swaps
 the endpoint for a deterministic noisy oracle, to check the harness itself.
 
-`--extra-body JSON` merges fields into every chat request, for provider knobs
-the production enricher does not send. An example is
+Requests are built by production's own `build_payload`, so the eval sends the
+shape production sends (including the `max_tokens` output cap). Two flags set
+the per-model request options that `CORPUS_MODEL_OPTIONS` sets in production
+(see [Enrichment](enrichment.md#models)); they layer on whatever is configured
+for the model, and apply to the audit when it runs on the same model.
+
+`--extra-body JSON` sets the model's `extra_body`, merged into every chat
+request, for provider knobs the enricher does not send by default. An example is
 `--extra-body '{"reasoning_effort": "none"}'` for a model that reasons by default.
 Pair it with `--label` so the variant gets its own column: the label names the
-output file and the report column, and defaults to the model id. The injected
-fields are recorded on every row. A variant only helps production once the
-enricher sends the same fields.
+output file and the report column, and defaults to the model id. The effective
+options are recorded on every row as `model_options`. A variant only helps
+production once the same options are set in `CORPUS_MODEL_OPTIONS`.
 
-`--inline-schema-refs` inlines the response schema's `$ref`s before sending.
+`--inline-schema-refs` sets the model's `inline_schema_refs` option.
 llama.cpp's schema-to-grammar converter can't resolve references nested inside
 a definition that a root `$ref` points at, which is exactly the shape msgspec
 emits. The server then drops the grammar without an error, and the model
-answers unconstrained. A llama.cpp-served model therefore needs the flag to be
-measured on its merits. A run without it shows what the production enricher
-would get today.
+answers unconstrained. A llama.cpp-served model therefore needs the option to be
+measured on its merits (set it in `CORPUS_MODEL_OPTIONS` too, or the production
+path will not get it). A run without it shows what production would get today.
+
+A reply that stalls in whitespace padding is recovered by production rather than
+rejected (DIL-608). Each row records `recovered`, and the report counts and lists
+recovered records per run, so a model that stalls often is visible.
 
 ## What `run` measures
 

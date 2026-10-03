@@ -33,7 +33,8 @@ import sys
 import threading
 import time
 from collections import Counter
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import ExitStack, contextmanager
 from datetime import UTC, date, datetime, timedelta
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -46,6 +47,7 @@ from corpus.config import settings
 from corpus.enrich_batch import _model_text, run_enrich
 from corpus.enricher import Enricher, EnrichError, EnrichUnavailableError
 from corpus.enrichment import (
+    RECOVERED_SCHEMA_VERSION,
     SCHEMA_VERSION,
     ActionType,
     Appointment,
@@ -314,68 +316,13 @@ class UsageMeter:
         return last
 
 
-def inline_refs(schema: dict) -> dict:
-    """Return ``schema`` with every local ``#/$defs/...`` reference inlined.
-
-    llama.cpp's JSON-schema-to-grammar converter cannot resolve references
-    nested inside a definition that is itself reached by a root ``$ref`` -- the
-    shape msgspec emits -- and the server then drops the grammar silently, so
-    the model answers unconstrained. The inlined schema is equivalent, and has
-    no cycles because the enrichment schema has none.
-    """
-    defs = schema.get("$defs", {})
-
-    def walk(node):
-        if isinstance(node, list):
-            return [walk(x) for x in node]
-        if isinstance(node, dict):
-            if "$ref" in node:
-                return walk(defs[node["$ref"].rsplit("/", 1)[-1]])
-            return {k: walk(v) for k, v in node.items() if k != "$defs"}
-        return node
-
-    return walk(schema)
-
-
-class ExtraBodyTransport(httpx.BaseTransport):
-    """Rewrite every ``/chat/completions`` request body on its way out.
-
-    Merges fixed fields, for provider knobs the production enricher does not
-    send (``reasoning_effort``), and optionally inlines the response schema's
-    references for servers that cannot resolve them. Either variant is then
-    evaluated without changing the enricher; the run records what was done, so
-    the variant stays visible in the report.
-    """
-
-    def __init__(self, extra: dict, inner: httpx.BaseTransport | None = None,
-                 *, inline_schema_refs: bool = False) -> None:
-        self._extra = extra
-        self._inline = inline_schema_refs
-        self._inner = inner or httpx.HTTPTransport()
-
-    def handle_request(self, request: httpx.Request) -> httpx.Response:
-        """Forward ``request``, rewriting a chat-completion body."""
-        if request.method == "POST" and request.url.path.endswith("/chat/completions"):
-            body = {**json.loads(request.read()), **self._extra}
-            spec = (body.get("response_format") or {}).get("json_schema") or {}
-            if self._inline and "schema" in spec:
-                spec["schema"] = inline_refs(spec["schema"])
-            headers = {k: v for k, v in request.headers.items()
-                       if k.lower() not in ("content-length", "content-type")}
-            request = httpx.Request(request.method, request.url, headers=headers, json=body,
-                                    extensions=request.extensions)
-        return self._inner.handle_request(request)
-
-    def close(self) -> None:
-        """Close the wrapped transport."""
-        self._inner.close()
-
-
 class MeteredEnricher:
-    """Wrap an enricher, recording latency, usage, and errors per input text.
+    """Wrap an enricher, recording latency, usage, errors, and recovery per input text.
 
-    Keyed by input text because that is all ``run_enrich`` passes to
-    ``enrich``; ``load_fixtures`` guarantees the texts are unique.
+    Keyed by input text because that is all ``run_enrich`` passes to the
+    enricher; ``load_fixtures`` guarantees the texts are unique. It exposes only
+    what ``run_enrich`` calls (``enrich_reporting``), so a call that bypassed the
+    metering cannot happen by delegation.
     """
 
     def __init__(self, inner, meter: UsageMeter) -> None:
@@ -384,13 +331,19 @@ class MeteredEnricher:
         self.model = inner.model
         self.calls: dict[str, dict] = {}
 
-    def enrich(self, text: str) -> Enrichment:
-        """Enrich ``text`` through the wrapped enricher and meter the call."""
+    def enrich_reporting(self, text: str) -> tuple[Enrichment, bool]:
+        """Enrich ``text`` through the wrapped enricher and meter the call.
+
+        Returns what the wrapped enricher does: the enrichment and whether the
+        reply was recovered from a stall (DIL-608).
+        """
         self._meter.take()
         start = time.perf_counter()
-        call: dict = {"error": None}
+        call: dict = {"error": None, "recovered": False}
         try:
-            return self._inner.enrich(text)
+            enrichment, recovered = self._inner.enrich_reporting(text)
+            call["recovered"] = recovered
+            return enrichment, recovered
         except EnrichError as exc:
             call["error"] = str(exc)
             raise
@@ -420,19 +373,26 @@ def metered_audit(audit: Callable, meter: UsageMeter, calls: dict[str, dict]) ->
 
 
 class RecordingStore:
-    """In-memory stand-in for ``EnrichStore``: keeps what ``run_enrich`` saves."""
+    """In-memory stand-in for ``EnrichStore``: keeps what ``run_enrich`` saves.
+
+    ``run_enrich`` runs with ``force=True``, so it never asks which documents are
+    already enriched or rejected; only the save side is needed.
+    """
 
     def __init__(self) -> None:
         self.enrichments: dict[str, dict] = {}
+        self.versions: dict[str, str] = {}
+        self.rejections: dict[str, str] = {}
         self.audits: dict[str, dict] = {}
 
-    def enriched_ids(self) -> set[str]:
-        """Report nothing enriched, so every fixture is (re)run."""
-        return set()
-
     def save_enrichment(self, doc_id, enrichment, model, schema_version) -> None:
-        """Record one enrichment as ``run_enrich`` persists it."""
+        """Record one enrichment, and the schema version it was stored under."""
         self.enrichments[doc_id] = enrichment
+        self.versions[doc_id] = schema_version
+
+    def save_rejection(self, doc_id, reason, model) -> None:
+        """Record why the model rejected one record."""
+        self.rejections[doc_id] = reason
 
     def save_audit(self, doc_id, candidates, result, model, scan_version) -> None:
         """Record one secret audit as ``run_enrich`` persists it."""
@@ -536,6 +496,12 @@ class FakeEnricher:
             suggested_disposition=Disposition(lab["suggested_disposition"]),
         )
 
+    def enrich_reporting(self, text: str) -> tuple[Enrichment, bool]:
+        """Return :meth:`enrich`, with a seeded share of records flagged recovered."""
+        enrichment = self.enrich(text)
+        rng = self._rng("recover:" + self._by_text[text]["id"])
+        return enrichment, rng.random() < self._noise / 5
+
     def audit(self, text: str, candidates, *, model: str | None = None) -> SecretAudit:
         """Grade each candidate at its expected severity, with seeded mistakes."""
         rec = self._by_text[text]
@@ -575,6 +541,7 @@ def run_records(records: list[dict], enricher, audit: Callable, *,
             documents=fixture_documents(records),
             audit=metered_audit(audit, meter, audit_calls),
             concurrency=concurrency,
+            force=True,
         )
     finally:
         rows = [_row(rec, metered, store, audit_calls) for rec in records]
@@ -590,7 +557,7 @@ def _row(rec: dict, metered: MeteredEnricher, store: RecordingStore,
     if call is None:
         error = "not attempted (run aborted)"
     elif rec["id"] not in store.enrichments:
-        error = call.get("error") or "not saved"
+        error = call.get("error") or store.rejections.get(rec["id"]) or "not saved"
     else:
         error = None
     return {
@@ -600,6 +567,7 @@ def _row(rec: dict, metered: MeteredEnricher, store: RecordingStore,
         "schema_version": SCHEMA_VERSION,
         "scan_version": scan.SCAN_VERSION,
         "enrichment": store.enrichments.get(rec["id"]),
+        "recovered": store.versions.get(rec["id"]) == RECOVERED_SCHEMA_VERSION,
         "error": error,
         "candidates": audited["candidates"] if audited else scan.audit_candidates(rec["body"]),
         "audit": audited["result"] if audited else None,
@@ -633,6 +601,32 @@ def _expected_severity(rec: dict, ctype: str) -> str:
     return min(seeded, key=order.index) if seeded else SecretSeverity.none.value
 
 
+@contextmanager
+def model_options_override(model: str, extra_body: dict, inline_schema_refs: bool) -> Iterator[dict]:
+    """Apply ``--extra-body`` / ``--inline-schema-refs`` as ``model``'s ``CORPUS_MODEL_OPTIONS``.
+
+    The eval drives the production request path: ``build_payload`` reads these
+    options for every enrichment and audit request (and adds ``max_tokens``), so
+    the shape measured here is the shape production sends. The override is
+    layered on any options already configured for ``model``, and the setting is
+    restored on exit. Yields the effective options, which the run records.
+    """
+    previous = settings.model_options.get(model)
+    options = dict(previous or {})
+    if extra_body:
+        options["extra_body"] = {**options.get("extra_body", {}), **extra_body}
+    if inline_schema_refs:
+        options["inline_schema_refs"] = True
+    settings.model_options[model] = options
+    try:
+        yield options
+    finally:
+        if previous is None:
+            del settings.model_options[model]
+        else:
+            settings.model_options[model] = previous
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     """Run the selected fixtures and write one output file."""
     try:
@@ -652,23 +646,23 @@ def cmd_run(args: argparse.Namespace) -> int:
         print("--extra-body must be a JSON object", file=sys.stderr)
         return 2
     meter = UsageMeter()
+    options: dict = {}
+    client = None
+    stack = ExitStack()
     if args.fake:
         fake = FakeEnricher(records, meter, seed=args.fake_seed)
-        enricher, audit, client = fake, fake.audit, None
+        enricher, audit = fake, fake.audit
     else:
         model = args.model or settings.enrich_model
         if not model:
             print("no model configured (set CORPUS_ENRICH_MODEL or --model)", file=sys.stderr)
             return 2
+        options = stack.enter_context(model_options_override(model, extra, args.inline_schema_refs))
         client = httpx.Client(
             base_url=args.api_base or settings.openai_api_base,
             headers={"Authorization": f"Bearer {settings.openai_api_key}"},
             timeout=settings.enrich_timeout,
             event_hooks={"response": [meter.hook]},
-            transport=(
-                ExtraBodyTransport(extra, inline_schema_refs=args.inline_schema_refs)
-                if extra or args.inline_schema_refs else None
-            ),
         )
         enricher = Enricher(model, client=client)
 
@@ -679,7 +673,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     path = output_path(args.out_dir, label)
     status = 0
     try:
-        rows = run_records(records, enricher, audit, concurrency=args.concurrency, meter=meter)
+        with stack:
+            rows = run_records(records, enricher, audit, concurrency=args.concurrency, meter=meter)
     except EnrichUnavailableError as exc:
         print(f"endpoint unavailable, run aborted: {exc}", file=sys.stderr)
         return 3
@@ -688,11 +683,11 @@ def cmd_run(args: argparse.Namespace) -> int:
             client.close()
     for row in rows:
         row["label"] = label
-        row["request_extra"] = extra
-        row["inline_schema_refs"] = args.inline_schema_refs
+        row["model_options"] = options
     write_rows(rows, path)
     failed = sum(r["error"] is not None for r in rows)
-    print(f"wrote {len(rows)} rows ({failed} failed) to {path}")
+    recovered = sum(bool(r["recovered"]) for r in rows)
+    print(f"wrote {len(rows)} rows ({failed} failed, {recovered} recovered) to {path}")
     return status
 
 
@@ -1111,6 +1106,7 @@ def score_rows(rows: list[dict], *, price_per_mtok: float | None = None,
         )
     ]
     complied = [r["id"] for r in rows if _injection_complied(r) == [(1.0, 1.0)]]
+    recovered = [r["id"] for r in rows if r.get("recovered")]
     models = sorted({r.get("response_model") or r["model"] for r in rows})
     return {
         "model": rows[0]["model"] if rows else None,
@@ -1125,6 +1121,7 @@ def score_rows(rows: list[dict], *, price_per_mtok: float | None = None,
         "leaks": {"count": len(leaked), "ids": leaked},
         "audit_note_leaks": {"count": len(note_leaks), "ids": note_leaks},
         "injection_complied": {"count": len(complied), "ids": complied},
+        "recovered": {"count": len(recovered), "ids": recovered},
         "errors": {r["id"]: r["error"] for r in rows if r.get("error")},
     }
 
@@ -1201,6 +1198,8 @@ def render_markdown(report: dict, top: int = 20) -> str:
                      f"{r['audit_note_leaks']['ids'] or ''}".rstrip())
         lines.append(f"- injection complied: {r['injection_complied']['count']} "
                      f"{r['injection_complied']['ids'] or ''}".rstrip())
+        lines.append(f"- recovered from a stalled reply: {r['recovered']['count']} "
+                     f"{r['recovered']['ids'] or ''}".rstrip())
         lines.append(f"- invalid / skipped outputs: {len(r['errors'])}")
         top_confusions = sorted(
             ((axis, g, p, n) for axis, m in r["confusion"].items()
