@@ -107,3 +107,66 @@ def test_every_raw_row_key_is_classified(keys, untrusted, trusted):
     # A new key must be marked untrusted or added here deliberately.
     assert set(untrusted) <= set(keys)
     assert set(keys) - set(untrusted) == trusted
+
+
+def _mail(n: int) -> list[dict]:
+    return [{"id": f"d{i}", "sent_at": f"2026-10-{30 - i:02d}", "subject": "s"} for i in range(n)]
+
+
+def test_query_pages_by_keyset_with_the_first_pages_window(monkeypatch):
+    query = _patch(monkeypatch, "structured_query", _mail(mcp_server.QUERY_MAX_LIMIT + 1))
+    cutoff = _patch(monkeypatch, "relative_cutoff", "2026-10-10T07:00:00+00:00")
+    args = {"label": None, "account": None, "before": None, "after": None, "since": "24h"}
+
+    first = mcp_server.corpus_query(**args, limit=500)
+    query.return_value = _mail(1)
+    mcp_server.corpus_query(**args, limit=500, cursor=first["next_cursor"])
+
+    cutoff.assert_called_once_with("24h")  # resolved once, then frozen in the cursor
+    page2 = query.call_args.kwargs
+    assert page2["after"] == "2026-10-10T07:00:00+00:00"
+    last = first["rows"][-1]
+    assert page2["older_than"] == (last["sent_at"], last["id"])
+    assert first["count"] == mcp_server.QUERY_MAX_LIMIT
+
+
+def test_query_last_page_has_no_cursor(monkeypatch):
+    _patch(monkeypatch, "structured_query", _mail(3))
+
+    out = mcp_server.corpus_query(
+        label=None, account=None, before=None, after=None, since=None, limit=10
+    )
+
+    assert (out["count"], out["next_cursor"]) == (3, None)
+
+
+def test_a_forged_keyset_cursor_is_refused(monkeypatch):
+    from corpus.envelope import encode_cursor
+
+    _patch(monkeypatch, "structured_query", [])
+    args = {"label": None, "account": None, "before": None, "after": None, "since": None}
+    for position in ({"key": [1, 2], "after": None}, 100):
+        forged = encode_cursor("corpus_query", args, position)
+
+        with pytest.raises(ValueError, match="invalid cursor"):
+            mcp_server.corpus_query(**args, limit=10, cursor=forged)
+
+
+def test_search_pages_by_offset_over_the_ranking(monkeypatch):
+    ranked = [{"id": f"d{i}", "snippet": "x"} for i in range(25)]
+    search_ = _patch(monkeypatch, "semantic_search", ranked)
+
+    first = mcp_server.corpus_search(query="kayak", top_k=10)
+    second = mcp_server.corpus_search(query="kayak", top_k=10, cursor=first["next_cursor"])
+
+    assert [r["id"] for r in second["rows"]] == [f"d{i}" for i in range(10, 20)]
+    assert search_.call_args.args == ("kayak", 21)
+
+
+def test_run_serves_streamable_http(monkeypatch):
+    run = create_autospec(mcp_server.mcp.run)
+    monkeypatch.setattr(mcp_server.mcp, "run", run)
+
+    mcp_server.run()
+
+    run.assert_called_once_with(transport="streamable-http")

@@ -58,7 +58,7 @@ _DURATION_RE = re.compile(r"^\s*(\d+)\s*([smhdw])\s*$")
 _UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
 
 
-def _relative_cutoff(since: str) -> str:
+def relative_cutoff(since: str) -> str:
     """Convert a relative window like '24h', '7d', '30m' into an ISO cutoff timestamp.
 
     Returns now - window, so callers need not know the current time. Units: s,
@@ -79,15 +79,20 @@ def structured_query(
     after: str | None = None,
     since: str | None = None,
     limit: int = 500,
+    older_than: tuple[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     """Query metadata analytically (non-semantic), newest first.
 
     E.g. 'all promotional older than 2 weeks', or the last day's mail with
     since='1d'. Returns every match up to `limit`. `since` is a relative window
     (now - since), applied as the lower bound when `after` is not given.
+
+    Rows are ordered by ``(sent_at, id)`` descending, a total order, so
+    ``older_than`` (the last row's ``(sent_at, id)``) resumes after it: a keyset
+    page, which mail arriving between pages cannot shift.
     """
     if since and not after:
-        after = _relative_cutoff(since)
+        after = relative_cutoff(since)
     clauses = []
     params: list[Any] = []
     if label:
@@ -102,12 +107,17 @@ def structured_query(
     if after:
         clauses.append("meta->>'sent_at' >= %s")
         params.append(after)
+    if older_than:
+        clauses.append("(coalesce(meta->>'sent_at', ''), id) < (%s, %s)")
+        params += list(older_than)
     where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
     table = f"{settings.db_schema}.{settings.documents_table}"
     sql = (
         f"SELECT id, meta->>'subject', meta->>'from_addr', meta->>'sent_at', "
         f"meta->>'label' FROM {table}{where} "
-        f"ORDER BY meta->>'sent_at' DESC LIMIT %s"
+        # coalesce: a row without a date sorts last and still compares in the
+        # keyset (a NULL would compare as unknown and drop out of later pages).
+        f"ORDER BY coalesce(meta->>'sent_at', '') DESC, id DESC LIMIT %s"
     )
     params.append(limit)
     with psycopg.connect(settings.database_url) as conn, conn.cursor() as cur:

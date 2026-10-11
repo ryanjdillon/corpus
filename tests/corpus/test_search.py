@@ -47,6 +47,13 @@ def test_structured_query_filters_by_label_and_date(pg, fake_embeddings):
     assert ids == {"imap:test::1"}
 
 
+def test_structured_query_filters_by_account(pg, fake_embeddings):
+    _index("1", "note", "a note", "personal", "2026-01-01")
+
+    assert len(search.structured_query(account="me@x.org")) == 1
+    assert search.structured_query(account="other@x.org") == []
+
+
 def test_structured_query_since_window(pg, fake_embeddings):
     now = datetime.now(UTC)
     _index("1", "recent", "recent mail", "personal", (now - timedelta(hours=2)).isoformat())
@@ -56,10 +63,10 @@ def test_structured_query_since_window(pg, fake_embeddings):
 
 
 def test_relative_cutoff_parses_and_rejects():
-    cutoff = search._relative_cutoff("2h")
+    cutoff = search.relative_cutoff("2h")
     assert cutoff < datetime.now(UTC).isoformat()
     with pytest.raises(ValueError):
-        search._relative_cutoff("nonsense")
+        search.relative_cutoff("nonsense")
 
 
 def test_get_document_returns_full_record(pg, fake_embeddings):
@@ -86,3 +93,21 @@ def test_stats_counts_by_label(pg, fake_embeddings):
     assert result["total"] == 3
     assert result["by_label"]["promotional"] == 2
     assert result["by_label"]["personal"] == 1
+
+
+def test_structured_query_keyset_pages_cover_every_row_once(pg, fake_embeddings):
+    # Two rows share a sent_at, so only the (sent_at, id) keyset keeps them apart.
+    for uid, sent_at in [("1", "2026-01-01"), ("2", "2026-01-02"), ("3", "2026-01-02"),
+                         ("4", "2026-01-03"), ("5", "2026-01-04")]:
+        _index(uid, f"mail {uid}", f"body {uid}", "personal", sent_at)
+
+    seen, older_than = [], None
+    while True:
+        page = search.structured_query(limit=2, older_than=older_than)
+        seen += [r["id"] for r in page]
+        if len(page) < 2:
+            break
+        older_than = (page[-1]["sent_at"], page[-1]["id"])
+
+    assert len(seen) == len(set(seen)) == 5
+    assert seen[0] == "imap:test::5" and seen[-1] == "imap:test::1"

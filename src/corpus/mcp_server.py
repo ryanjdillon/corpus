@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
 from . import search
 from .config import settings
-from .envelope import wrap
+from .envelope import CURSOR_HELP, clamp, decode_cursor, encode_cursor, offset_of, wrap
 from .telemetry import audited
 from .tiers import tier
 
@@ -19,6 +19,10 @@ TIER = tier("sensitive").name
 SEARCH_UNTRUSTED = ("from_addr", "snippet", "subject")
 QUERY_UNTRUSTED = ("from_addr", "subject")
 GET_UNTRUSTED = ("content", "meta")
+# The most rows one call returns; a larger limit is clamped and the caller pages
+# on with next_cursor. Search is lower: each page re-embeds the query.
+QUERY_MAX_LIMIT = 100
+SEARCH_MAX_LIMIT = 50
 
 mcp = FastMCP(
     "corpus",
@@ -46,11 +50,23 @@ def _rows(tool: str, rows: list[dict[str, Any]], untrusted: tuple[str, ...], **k
     return wrap(rows, server=mcp.name, tool=tool, tier=TIER, untrusted_fields=untrusted, **kw)
 
 
+def _keyset(position: Any) -> bool:
+    """Whether *position* is a ``corpus_query`` keyset: two strings, and a bound."""
+    if not isinstance(position, dict):
+        return False
+    key, after = position.get("key"), position.get("after")
+    return (
+        isinstance(key, list) and len(key) == 2 and all(isinstance(k, str) for k in key)
+        and (after is None or isinstance(after, str))
+    )
+
+
 @mcp.tool()
 @_audited
 def corpus_search(
     query: str = Field(description="Natural-language text, matched semantically against content."),
     top_k: int = Field(default=10, description="Maximum number of ranked matches to return."),
+    cursor: Annotated[str | None, Field(description=CURSOR_HELP)] = None,
 ) -> dict[str, Any]:
     """Semantic (vector) search over the indexed mail/documents, by MEANING.
 
@@ -63,7 +79,13 @@ def corpus_search(
         A ``corpus.result/v1`` envelope whose ``rows`` are ranked matches, each
         with subject, from_addr, sent_at, label, and a 300-character snippet.
     """
-    return _rows("corpus_search", search.semantic_search(query, top_k), SEARCH_UNTRUSTED)
+    offset = offset_of(decode_cursor(cursor, "corpus_search", {"query": query}))
+    n = clamp(top_k, SEARCH_MAX_LIMIT)
+    ranked = search.semantic_search(query, offset + n + 1)[offset:]
+    next_cursor = (
+        encode_cursor("corpus_search", {"query": query}, offset + n) if len(ranked) > n else None
+    )
+    return _rows("corpus_search", ranked[:n], SEARCH_UNTRUSTED, next_cursor=next_cursor)
 
 
 @mcp.tool()
@@ -86,8 +108,11 @@ def corpus_query(
         "for 'recent'/'last day' queries; ignored when `after` is given.",
     ),
     limit: int = Field(
-        default=500, description="Maximum number of matches to return (newest first)."
+        default=100,
+        description=f"Matches per page, newest first (at most {QUERY_MAX_LIMIT}); page on with "
+        "next_cursor.",
     ),
+    cursor: Annotated[str | None, Field(description=CURSOR_HELP)] = None,
 ) -> dict[str, Any]:
     """Structured, non-semantic metadata query over the indexed mail/documents.
 
@@ -98,10 +123,27 @@ def corpus_query(
         A ``corpus.result/v1`` envelope whose ``rows`` are metadata (id, subject,
         from_addr, sent_at, label), newest first.
     """
+    args = {"label": label, "account": account, "before": before, "after": after, "since": since}
+    position = decode_cursor(cursor, "corpus_query", args)
+    if position is None:
+        # Resolve a relative window once, so every page shares the first page's
+        # lower bound instead of sliding forward with the clock.
+        lower, older_than = after or (search.relative_cutoff(since) if since else None), None
+    elif _keyset(position):
+        lower, older_than = position["after"], tuple(position["key"])
+    else:
+        raise ValueError("invalid cursor")
+    n = clamp(limit, QUERY_MAX_LIMIT)
     results = search.structured_query(
-        label=label, account=account, before=before, after=after, since=since, limit=limit
+        label=label, account=account, before=before, after=lower, limit=n + 1,
+        older_than=older_than,
     )
-    return _rows("corpus_query", results, QUERY_UNTRUSTED)
+    next_cursor = None
+    if len(results) > n:
+        last = results[n - 1]
+        key = [last["sent_at"] or "", last["id"]]
+        next_cursor = encode_cursor("corpus_query", args, {"key": key, "after": lower})
+    return _rows("corpus_query", results[:n], QUERY_UNTRUSTED, next_cursor=next_cursor)
 
 
 @mcp.tool()
