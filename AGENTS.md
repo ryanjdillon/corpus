@@ -177,7 +177,9 @@ module and then fails in CI. When the module set changes, describe it in
 `docs/architecture.json` — the single maintained artifact (a node, or a `sources`
 entry citing `src/corpus/<module>.py` on the nearest node); the gate checks that
 file. After editing the JSON, bump
-`meta.repository.revision` to a commit that contains the file and re-run
+`meta.repository.revision` to a commit **on `main`** that contains the file
+(GitHub's squash and rebase merges both re-create commits, so a branch SHA is
+orphaned on merge: repoint it in a follow-up after merging) and re-run
 `archify deliver … docs/architecture.html` so the rendered diagram — the
 published Architecture page — stays in sync (the archify skill lives in the
 fornybar agent-skills bundle).
