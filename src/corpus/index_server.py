@@ -17,6 +17,7 @@ from . import index_query
 from .config import settings
 from .envelope import wrap
 from .sanitized_store import UNTRUSTED_COLS
+from .telemetry import audited
 from .tiers import tier
 
 TIER = tier("sanitized").name
@@ -38,6 +39,9 @@ mcp = FastMCP(
 )
 
 
+_audited = audited(server=mcp.name, tier=TIER)
+
+
 def _rows(tool: str, rows: list[dict], *, total: int | None = None) -> dict[str, Any]:
     return wrap(
         rows, server=mcp.name, tool=tool, tier=TIER, untrusted_fields=UNTRUSTED_COLS, total=total
@@ -45,6 +49,7 @@ def _rows(tool: str, rows: list[dict], *, total: int | None = None) -> dict[str,
 
 
 @mcp.tool()
+@_audited
 def index_action_items(
     limit: int = Field(50, description="max items"),
     domain: str | None = Field(None, description="filter by life-area domain (banking, health, work…)"),
@@ -58,12 +63,14 @@ def index_action_items(
 
 
 @mcp.tool()
+@_audited
 def index_due_soon(limit: int = Field(50, description="max items")) -> dict[str, Any]:
     """Time-sensitive items, or items carrying a deadline."""
     return _rows("index_due_soon", index_query.due_soon(limit=limit))
 
 
 @mcp.tool()
+@_audited
 def index_waiting_on(
     who: str = Field("them", description="'them' = you're waiting on someone; 'me' = they're waiting on you"),
     limit: int = Field(50, description="max items"),
@@ -73,12 +80,14 @@ def index_waiting_on(
 
 
 @mcp.tool()
+@_audited
 def index_by_domain(domain: str, limit: int = Field(50, description="max items")) -> dict[str, Any]:
     """Recent sanitized items in a life-area domain."""
     return _rows("index_by_domain", index_query.by_domain(domain, limit=limit))
 
 
 @mcp.tool()
+@_audited
 def index_summary(id: str) -> dict[str, Any]:
     """The sanitized summary + priority signal for one message id (0 or 1 rows)."""
     row = index_query.summary(id)
@@ -86,6 +95,7 @@ def index_summary(id: str) -> dict[str, Any]:
 
 
 @mcp.tool()
+@_audited
 def index_stats() -> dict[str, Any]:
     """Counts of sanitized items by domain and suggested disposition.
 

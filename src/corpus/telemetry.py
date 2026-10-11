@@ -10,12 +10,19 @@ module (for the metric instruments) stays cheap.
 from __future__ import annotations
 
 import atexit
+import functools
+import inspect
+import json
 import logging
 import os
+import time
+from collections.abc import Callable, Mapping
+from typing import Any
 
 from opentelemetry import metrics
 
 log = logging.getLogger("corpus.telemetry")
+audit_log = logging.getLogger("corpus.audit")
 
 _configured = False
 _shutdown_done = False
@@ -160,3 +167,134 @@ embed_batch_size = _meter.create_histogram(
     unit="{record}",
     description="Records per embed request.",
 )
+mcp_calls = _meter.create_counter(
+    "corpus.mcp.calls",
+    unit="{call}",
+    description="MCP tool calls, by server, tier, tool, principal and outcome.",
+)
+mcp_rows = _meter.create_counter(
+    "corpus.mcp.rows",
+    unit="{row}",
+    description="Rows returned by MCP tools, by server, tier, tool and principal.",
+)
+mcp_duration = _meter.create_histogram(
+    "corpus.mcp.duration",
+    unit="s",
+    description="MCP tool call latency, by server, tier and tool.",
+)
+
+
+# --- MCP tool-call audit -------------------------------------------------------
+
+#: The request header carrying the caller's principal. The gateway overwrites it
+#: from the authenticated API key, so a client cannot choose its own.
+PRINCIPAL_HEADER = "x-client-id"
+UNKNOWN_PRINCIPAL = "unknown"
+
+# Arguments logged verbatim: closed vocabularies, dates, ids and sizes. Any other
+# string argument (a search query, a free-text term) is logged as its length
+# only, so the audit log never carries what a caller searched for.
+_VERBATIM_ARGS = frozenset(
+    {"label", "account", "before", "after", "since", "domain", "importance", "who", "id",
+     "limit", "top_k"}
+)
+
+
+def _principal() -> str:
+    """The calling principal from the current MCP request, else ``unknown``.
+
+    A caller reaching the server without the gateway (an in-cluster job) sends no
+    header; it is logged as unknown rather than refused.
+    """
+    from mcp.server.lowlevel.server import request_ctx
+
+    try:
+        request = request_ctx.get().request
+    except LookupError:
+        return UNKNOWN_PRINCIPAL
+    headers = getattr(request, "headers", None)
+    value = headers.get(PRINCIPAL_HEADER) if headers is not None else None
+    return value or UNKNOWN_PRINCIPAL
+
+
+def filter_summary(args: Mapping[str, Any]) -> dict[str, Any]:
+    """The shape of a tool call's arguments, safe to log: see ``_VERBATIM_ARGS``."""
+    summary: dict[str, Any] = {}
+    for name, value in args.items():
+        if isinstance(value, str) and name not in _VERBATIM_ARGS:
+            summary[name] = {"chars": len(value)}
+        else:
+            summary[name] = value
+    return summary
+
+
+def record_tool_call(
+    *,
+    server: str,
+    tier: str,
+    tool: str,
+    principal: str,
+    args: Mapping[str, Any],
+    rows: int | None,
+    duration: float,
+    outcome: str,
+) -> None:
+    """Emit one audit event for an MCP tool call: a JSON log line and metrics.
+
+    The event answers "which principal read which tier, how much, and when"; it
+    carries argument shapes and a row count, never row content.
+    """
+    event = {
+        "event": "mcp.tool_call",
+        "server": server,
+        "tier": tier,
+        "tool": tool,
+        "principal": principal,
+        "filters": filter_summary(args),
+        "rows": rows,
+        "duration_ms": round(duration * 1000, 1),
+        "outcome": outcome,
+    }
+    audit_log.info(json.dumps(event, sort_keys=True, default=str))
+    attrs = {"server": server, "tier": tier, "tool": tool, "principal": principal}
+    mcp_calls.add(1, {**attrs, "outcome": outcome})
+    if rows is not None:
+        mcp_rows.add(rows, attrs)
+    mcp_duration.record(duration, {"server": server, "tier": tier, "tool": tool})
+
+
+def audited(*, server: str, tier: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """Decorate an MCP tool so every call is recorded by :func:`record_tool_call`.
+
+    Apply it beneath ``@mcp.tool()``: ``functools.wraps`` keeps the signature, so
+    the tool's schema is unchanged. The row count is the envelope's ``count``. A
+    call that raises is recorded with the exception type and re-raised.
+    """
+
+    def decorate(fn: Callable[..., Any]) -> Callable[..., Any]:
+        signature = inspect.signature(fn)
+
+        @functools.wraps(fn)
+        def call(*args: Any, **kwargs: Any) -> Any:
+            start = time.perf_counter()
+            principal = _principal()
+            kwargs = dict(signature.bind_partial(*args, **kwargs).arguments)
+            try:
+                result = fn(**kwargs)
+            except Exception as exc:
+                record_tool_call(
+                    server=server, tier=tier, tool=fn.__name__, principal=principal,
+                    args=kwargs, rows=None, duration=time.perf_counter() - start,
+                    outcome=type(exc).__name__,
+                )
+                raise
+            record_tool_call(
+                server=server, tier=tier, tool=fn.__name__, principal=principal, args=kwargs,
+                rows=result.get("count") if isinstance(result, Mapping) else None,
+                duration=time.perf_counter() - start, outcome="ok",
+            )
+            return result
+
+        return call
+
+    return decorate
