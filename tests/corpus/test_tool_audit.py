@@ -21,8 +21,9 @@ from corpus import index_query, index_server
 from corpus.telemetry import audited, filter_summary
 
 
-def _request(headers: dict[str, str]) -> Request:
-    raw = [(k.lower().encode(), v.encode()) for k, v in headers.items()]
+def _request(headers: dict[str, str] | list[tuple[str, str]]) -> Request:
+    pairs = headers.items() if isinstance(headers, dict) else headers
+    raw = [(k.lower().encode(), v.encode()) for k, v in pairs]
     return Request({"type": "http", "method": "POST", "path": "/mcp", "headers": raw})
 
 
@@ -31,7 +32,7 @@ def calling_as():
     """Run the next calls as if the MCP server were handling a request with *headers*."""
     tokens = []
 
-    def set_headers(headers: dict[str, str]) -> None:
+    def set_headers(headers: dict[str, str] | list[tuple[str, str]]) -> None:
         ctx = RequestContext(
             request_id=1, meta=None, session=None, lifespan_context=None,
             request=_request(headers),
@@ -109,19 +110,87 @@ def test_a_failed_call_is_audited_and_reraised(calling_as, caplog):
 
     (event,) = _events(caplog)
     assert (event["outcome"], event["rows"]) == ("RuntimeError", None)
-    assert event["filters"] == {"id": "gmail:personal::1"}
+    assert event["filters"]["id"]["source"] == "gmail:personal"
+
+
+@pytest.mark.parametrize(
+    ("headers", "principal"),
+    [
+        ([("x-client-id", "pi"), ("x-client-id", "orchestrator")], "ambiguous"),
+        ({"x-client-id": "Robert'); DROP TABLE"}, "other"),
+        ({"x-client-id": "x" * 33}, "other"),
+        ({"x-client-id": "corpus-summary"}, "corpus-summary"),
+    ],
+)
+def test_the_principal_stays_a_bounded_metric_label(calling_as, caplog, headers, principal):
+    calling_as(headers)
+    caplog.set_level(logging.INFO, logger="corpus.audit")
+
+    lookup(query="x")
+
+    assert _events(caplog)[0]["principal"] == principal
+
+
+def test_an_async_tool_is_refused_at_decoration():
+    async def tool() -> dict:
+        return {}
+
+    with pytest.raises(TypeError, match="sync tools only"):
+        audited(server="s", tier="t")(tool)
+
+
+def test_the_audit_stays_on_when_the_root_level_is_raised(caplog):
+    caplog.set_level(logging.WARNING)  # restored after the test
+
+    assert logging.getLogger("corpus.audit").isEnabledFor(logging.INFO)
 
 
 @pytest.mark.parametrize(
     ("args", "summary"),
     [
         ({"since": "1d", "label": "personal", "limit": 50}, {"since": "1d", "label": "personal", "limit": 50}),
+        ({"after": "2026-10-01", "before": "2026-10-11T07:00:00Z"},
+         {"after": "2026-10-01", "before": "2026-10-11T07:00:00Z"}),
+        ({"domain": "banking", "importance": "high", "who": "me"},
+         {"domain": "banking", "importance": "high", "who": "me"}),
         ({"query": "my passport number"}, {"query": {"chars": 18}}),
         ({"domain": None, "top_k": 3}, {"domain": None, "top_k": 3}),
     ],
 )
-def test_filter_summary_keeps_shapes_and_hides_free_text(args, summary):
+def test_filter_summary_keeps_safe_values(args, summary):
     assert filter_summary(args) == summary
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("domain", "passport 1234"),
+        ("label", "my secret label"),
+        ("since", "since my divorce"),
+        ("after", "after the operation"),
+        ("account", "someone@example.com"),
+    ],
+)
+def test_filter_summary_hides_any_value_outside_its_vocabulary(name, value):
+    assert filter_summary({name: value}) == {name: {"chars": len(value)}}
+
+
+def test_an_id_keeps_its_source_and_hashes_the_rest():
+    summary = filter_summary({"id": "imap:kbl::Styret/Lønn:1700000000:42"})["id"]
+
+    assert summary["source"] == "imap:kbl"
+    assert len(summary["sha256"]) == 12
+    assert "Styret" not in str(summary)
+
+
+def test_an_id_with_an_unexpected_source_drops_it():
+    assert filter_summary({"id": "someone@example.com::1"})["id"]["source"] is None
+
+
+def test_lists_are_summarised_by_size():
+    assert filter_summary({"terms": ["a", "b"], "opts": {"k": 1}}) == {
+        "terms": {"items": 2}, "opts": {"type": "dict"}
+    }
 
 
 def test_audited_tools_keep_their_input_schema():

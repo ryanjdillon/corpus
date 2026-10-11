@@ -10,11 +10,14 @@ module (for the metric instruments) stays cheap.
 from __future__ import annotations
 
 import atexit
+import enum
 import functools
+import hashlib
 import inspect
 import json
 import logging
 import os
+import re
 import time
 from collections.abc import Callable, Mapping
 from typing import Any
@@ -23,6 +26,8 @@ from opentelemetry import metrics
 
 log = logging.getLogger("corpus.telemetry")
 audit_log = logging.getLogger("corpus.audit")
+# Always on: the audit must not vanish if the root level is later raised.
+audit_log.setLevel(logging.INFO)
 
 _configured = False
 _shutdown_done = False
@@ -179,7 +184,9 @@ mcp_rows = _meter.create_counter(
 )
 mcp_duration = _meter.create_histogram(
     "corpus.mcp.duration",
-    unit="s",
+    # Milliseconds, so calls spread across the default bucket bounds (0, 5, 10,
+    # 25, ... 10000) instead of all landing in the first one.
+    unit="ms",
     description="MCP tool call latency, by server, tier and tool.",
 )
 
@@ -189,22 +196,72 @@ mcp_duration = _meter.create_histogram(
 #: The request header carrying the caller's principal. The gateway overwrites it
 #: from the authenticated API key, so a client cannot choose its own.
 PRINCIPAL_HEADER = "x-client-id"
-UNKNOWN_PRINCIPAL = "unknown"
+UNKNOWN_PRINCIPAL = "unknown"  # no header: a caller that bypassed the gateway
+AMBIGUOUS_PRINCIPAL = "ambiguous"  # the header sent more than once
+OTHER_PRINCIPAL = "other"  # not shaped like a client id
+# The principal is a metric attribute, so it must stay low-cardinality: anything
+# not shaped like a gateway client id collapses to "other".
+_PRINCIPAL = re.compile(r"^[a-z0-9_-]{1,32}$")
 
-# Arguments logged verbatim: closed vocabularies, dates, ids and sizes. Any other
-# string argument (a search query, a free-text term) is logged as its length
-# only, so the audit log never carries what a caller searched for.
-_VERBATIM_ARGS = frozenset(
-    {"label", "account", "before", "after", "since", "domain", "importance", "who", "id",
-     "limit", "top_k"}
-)
+# A source id such as "gmail:personal"; anything else (an address) is not logged.
+_SOURCE = re.compile(r"^[a-z0-9_-]{1,32}(?::[a-z0-9_-]{1,32})?$")
+_DURATION = re.compile(r"^\d{1,4}[smhdw]$")
+_ISO_TIME = re.compile(r"^\d{4}-\d{2}-\d{2}(?:[T ][\d:.]{2,15}(?:Z|[+-]\d{2}:?\d{2})?)?$")
+
+
+@functools.cache
+def _closed_values() -> dict[str, frozenset[str]]:
+    """The closed vocabularies a string argument may be logged verbatim from."""
+    from .classify import LABELS
+    from .enrichment import Domain, Importance, WaitingOn
+
+    return {
+        "label": LABELS,
+        "domain": frozenset(d.value for d in Domain),
+        "importance": frozenset(i.value for i in Importance),
+        "who": frozenset(w.value for w in WaitingOn),
+    }
+
+
+def _summarise(name: str, value: Any) -> Any:
+    """One argument, safe to log.
+
+    Verbatim only when the value itself is safe: None, a bool or a number, a member
+    of the argument's closed vocabulary, or a date or duration. A document id keeps
+    its source and is otherwise hashed, since the rest can name a mail folder. Any
+    other string (a search query, an address, a value outside the vocabulary) is
+    logged as its length, so the log never carries what a caller searched for.
+    """
+    if value is None or isinstance(value, (bool, int, float, enum.Enum)):
+        return value.value if isinstance(value, enum.Enum) else value
+    if isinstance(value, str):
+        if value in _closed_values().get(name, ()):
+            return value
+        if name == "since" and _DURATION.match(value):
+            return value
+        if name in {"before", "after"} and _ISO_TIME.match(value):
+            return value
+        if name == "id":
+            source, _, _ = value.partition("::")
+            digest = hashlib.sha256(value.encode()).hexdigest()[:12]
+            return {"source": source if _SOURCE.match(source) else None, "sha256": digest}
+        return {"chars": len(value)}
+    if isinstance(value, (list, tuple)):
+        return {"items": len(value)}
+    return {"type": type(value).__name__}
+
+
+def filter_summary(args: Mapping[str, Any]) -> dict[str, Any]:
+    """The shape of a tool call's arguments, safe to log (see ``_summarise``)."""
+    return {name: _summarise(name, value) for name, value in args.items()}
 
 
 def _principal() -> str:
-    """The calling principal from the current MCP request, else ``unknown``.
+    """The calling principal from the current MCP request.
 
-    A caller reaching the server without the gateway (an in-cluster job) sends no
-    header; it is logged as unknown rather than refused.
+    ``unknown`` without a header (an in-cluster caller that bypassed the gateway,
+    logged rather than refused), ``ambiguous`` if it was sent more than once, and
+    ``other`` if it is not shaped like a client id.
     """
     from mcp.server.lowlevel.server import request_ctx
 
@@ -213,19 +270,12 @@ def _principal() -> str:
     except LookupError:
         return UNKNOWN_PRINCIPAL
     headers = getattr(request, "headers", None)
-    value = headers.get(PRINCIPAL_HEADER) if headers is not None else None
-    return value or UNKNOWN_PRINCIPAL
-
-
-def filter_summary(args: Mapping[str, Any]) -> dict[str, Any]:
-    """The shape of a tool call's arguments, safe to log: see ``_VERBATIM_ARGS``."""
-    summary: dict[str, Any] = {}
-    for name, value in args.items():
-        if isinstance(value, str) and name not in _VERBATIM_ARGS:
-            summary[name] = {"chars": len(value)}
-        else:
-            summary[name] = value
-    return summary
+    values = headers.getlist(PRINCIPAL_HEADER) if headers is not None else []
+    if not values or not values[0]:
+        return UNKNOWN_PRINCIPAL
+    if len(values) > 1:
+        return AMBIGUOUS_PRINCIPAL
+    return values[0] if _PRINCIPAL.match(values[0]) else OTHER_PRINCIPAL
 
 
 def record_tool_call(
@@ -260,7 +310,7 @@ def record_tool_call(
     mcp_calls.add(1, {**attrs, "outcome": outcome})
     if rows is not None:
         mcp_rows.add(rows, attrs)
-    mcp_duration.record(duration, {"server": server, "tier": tier, "tool": tool})
+    mcp_duration.record(duration * 1000, {"server": server, "tier": tier, "tool": tool})
 
 
 def audited(*, server: str, tier: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
@@ -269,9 +319,14 @@ def audited(*, server: str, tier: str) -> Callable[[Callable[..., Any]], Callabl
     Apply it beneath ``@mcp.tool()``: ``functools.wraps`` keeps the signature, so
     the tool's schema is unchanged. The row count is the envelope's ``count``. A
     call that raises is recorded with the exception type and re-raised.
+
+    Only calls that reach the tool are recorded: FastMCP rejects arguments that
+    fail its schema, or an unknown tool name, before the tool runs.
     """
 
     def decorate(fn: Callable[..., Any]) -> Callable[..., Any]:
+        if inspect.iscoroutinefunction(fn):
+            raise TypeError(f"audited supports sync tools only; {fn.__name__} is async")
         signature = inspect.signature(fn)
 
         @functools.wraps(fn)
