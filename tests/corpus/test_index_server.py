@@ -60,23 +60,26 @@ def stats(monkeypatch):
 def test_action_items_passes_filters(action_items):
     out = index_server.index_action_items(limit=5, domain="banking", importance="high")
     assert out["rows"] == [{"tool": "action_items", "flags": []}]
-    assert action_items.call_args.kwargs == {"limit": 5, "domain": "banking", "importance": "high"}
+    # One row beyond the page is fetched to learn whether another page exists.
+    assert action_items.call_args.kwargs == {
+        "limit": 6, "domain": "banking", "importance": "high", "offset": 0
+    }
 
 
 def test_due_soon_delegates(due_soon):
     assert index_server.index_due_soon(limit=9)["rows"] == [{"tool": "due_soon", "flags": []}]
-    assert due_soon.call_args.kwargs == {"limit": 9}
+    assert due_soon.call_args.kwargs == {"limit": 10, "offset": 0}
 
 
 def test_waiting_on_delegates(waiting_on):
     index_server.index_waiting_on(who="me", limit=3)
-    assert waiting_on.call_args.kwargs == {"who": "me", "limit": 3}
+    assert waiting_on.call_args.kwargs == {"who": "me", "limit": 4, "offset": 0}
 
 
 def test_by_domain_delegates(by_domain):
     index_server.index_by_domain("health", limit=4)
     assert by_domain.call_args.args == ("health",)
-    assert by_domain.call_args.kwargs == {"limit": 4}
+    assert by_domain.call_args.kwargs == {"limit": 5, "offset": 0}
 
 
 def test_summary_and_stats_delegate(summary, stats):
@@ -174,3 +177,44 @@ def test_every_tool_declares_structured_output():
 
     assert tools
     assert all(t.outputSchema for t in tools), [t.name for t in tools if not t.outputSchema]
+
+
+def test_a_large_limit_is_clamped_and_paged(action_items):
+    action_items.return_value = [{"id": str(i)} for i in range(index_server.MAX_LIMIT + 1)]
+
+    out = index_server.index_action_items(limit=500)
+
+    assert action_items.call_args.kwargs["limit"] == index_server.MAX_LIMIT + 1
+    assert out["count"] == index_server.MAX_LIMIT
+    assert out["next_cursor"] is not None
+
+
+def test_the_next_page_resumes_at_the_offset(action_items):
+    action_items.return_value = [{"id": str(i)} for i in range(11)]
+    first = index_server.index_action_items(limit=10, domain="banking")
+    action_items.return_value = [{"id": "10"}]
+
+    last = index_server.index_action_items(limit=10, domain="banking", cursor=first["next_cursor"])
+
+    assert action_items.call_args.kwargs["offset"] == 10
+    assert (last["count"], last["next_cursor"]) == (1, None)
+
+
+def test_a_cursor_with_changed_filters_is_refused(action_items):
+    action_items.return_value = [{"id": str(i)} for i in range(11)]
+    first = index_server.index_action_items(limit=10, domain="banking")
+
+    with pytest.raises(ValueError, match="different query"):
+        index_server.index_action_items(limit=10, domain="health", cursor=first["next_cursor"])
+
+
+def test_paging_stops_at_the_offset_ceiling(action_items):
+    from corpus.envelope import encode_cursor
+
+    action_items.return_value = [{"id": str(i)} for i in range(101)]
+    args = {"domain": None, "importance": None}
+    last = encode_cursor("index_action_items", args, index_server.MAX_OFFSET - 100)
+
+    out = index_server.index_action_items(limit=100, cursor=last)
+
+    assert (out["count"], out["next_cursor"]) == (100, None)

@@ -22,6 +22,13 @@ def _dsn() -> str:
     return settings.database_url
 
 
+#: How many neighbours one vector search can rank (pgvector's ``hnsw.ef_search``).
+#: An HNSW index scan returns at most this many rows whatever the LIMIT, so it is
+#: also the deepest a caller can page into search results. pgvector's default, 40,
+#: would cut paging off silently.
+HNSW_EF_SEARCH = 200
+
+
 def get_document_store() -> PgvectorDocumentStore:
     """Build the Haystack PgvectorDocumentStore for the corpus documents."""
     return PgvectorDocumentStore(
@@ -31,6 +38,7 @@ def get_document_store() -> PgvectorDocumentStore:
         embedding_dimension=settings.embedding_dimensions,
         vector_function="cosine_similarity",
         search_strategy="hnsw",
+        hnsw_ef_search=HNSW_EF_SEARCH,
         recreate_table=False,
     )
 

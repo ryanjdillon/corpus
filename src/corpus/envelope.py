@@ -16,11 +16,21 @@ shorten the list.
 
 The shape is ``corpus.result/v1``; see ``docs/mcp-results.md``. Errors are not
 wrapped: a tool raises and MCP returns ``isError`` with the message.
+
+Paging is part of the same contract. A tool caps ``limit`` at its own maximum
+(clamping, never refusing) and returns ``next_cursor`` while more rows exist; the
+caller passes it back as ``cursor`` with the same other arguments. A cursor is
+opaque to the caller but not secret: it only positions a query whose filters
+are re-applied on every page, so a forged one cannot widen what is read.
 """
 
 from __future__ import annotations
 
+import base64
+import binascii
+import hashlib
 import html
+import json
 import re
 import unicodedata
 from collections.abc import Iterable, Mapping
@@ -152,3 +162,64 @@ def wrap(
         "next_cursor": next_cursor,
         "rows": out,
     }
+
+
+CURSOR_HELP = (
+    "Opaque cursor from a previous result's next_cursor, to fetch the next page. "
+    "Pass the same other arguments; omit it for the first page."
+)
+
+# Arguments that may differ between pages of one query.
+_PAGE_ARGS = frozenset({"cursor", "limit", "top_k"})
+
+
+def clamp(limit: int, max_limit: int) -> int:
+    """*limit* bounded to 1..*max_limit*: a larger request is served, not refused."""
+    return max(1, min(limit, max_limit))
+
+
+def _query_key(tool: str, args: Mapping[str, Any]) -> str:
+    """A short fingerprint of a query: the tool and every non-paging argument."""
+    fixed = {k: v for k, v in args.items() if k not in _PAGE_ARGS}
+    blob = json.dumps([tool, fixed], sort_keys=True, default=str)
+    return hashlib.sha256(blob.encode()).hexdigest()[:16]
+
+
+def encode_cursor(tool: str, args: Mapping[str, Any], position: Any) -> str:
+    """A cursor resuming *tool*'s query at *position* (an offset or a sort key)."""
+    payload = {"q": _query_key(tool, args), "p": position}
+    raw = json.dumps(payload, separators=(",", ":"), default=str).encode()
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def decode_cursor(cursor: str | None, tool: str, args: Mapping[str, Any]) -> Any:
+    """The position a cursor resumes at, or ``None`` for the first page.
+
+    Raises ``ValueError`` for a malformed cursor, or one from a different query:
+    paging with changed filters would silently skip or repeat rows.
+    """
+    if not cursor:
+        return None
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode()))
+    except (binascii.Error, UnicodeDecodeError, ValueError) as exc:
+        raise ValueError("invalid cursor") from exc
+    if not isinstance(payload, dict) or "p" not in payload:
+        raise ValueError("invalid cursor")
+    if payload.get("q") != _query_key(tool, args):
+        raise ValueError("cursor belongs to a different query; pass the same arguments")
+    return payload["p"]
+
+
+def offset_of(position: Any, max_offset: int) -> int:
+    """An offset position from :func:`decode_cursor` (``None`` is the first page).
+
+    *max_offset* bounds how deep a caller can page, so a forged cursor cannot ask
+    the database to skip a billion rows.
+    """
+    if position is None:
+        return 0
+    if isinstance(position, bool) or not isinstance(position, int) or not 0 <= position < max_offset:
+        raise ValueError("invalid cursor")
+    return position

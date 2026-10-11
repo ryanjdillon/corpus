@@ -52,7 +52,7 @@ def test_action_items_filters_and_orders(rows):
     assert "requires_action = true" in sql
     assert "domain = %s" in sql and "importance = %s" in sql
     assert "ORDER BY" in sql and "LIMIT %s" in sql
-    assert params == ["banking", "high", 10]  # filters then limit, positionally bound
+    assert params == ["banking", "high", 10, 0]  # filters, limit, offset: positionally bound
 
 
 def test_action_items_no_filters(rows):
@@ -61,7 +61,7 @@ def test_action_items_no_filters(rows):
 
     assert "requires_action = true" in sql
     assert "domain = %s" not in sql and "importance = %s" not in sql
-    assert params == [50]  # just the default limit
+    assert params == [50, 0]  # just the default limit and offset
 
 
 def test_waiting_on_binds_who(rows):
@@ -69,13 +69,13 @@ def test_waiting_on_binds_who(rows):
     sql, params = rows.call_args.args
 
     assert "waiting_on = %s" in sql
-    assert params == ["me", 5]
+    assert params == ["me", 5, 0]
 
 
 def test_by_domain_binds_domain(rows):
     index_query.by_domain("health", rows=rows)
     _, params = rows.call_args.args
-    assert params == ["health", 50]
+    assert params == ["health", 50, 0]
 
 
 def test_summary_returns_first_or_none(rows):
@@ -102,7 +102,7 @@ def test_due_soon_and_by_domain_shapes(rows):
     index_query.due_soon(limit=7, rows=rows)
     sql, params = rows.call_args.args
     assert "time_sensitive = true OR deadline IS NOT NULL" in sql
-    assert params == [7]
+    assert params == [7, 0]
 
 
 def test_stats_aggregates(rows):

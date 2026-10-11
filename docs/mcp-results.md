@@ -34,11 +34,45 @@ tells the caller how far to trust each field in them. The shape is built in
 | `notice` | A fixed sentence telling a model how to treat untrusted fields. |
 | `count` | Rows on this page, always `len(rows)`. |
 | `total` | Every match, when cheap to know (the stats tools); otherwise `null`. |
-| `next_cursor` | Opaque cursor for the next page; `null` on the last page. Reserved: no tool pages yet, so it is always `null` today. |
+| `next_cursor` | Opaque cursor for the next page; `null` on the last page (see [Paging](#paging)). |
 | `rows` | Always a list. A single-record tool (`corpus_get`, `index_summary`) returns 0 or 1 rows. Each row has `flags`. |
 
 A tool that fails returns an MCP error (`isError`) with a plain-text message,
 not an envelope.
+
+## Paging
+
+Every tool that returns a list caps how many rows one call returns. A `limit`
+(or `top_k`) above the cap is clamped, not refused: `count` says how many rows
+came back, and `next_cursor` is set whenever more exist. To read on, call the
+same tool with the same arguments plus `cursor` set to that `next_cursor`; a
+different `limit` is fine. A cursor that is malformed, or that comes from a
+call with different filters, is refused with an error rather than quietly
+skipping or repeating rows.
+
+| Tool | Most rows per call | Pages by | Paging stops after |
+| --- | --- | --- | --- |
+| `index_action_items`, `index_due_soon`, `index_waiting_on`, `index_by_domain` | 100 | offset in the priority order (ties broken by id) | 1000 rows |
+| `corpus_query` | 100 | keyset on `(sent_at, id)`, newest first | never |
+| `corpus_search` | 50 | offset in the ranking (each page re-runs the search) | 200 rows, the most one vector search ranks (`store.HNSW_EF_SEARCH`) |
+
+At its ceiling a tool returns `next_cursor: null`, as on a last page; narrow
+the filters to read further.
+
+`corpus_query` pages are stable: mail that arrives while a caller pages cannot
+shift them, and a `since` window is resolved once, on the first page, so later
+pages share its lower bound. The offset-paged tools rank by fields that can
+change between calls (a new action item, a re-enrichment), so a row can move
+across a page boundary; read them in one pass.
+
+The cursor is opaque but not signed. It only positions a query whose filters
+are applied again on every page, and what it carries is checked against the
+call's own arguments: an offset must be below the tool's ceiling, and
+`corpus_query`'s frozen lower bound must equal `after`, or with `since` lie
+within an hour before the window's current start. A forged cursor therefore
+cannot read outside the window the call states, and the audit log records that
+window. A `since` cursor more than an hour old is refused; start again from the
+first page.
 
 ## Why fields are marked untrusted
 

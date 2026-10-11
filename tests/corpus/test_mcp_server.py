@@ -107,3 +107,136 @@ def test_every_raw_row_key_is_classified(keys, untrusted, trusted):
     # A new key must be marked untrusted or added here deliberately.
     assert set(untrusted) <= set(keys)
     assert set(keys) - set(untrusted) == trusted
+
+
+def _mail(n: int) -> list[dict]:
+    return [{"id": f"d{i}", "sent_at": f"2026-10-{30 - i:02d}", "subject": "s"} for i in range(n)]
+
+
+def test_query_pages_by_keyset_with_the_first_pages_window(monkeypatch):
+    query = _patch(monkeypatch, "structured_query", _mail(mcp_server.QUERY_MAX_LIMIT + 1))
+    cutoff = _patch(monkeypatch, "relative_cutoff", "2026-10-10T07:00:00+00:00")
+    args = {"label": None, "account": None, "before": None, "after": None, "since": "24h"}
+
+    first = mcp_server.corpus_query(**args, limit=500)
+    query.return_value = _mail(1)
+    mcp_server.corpus_query(**args, limit=500, cursor=first["next_cursor"])
+
+    page2 = query.call_args.kwargs
+    # Page two reads the first page's bound from the cursor; the fresh cutoff only
+    # checks that the bound is this window's.
+    assert page2["after"] == "2026-10-10T07:00:00+00:00"
+    assert [c.args for c in cutoff.call_args_list] == [("24h",), ("24h",)]
+    last = first["rows"][-1]
+    assert page2["older_than"] == (last["sent_at"], last["id"])
+    assert first["count"] == mcp_server.QUERY_MAX_LIMIT
+
+
+def test_query_last_page_has_no_cursor(monkeypatch):
+    _patch(monkeypatch, "structured_query", _mail(3))
+
+    out = mcp_server.corpus_query(
+        label=None, account=None, before=None, after=None, since=None, limit=10
+    )
+
+    assert (out["count"], out["next_cursor"]) == (3, None)
+
+
+def test_a_forged_keyset_cursor_is_refused(monkeypatch):
+    from corpus.envelope import encode_cursor
+
+    _patch(monkeypatch, "structured_query", [])
+    args = {"label": None, "account": None, "before": None, "after": None, "since": None}
+    for position in ({"key": [1, 2], "after": None}, 100):
+        forged = encode_cursor("corpus_query", args, position)
+
+        with pytest.raises(ValueError, match="invalid cursor"):
+            mcp_server.corpus_query(**args, limit=10, cursor=forged)
+
+
+def test_search_pages_by_offset_over_the_ranking(monkeypatch):
+    ranked = [{"id": f"d{i}", "snippet": "x"} for i in range(25)]
+    search_ = _patch(monkeypatch, "semantic_search", ranked)
+
+    first = mcp_server.corpus_search(query="kayak", top_k=10)
+    second = mcp_server.corpus_search(query="kayak", top_k=10, cursor=first["next_cursor"])
+
+    assert [r["id"] for r in second["rows"]] == [f"d{i}" for i in range(10, 20)]
+    assert search_.call_args.args == ("kayak", 21)
+
+
+def test_run_serves_streamable_http(monkeypatch):
+    run = create_autospec(mcp_server.mcp.run)
+    monkeypatch.setattr(mcp_server.mcp, "run", run)
+
+    mcp_server.run()
+
+    run.assert_called_once_with(transport="streamable-http")
+
+
+def test_search_stops_paging_at_the_ranked_depth(monkeypatch):
+    from corpus.envelope import encode_cursor
+
+    depth = mcp_server.SEARCH_DEPTH
+    search_ = _patch(monkeypatch, "semantic_search", [{"id": f"d{i}"} for i in range(depth)])
+    cursor = encode_cursor("corpus_search", {"query": "kayak"}, depth - 30)
+
+    out = mcp_server.corpus_search(query="kayak", top_k=50, cursor=cursor)
+
+    assert search_.call_args.args == ("kayak", depth)  # never asks past the depth
+    assert (out["count"], out["next_cursor"]) == (30, None)
+
+
+_WINDOW = {"label": None, "account": None, "before": None, "after": None, "since": "24h"}
+
+
+@pytest.mark.parametrize(
+    "after",
+    [None, "2020-01-01T00:00:00+00:00", "not a date", "2026-10-11T00:00:00"],
+)
+def test_a_cursor_cannot_widen_a_since_window(monkeypatch, after):
+    from corpus.envelope import encode_cursor
+
+    _patch(monkeypatch, "structured_query", [])
+    _patch(monkeypatch, "relative_cutoff", "2026-10-10T07:00:00+00:00")
+    forged = encode_cursor("corpus_query", _WINDOW, {"key": ["9999-12-31", "zzzz"], "after": after})
+
+    with pytest.raises(ValueError, match="invalid cursor"):
+        mcp_server.corpus_query(**_WINDOW, limit=10, cursor=forged)
+
+
+def test_a_cursor_cannot_change_an_explicit_after(monkeypatch):
+    from corpus.envelope import encode_cursor
+
+    _patch(monkeypatch, "structured_query", [])
+    args = {**_WINDOW, "since": None, "after": "2026-10-01"}
+    forged = encode_cursor("corpus_query", args, {"key": ["9999-12-31", "z"], "after": None})
+
+    with pytest.raises(ValueError, match="invalid cursor"):
+        mcp_server.corpus_query(**args, limit=10, cursor=forged)
+
+
+def test_a_stale_since_cursor_is_refused(monkeypatch):
+    from corpus.envelope import encode_cursor
+
+    _patch(monkeypatch, "structured_query", [])
+    _patch(monkeypatch, "relative_cutoff", "2026-10-10T09:00:00+00:00")
+    stale = encode_cursor(
+        "corpus_query", _WINDOW, {"key": ["2026-10-10", "d1"], "after": "2026-10-10T07:00:00+00:00"}
+    )
+
+    with pytest.raises(ValueError, match="invalid cursor"):
+        mcp_server.corpus_query(**_WINDOW, limit=10, cursor=stale)
+
+
+def test_a_cursor_cannot_add_a_window_to_an_unbounded_query(monkeypatch):
+    from corpus.envelope import encode_cursor
+
+    _patch(monkeypatch, "structured_query", [{"id": "d1", "sent_at": "2026-01-01"}])
+    args = {**_WINDOW, "since": None}
+    ok = encode_cursor("corpus_query", args, {"key": ["2026-02-01", "d2"], "after": None})
+    forged = encode_cursor("corpus_query", args, {"key": ["2026-02-01", "d2"], "after": "2026-01-01"})
+
+    assert mcp_server.corpus_query(**args, limit=10, cursor=ok)["count"] == 1
+    with pytest.raises(ValueError, match="invalid cursor"):
+        mcp_server.corpus_query(**args, limit=10, cursor=forged)
