@@ -212,10 +212,14 @@ def decode_cursor(cursor: str | None, tool: str, args: Mapping[str, Any]) -> Any
     return payload["p"]
 
 
-def offset_of(position: Any) -> int:
-    """An offset position from :func:`decode_cursor` (``None`` is the first page)."""
+def offset_of(position: Any, max_offset: int) -> int:
+    """An offset position from :func:`decode_cursor` (``None`` is the first page).
+
+    *max_offset* bounds how deep a caller can page, so a forged cursor cannot ask
+    the database to skip a billion rows.
+    """
     if position is None:
         return 0
-    if isinstance(position, bool) or not isinstance(position, int) or position < 0:
+    if isinstance(position, bool) or not isinstance(position, int) or not 0 <= position < max_offset:
         raise ValueError("invalid cursor")
     return position

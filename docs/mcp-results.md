@@ -50,19 +50,29 @@ different `limit` is fine. A cursor that is malformed, or that comes from a
 call with different filters, is refused with an error rather than quietly
 skipping or repeating rows.
 
-| Tool | Most rows per call | Pages by |
-| --- | --- | --- |
-| `index_action_items`, `index_due_soon`, `index_waiting_on`, `index_by_domain` | 100 | offset in the priority order (ties broken by id) |
-| `corpus_query` | 100 | keyset on `(sent_at, id)`, newest first |
-| `corpus_search` | 50 | offset in the ranking (each page re-runs the search) |
+| Tool | Most rows per call | Pages by | Paging stops after |
+| --- | --- | --- | --- |
+| `index_action_items`, `index_due_soon`, `index_waiting_on`, `index_by_domain` | 100 | offset in the priority order (ties broken by id) | 1000 rows |
+| `corpus_query` | 100 | keyset on `(sent_at, id)`, newest first | never |
+| `corpus_search` | 50 | offset in the ranking (each page re-runs the search) | 200 rows, the most one vector search ranks (`store.HNSW_EF_SEARCH`) |
+
+At its ceiling a tool returns `next_cursor: null`, as on a last page; narrow
+the filters to read further.
 
 `corpus_query` pages are stable: mail that arrives while a caller pages cannot
 shift them, and a `since` window is resolved once, on the first page, so later
 pages share its lower bound. The offset-paged tools rank by fields that can
 change between calls (a new action item, a re-enrichment), so a row can move
-across a page boundary; read them in one pass. The cursor is opaque but not
-secret: it only positions a query whose filters are applied again on every
-page, so a forged one cannot widen what a caller reads.
+across a page boundary; read them in one pass.
+
+The cursor is opaque but not signed. It only positions a query whose filters
+are applied again on every page, and what it carries is checked against the
+call's own arguments: an offset must be below the tool's ceiling, and
+`corpus_query`'s frozen lower bound must equal `after`, or with `since` lie
+within an hour before the window's current start. A forged cursor therefore
+cannot read outside the window the call states, and the audit log records that
+window. A `since` cursor more than an hour old is refused; start again from the
+first page.
 
 ## Why fields are marked untrusted
 

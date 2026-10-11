@@ -201,10 +201,14 @@ def test_a_malformed_cursor_is_refused(cursor):
         decode_cursor(cursor, "t", {})
 
 
-@pytest.mark.parametrize("position", [-1, "10", True, 1.5, [1]])
-def test_an_offset_must_be_a_non_negative_int(position):
+@pytest.mark.parametrize("position", [-1, "10", True, 1.5, [1], 1000, 10**9])
+def test_an_offset_must_be_a_bounded_non_negative_int(position):
     with pytest.raises(ValueError, match="invalid cursor"):
-        offset_of(position)
+        offset_of(position, 1000)
+
+
+def test_an_offset_within_bounds_is_returned():
+    assert (offset_of(None, 1000), offset_of(999, 1000)) == (0, 999)
 
 
 @pytest.mark.parametrize(("limit", "clamped"), [(500, 100), (100, 100), (7, 7), (0, 1), (-3, 1)])

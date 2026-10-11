@@ -111,3 +111,24 @@ def test_structured_query_keyset_pages_cover_every_row_once(pg, fake_embeddings)
 
     assert len(seen) == len(set(seen)) == 5
     assert seen[0] == "imap:test::5" and seen[-1] == "imap:test::1"
+
+
+def test_search_ranks_past_the_pgvector_default_on_the_index_path(pg, fake_embeddings, monkeypatch):
+    # pgvector's default hnsw.ef_search (40) caps an index scan at 40 rows whatever
+    # the LIMIT. A small table seqscans and hides that, so force the index path.
+    import psycopg
+
+    from corpus.config import settings
+    from corpus.store import HNSW_EF_SEARCH
+
+    for i in range(60):
+        _index(str(i), f"note {i}", f"kayak trip note number {i}", "personal", "2026-01-01")
+    with psycopg.connect(pg, autocommit=True) as conn:
+        conn.execute("ANALYZE corpus.documents")
+    sep = "&" if "?" in pg else "?"
+    monkeypatch.setattr(settings, "database_url", f"{pg}{sep}options=-c%20enable_seqscan%3Doff")
+
+    results = search.semantic_search("kayak trip", top_k=55)
+
+    assert HNSW_EF_SEARCH >= 55
+    assert len(results) == 55

@@ -25,6 +25,9 @@ TIER = tier("sanitized").name
 #: The most rows one call returns; a larger ``limit`` is clamped, and the caller
 #: pages on with ``next_cursor``. Bounds what one call can read.
 MAX_LIMIT = 100
+#: The deepest a caller can page. Paging stops (next_cursor is null) here, which
+#: bounds the rows an offset scan skips.
+MAX_OFFSET = 10 * MAX_LIMIT
 
 mcp = FastMCP(
     settings.index_server_name,
@@ -63,10 +66,10 @@ def _page(
     One row beyond the page is fetched to learn whether another page exists, so
     ``next_cursor`` is ``None`` exactly on the last page.
     """
-    offset = offset_of(decode_cursor(cursor, tool, args))
+    offset = offset_of(decode_cursor(cursor, tool, args), MAX_OFFSET)
     n = clamp(limit, MAX_LIMIT)
     rows = fetch(n + 1, offset)
-    more = len(rows) > n
+    more = len(rows) > n and offset + n < MAX_OFFSET
     return _rows(
         tool, rows[:n], next_cursor=encode_cursor(tool, args, offset + n) if more else None
     )

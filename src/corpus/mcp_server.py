@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from typing import Annotated, Any
 
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
-from . import search
+from . import search, store
 from .config import settings
 from .envelope import CURSOR_HELP, clamp, decode_cursor, encode_cursor, offset_of, wrap
 from .telemetry import audited
@@ -23,6 +24,10 @@ GET_UNTRUSTED = ("content", "meta")
 # on with next_cursor. Search is lower: each page re-embeds the query.
 QUERY_MAX_LIMIT = 100
 SEARCH_MAX_LIMIT = 50
+# Search ranks at most this many results in all, so paging stops there.
+SEARCH_DEPTH = store.HNSW_EF_SEARCH
+# A since-window cursor older than this is refused; the caller starts again.
+CURSOR_MAX_AGE = timedelta(hours=1)
 
 mcp = FastMCP(
     "corpus",
@@ -61,6 +66,31 @@ def _keyset(position: Any) -> bool:
     )
 
 
+def _same_window(lower: str | None, after: str | None, since: str | None) -> bool:
+    """Whether a cursor's lower bound is the one this call's arguments give.
+
+    The cursor carries the first page's resolved bound so a ``since`` window does
+    not slide between pages. Unsigned, it must still not widen the call: with
+    ``after`` it must equal it, with ``since`` it must lie within
+    ``CURSOR_MAX_AGE`` before the window's current start, and with neither it must
+    be absent. The audit log then states the window actually read.
+    """
+    if after:
+        return lower == after
+    if not since:
+        return lower is None
+    if lower is None:
+        return False
+    try:
+        frozen = datetime.fromisoformat(lower)
+    except ValueError:
+        return False
+    if frozen.tzinfo is None:  # relative_cutoff is always zone-aware
+        return False
+    current = datetime.fromisoformat(search.relative_cutoff(since))
+    return current - CURSOR_MAX_AGE <= frozen <= current
+
+
 @mcp.tool()
 @_audited
 def corpus_search(
@@ -79,9 +109,10 @@ def corpus_search(
         A ``corpus.result/v1`` envelope whose ``rows`` are ranked matches, each
         with subject, from_addr, sent_at, label, and a 300-character snippet.
     """
-    offset = offset_of(decode_cursor(cursor, "corpus_search", {"query": query}))
+    offset = offset_of(decode_cursor(cursor, "corpus_search", {"query": query}), SEARCH_DEPTH)
     n = clamp(top_k, SEARCH_MAX_LIMIT)
-    ranked = search.semantic_search(query, offset + n + 1)[offset:]
+    # One beyond the page shows whether more exist, up to the depth search ranks.
+    ranked = search.semantic_search(query, min(offset + n + 1, SEARCH_DEPTH))[offset:]
     next_cursor = (
         encode_cursor("corpus_search", {"query": query}, offset + n) if len(ranked) > n else None
     )
@@ -129,7 +160,7 @@ def corpus_query(
         # Resolve a relative window once, so every page shares the first page's
         # lower bound instead of sliding forward with the clock.
         lower, older_than = after or (search.relative_cutoff(since) if since else None), None
-    elif _keyset(position):
+    elif _keyset(position) and _same_window(position["after"], after, since):
         lower, older_than = position["after"], tuple(position["key"])
     else:
         raise ValueError("invalid cursor")

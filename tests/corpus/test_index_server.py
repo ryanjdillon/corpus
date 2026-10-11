@@ -206,3 +206,15 @@ def test_a_cursor_with_changed_filters_is_refused(action_items):
 
     with pytest.raises(ValueError, match="different query"):
         index_server.index_action_items(limit=10, domain="health", cursor=first["next_cursor"])
+
+
+def test_paging_stops_at_the_offset_ceiling(action_items):
+    from corpus.envelope import encode_cursor
+
+    action_items.return_value = [{"id": str(i)} for i in range(101)]
+    args = {"domain": None, "importance": None}
+    last = encode_cursor("index_action_items", args, index_server.MAX_OFFSET - 100)
+
+    out = index_server.index_action_items(limit=100, cursor=last)
+
+    assert (out["count"], out["next_cursor"]) == (100, None)
