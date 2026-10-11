@@ -34,7 +34,7 @@ tells the caller how far to trust each field in them. The shape is built in
 | `notice` | A fixed sentence telling a model how to treat untrusted fields. |
 | `count` | Rows on this page, always `len(rows)`. |
 | `total` | Every match, when cheap to know (the stats tools); otherwise `null`. |
-| `next_cursor` | Opaque cursor for the next page; `null` on the last page. |
+| `next_cursor` | Opaque cursor for the next page; `null` on the last page. Reserved: no tool pages yet, so it is always `null` today. |
 | `rows` | Always a list. A single-record tool (`corpus_get`, `index_summary`) returns 0 or 1 rows. Each row has `flags`. |
 
 A tool that fails returns an MCP error (`isError`) with a plain-text message,
@@ -72,11 +72,14 @@ The stats tools return one row per group (`label` and `count` on `corpus`;
 
 | Flag | Meaning |
 | --- | --- |
-| `instruction_like` | An untrusted field reads like instructions to an AI: override phrasing ("ignore previous instructions"), chat-template or tool-call syntax, or a URL carrying credentials. |
+| `instruction_like` | An untrusted field reads like instructions to an AI: override phrasing ("ignore previous instructions"), an address to an AI ("to any AI reading this"), chat-template or tool-call syntax, or a URL carrying credentials. |
 
 A flagged row is marked, never dropped: an injected email should still reach the
 human reading the briefing, visibly marked as suspicious, but no agent should
 act on it. The check runs when the result is built, over every untrusted field,
 so it covers rows already stored and a pattern change applies at once. The
-patterns aim for precision: ordinary mail ("please reply by Friday") must not
-match, or readers learn to ignore the flag.
+patterns aim for precision: ordinary mail ("please reply by Friday", "this is an
+automated system message", "ignore these instructions if you have already
+renewed") must not match, or readers learn to ignore the flag. The flag is a
+signal, not a filter, and will miss phrasings it has no pattern for; the
+untrusted-field framing is what protects a consumer.
