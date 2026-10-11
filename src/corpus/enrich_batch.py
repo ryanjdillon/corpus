@@ -27,10 +27,16 @@ from itertools import islice
 
 import msgspec
 
-from . import scan
+from . import scan, telemetry
 from .config import settings
 from .enricher import Enricher, EnrichError
-from .enrichment import RECOVERED_MARKER, RECOVERED_SCHEMA_VERSION, SCHEMA_VERSION
+from .enrichment import (
+    FREE_TEXT_FIELDS,
+    RECOVERED_MARKER,
+    RECOVERED_SCHEMA_VERSION,
+    SCHEMA_VERSION,
+)
+from .envelope import flags
 from .fetchers.policy import enrichable_kinds, may_enrich
 from .secret_audit import audit_secrets, audit_texts, merge_audits
 from .store import iter_documents
@@ -110,8 +116,8 @@ def run_enrich(
     enricher = enricher or Enricher()
     audit_model = settings.audit_model or enricher.model
     counts = {
-        "scanned": 0, "enriched": 0, "recovered": 0, "audited": 0, "audit_failed": 0,
-        "skipped": 0, "ineligible": 0,
+        "scanned": 0, "enriched": 0, "recovered": 0, "instruction_like": 0, "audited": 0,
+        "audit_failed": 0, "skipped": 0, "ineligible": 0,
     }
     excluded: set[str] = set()
 
@@ -176,8 +182,16 @@ def run_enrich(
         # A recovered record is kept but stored under a marked version, so it
         # counts as stale: --redo-recovered or --upgrade-stale enriches it again.
         version = RECOVERED_SCHEMA_VERSION if recovered else SCHEMA_VERSION
-        store.save_enrichment(doc_id, msgspec.to_builtins(enrichment), enricher.model, version)
+        stored = msgspec.to_builtins(enrichment)
+        store.save_enrichment(doc_id, stored, enricher.model, version)
         counts["enriched"] += 1
+        # Flagged, not rejected: the summary of an injection attempt is what the
+        # owner needs to see. Result envelopes flag the row again when it is read;
+        # this counts how often enrichment repeats instruction-like text.
+        if flags(stored, FREE_TEXT_FIELDS):
+            counts["instruction_like"] += 1
+            telemetry.enrich_instruction_like.add(1, {"model": enricher.model})
+            log.warning("enrichment of %s reads like instructions to an AI", doc_id)
         if recovered:
             counts["recovered"] += 1
             log.warning("recovered %s from a reply stalled in whitespace padding", doc_id)
@@ -207,10 +221,10 @@ def run_enrich(
         if own:
             enricher.close()
     log.info(
-        "enriched %d (%d recovered), audited %d (%d failed), skipped %d, ineligible %d of %d "
-        "scanned",
-        counts["enriched"], counts["recovered"], counts["audited"], counts["audit_failed"], counts["skipped"],
-        counts["ineligible"], counts["scanned"],
+        "enriched %d (%d recovered, %d instruction-like), audited %d (%d failed), skipped %d, "
+        "ineligible %d of %d scanned",
+        counts["enriched"], counts["recovered"], counts["instruction_like"], counts["audited"],
+        counts["audit_failed"], counts["skipped"], counts["ineligible"], counts["scanned"],
     )
     if excluded:
         log.info(

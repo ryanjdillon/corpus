@@ -7,7 +7,9 @@ API, MCP, and ingest processes export OpenTelemetry over OTLP:
   source APIs).
 - **Metrics** — ingest counters and histograms (documents written and skipped,
   embed latency, batch size), a corpus-size gauge by data-class, FastAPI HTTP
-  server metrics, and MCP tool calls by principal (see below).
+  server metrics, MCP tool calls by principal (see below), and enrichments
+  whose free text reads like instructions to an AI
+  (`corpus.enrich.instruction_like`, by model).
 
 It is a no-op when the endpoint is unset. Heavy SDK imports are deferred until
 telemetry is configured, and a one-shot process (an ingest run) flushes the

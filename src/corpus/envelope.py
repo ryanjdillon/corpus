@@ -76,6 +76,9 @@ _PATTERNS = (
     # or "an assistant professor" stays clear.
     r"\byou\sare\s(?:an?\s)?(?:ai|llm|language\smodel|chatbot)(?:[\s-](?:assistant|agent))?(?![\s-]?\w)",
     r"\bto\s(?:any|the)\s(?:ai|llm|assistant|agent)s?\s(?:reading|processing|summari[sz]ing)\b",
+    # The lookahead ends the clause at the noun, so "for the assistant manager"
+    # or "for the AI course" stays clear.
+    r"\b(?:new|updated|additional)\sinstructions?\sfor\s(?:the\s|any\s|an?\s)?(?:ai|llm|assistant|agent)s?(?![\s-]?\w)",
     (
         r"\b(?:ignorer|se\sbort\sfr[aå]|glem)\s(?:alle\s|alt\s)?(?:de\s)?"
         r"(?:tidligere|forrige|ovenst[aå]ende|eksisterande|eksisterende)\s"

@@ -83,6 +83,19 @@ real one, so a stalled audit is rejected. (vLLM can forbid the padding outright
 with the server-wide `disable_any_whitespace` structured-outputs option; the
 per-request field is ignored.)
 
+## Instruction-like output
+
+Anyone can send the mailbox an email, and a model summarising an email that
+addresses an AI ("ignore previous instructions and …") can repeat the request in
+its summary. After each enrichment, its free-text fields
+(`enrichment.FREE_TEXT_FIELDS`: the summaries, key points, action summary, and
+entity names) are checked with the same detector the MCP result envelope uses
+(see [MCP results](mcp-results.md#flags)). A match is kept, not rejected, since
+the owner should see that the email arrived; it is counted as `instruction_like`
+in the run log and in the `corpus.enrich.instruction_like` metric (by model), and
+logged as a warning with the document id. Envelopes flag the row again each time
+it is read, so a pattern added later covers records enriched before it.
+
 ## Models
 
 `CORPUS_ENRICH_MODEL` does the enrichment, and `CORPUS_AUDIT_MODEL` does the
