@@ -72,6 +72,9 @@
         },
         {
           "path": "src/corpus/mcp_server.py"
+        },
+        {
+          "path": "src/corpus/envelope.py"
         }
       ]
     },

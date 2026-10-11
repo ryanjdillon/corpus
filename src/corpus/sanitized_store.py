@@ -22,6 +22,12 @@ COLS = (
     "enriched_at",
 )
 
+#: The projection's columns derived from third-party text, which a result
+#: envelope marks untrusted (see ``envelope``): model summaries and entities of the
+#: email, the sender's domain, and the thread id (from the Message-ID header).
+#: Every other column is an id, a date, or a schema-constrained enum.
+UNTRUSTED_COLS = ("action_summary", "one_line", "organizations", "sender_domain", "thread_id")
+
 
 def _ddl(schema: str, dim: int) -> str:
     """Return the DDL for the sanitized ``messages`` table (with a *dim*-wide vector)."""
