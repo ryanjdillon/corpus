@@ -68,6 +68,19 @@ class EnrichStore(Store):
             )
         return {row[0] for row in rows}
 
+    def enriched_ids_marked(self, marker: str) -> set[str]:
+        """Return doc ids whose enrichment's schema version ends in *marker*.
+
+        Matches across schema versions, so records marked under an older schema
+        are still found after the schema changes.
+        """
+        rows = self._read(
+            f"SELECT doc_id FROM {self._table} "
+            "WHERE enrichment IS NOT NULL AND right(schema_version, length(%s)) = %s",
+            (marker, marker),
+        )
+        return {row[0] for row in rows}
+
     def save_enrichment(self, doc_id: str, enrichment: dict, model: str, schema_version: str) -> None:
         """Upsert the enrichment for *doc_id*."""
         self._write(

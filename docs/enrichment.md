@@ -15,6 +15,7 @@ corpus enrich --limit 400    # at most 400 documents sent to the model
 corpus enrich --force        # re-enrich documents that already have a record
 corpus enrich --upgrade-stale    # also redo records from an older schema version
 corpus enrich --retry-rejected   # also retry documents this model rejected
+corpus enrich --redo-recovered   # also redo records recovered from a stalled reply
 ```
 
 A run is resumable: documents that already have an enrichment are skipped, so a
@@ -67,8 +68,14 @@ Fields the model never reached fail closed where it matters:
 tier withholds the record's free text rather than publishing it as
 non-sensitive. Other fields take their schema defaults. A recovered record is
 stored under `RECOVERED_SCHEMA_VERSION` (`<SCHEMA_VERSION>+recovered`), which
-counts as stale: `--upgrade-stale` enriches it again in full, and the run log
-reports how many were recovered.
+counts as stale, and the run log reports how many were recovered.
+`--redo-recovered` enriches only those records again, in full, whichever
+schema they were recovered under. `--upgrade-stale` does too, but it also
+redoes every record from an older schema. A recovered record the model has
+since rejected stays passed over unless `--retry-rejected` is also given. A run does not
+retry recovered records on its own: at temperature 0 the same document usually
+stalls the same way, so redo them after changing what caused the stall, such as
+enabling `disable_any_whitespace` (below).
 
 The secret audit is never recovered. A stall would leave later candidates
 without a verdict, and reading that as "no secret" would silently downgrade a
