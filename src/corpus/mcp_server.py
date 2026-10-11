@@ -10,6 +10,7 @@ from pydantic import Field
 from . import search
 from .config import settings
 from .envelope import wrap
+from .telemetry import audited
 from .tiers import tier
 
 TIER = tier("sensitive").name
@@ -38,11 +39,15 @@ mcp = FastMCP(
 )
 
 
+_audited = audited(server=mcp.name, tier=TIER)
+
+
 def _rows(tool: str, rows: list[dict[str, Any]], untrusted: tuple[str, ...], **kw: Any) -> dict:
     return wrap(rows, server=mcp.name, tool=tool, tier=TIER, untrusted_fields=untrusted, **kw)
 
 
 @mcp.tool()
+@_audited
 def corpus_search(
     query: str = Field(description="Natural-language text, matched semantically against content."),
     top_k: int = Field(default=10, description="Maximum number of ranked matches to return."),
@@ -62,6 +67,7 @@ def corpus_search(
 
 
 @mcp.tool()
+@_audited
 def corpus_query(
     label: str | None = Field(
         default=None,
@@ -99,6 +105,7 @@ def corpus_query(
 
 
 @mcp.tool()
+@_audited
 def corpus_get(
     id: str = Field(description="Document id from a corpus_search / corpus_query result."),
 ) -> dict[str, Any]:
@@ -115,6 +122,7 @@ def corpus_get(
 
 
 @mcp.tool()
+@_audited
 def corpus_stats() -> dict[str, Any]:
     """Index totals and per-label document counts.
 

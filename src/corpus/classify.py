@@ -19,6 +19,10 @@ _ESP_DOMAINS = re.compile(
 )
 
 
+#: Every data-class label ``classify`` can assign.
+LABELS = frozenset({"bulk", "document", "newsletter", "notification", "personal", "promotional"})
+
+
 def _h(record: Record, name: str) -> str:
     for k, v in record.headers.items():
         if k.lower() == name.lower():

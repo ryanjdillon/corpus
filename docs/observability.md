@@ -6,8 +6,8 @@ API, MCP, and ingest processes export OpenTelemetry over OTLP:
 - **Traces** — FastAPI request spans and outgoing httpx spans (embedding calls,
   source APIs).
 - **Metrics** — ingest counters and histograms (documents written and skipped,
-  embed latency, batch size), a corpus-size gauge by data-class, and FastAPI HTTP
-  server metrics.
+  embed latency, batch size), a corpus-size gauge by data-class, FastAPI HTTP
+  server metrics, and MCP tool calls by principal (see below).
 
 It is a no-op when the endpoint is unset. Heavy SDK imports are deferred until
 telemetry is configured, and a one-shot process (an ingest run) flushes the
@@ -15,6 +15,52 @@ exporters on exit so its metrics are not lost.
 
 See the [architecture diagram](architecture.html) for where the instruments sit
 in the pipeline.
+
+## Auditing MCP tool calls
+
+Every MCP tool call, on both `corpus` and `corpus-index`, emits one audit event:
+a JSON line on the `corpus.audit` logger, always (it needs no OTLP endpoint), and
+the metrics below when telemetry is on. The event answers "which principal read
+which tier, how much, and when", and carries no row content.
+
+```
+2026-01-01 07:00:01,042 corpus.audit {"duration_ms": 12.4, "event": "mcp.tool_call", \
+    "filters": {"limit": 50, "query": {"chars": 21}}, "outcome": "ok", \
+    "principal": "orchestrator", "rows": 12, "server": "corpus-index", \
+    "tier": "sanitized", "tool": "index_action_items"}
+```
+
+- `principal` is the `x-client-id` request header. The gateway overwrites it
+  from the caller's API key, so a client cannot pick its own. A caller that
+  bypasses the gateway (an in-cluster job) is logged as `unknown`, not refused;
+  a repeated header is `ambiguous`, and a value not shaped like a client id
+  (`[a-z0-9_-]{1,32}`) is `other`, which keeps the metric label bounded.
+- `filters` is the call's argument shape. A value is logged verbatim only when
+  it is safe in itself: a number, a boolean, a member of the argument's closed
+  vocabulary (`label`, `domain`, `importance`, `who`), or a date or duration. A
+  document id keeps its source and is otherwise a short hash, since the rest can
+  name a mail folder. Any other string, such as a search query or an address, is
+  logged as its length, and a list as its size.
+- `rows` is the envelope's `count` (see [MCP results](mcp-results.md));
+  `outcome` is `ok` or the exception type of a failed call.
+
+Only calls that reach a tool are audited: FastMCP rejects arguments that fail a
+tool's schema, or an unknown tool name, before the tool runs. The gateway's
+access log covers those.
+
+Metrics, attributed by `server`, `tier`, `tool` and `principal`:
+`corpus.mcp.calls` (also by `outcome`), `corpus.mcp.rows`, and the latency
+histogram `corpus.mcp.duration` in milliseconds (by server, tier and tool only).
+
+In Loki, the events are one query, for example rows per principal and tier:
+
+```logql
+sum by (principal, tier) (
+  sum_over_time(
+    {namespace=~"corpus.*", container=~"mcp|index"} |= "corpus.audit"
+      | regexp "corpus.audit (?P<event>.*)" | line_format "{{.event}}" | json
+      | outcome="ok" | unwrap rows [1h]))
+```
 
 ## Diagnosing a shedding enrichment endpoint
 

@@ -10,12 +10,24 @@ module (for the metric instruments) stays cheap.
 from __future__ import annotations
 
 import atexit
+import enum
+import functools
+import hashlib
+import inspect
+import json
 import logging
 import os
+import re
+import time
+from collections.abc import Callable, Mapping
+from typing import Any
 
 from opentelemetry import metrics
 
 log = logging.getLogger("corpus.telemetry")
+audit_log = logging.getLogger("corpus.audit")
+# Always on: the audit must not vanish if the root level is later raised.
+audit_log.setLevel(logging.INFO)
 
 _configured = False
 _shutdown_done = False
@@ -160,3 +172,184 @@ embed_batch_size = _meter.create_histogram(
     unit="{record}",
     description="Records per embed request.",
 )
+mcp_calls = _meter.create_counter(
+    "corpus.mcp.calls",
+    unit="{call}",
+    description="MCP tool calls, by server, tier, tool, principal and outcome.",
+)
+mcp_rows = _meter.create_counter(
+    "corpus.mcp.rows",
+    unit="{row}",
+    description="Rows returned by MCP tools, by server, tier, tool and principal.",
+)
+mcp_duration = _meter.create_histogram(
+    "corpus.mcp.duration",
+    # Milliseconds, so calls spread across the default bucket bounds (0, 5, 10,
+    # 25, ... 10000) instead of all landing in the first one.
+    unit="ms",
+    description="MCP tool call latency, by server, tier and tool.",
+)
+
+
+# --- MCP tool-call audit -------------------------------------------------------
+
+#: The request header carrying the caller's principal. The gateway overwrites it
+#: from the authenticated API key, so a client cannot choose its own.
+PRINCIPAL_HEADER = "x-client-id"
+UNKNOWN_PRINCIPAL = "unknown"  # no header: a caller that bypassed the gateway
+AMBIGUOUS_PRINCIPAL = "ambiguous"  # the header sent more than once
+OTHER_PRINCIPAL = "other"  # not shaped like a client id
+# The principal is a metric attribute, so it must stay low-cardinality: anything
+# not shaped like a gateway client id collapses to "other".
+_PRINCIPAL = re.compile(r"^[a-z0-9_-]{1,32}$")
+
+# A source id such as "gmail:personal"; anything else (an address) is not logged.
+_SOURCE = re.compile(r"^[a-z0-9_-]{1,32}(?::[a-z0-9_-]{1,32})?$")
+_DURATION = re.compile(r"^\d{1,4}[smhdw]$")
+_ISO_TIME = re.compile(r"^\d{4}-\d{2}-\d{2}(?:[T ][\d:.]{2,15}(?:Z|[+-]\d{2}:?\d{2})?)?$")
+
+
+@functools.cache
+def _closed_values() -> dict[str, frozenset[str]]:
+    """The closed vocabularies a string argument may be logged verbatim from."""
+    from .classify import LABELS
+    from .enrichment import Domain, Importance, WaitingOn
+
+    return {
+        "label": LABELS,
+        "domain": frozenset(d.value for d in Domain),
+        "importance": frozenset(i.value for i in Importance),
+        "who": frozenset(w.value for w in WaitingOn),
+    }
+
+
+def _summarise(name: str, value: Any) -> Any:
+    """One argument, safe to log.
+
+    Verbatim only when the value itself is safe: None, a bool or a number, a member
+    of the argument's closed vocabulary, or a date or duration. A document id keeps
+    its source and is otherwise hashed, since the rest can name a mail folder. Any
+    other string (a search query, an address, a value outside the vocabulary) is
+    logged as its length, so the log never carries what a caller searched for.
+    """
+    if value is None or isinstance(value, (bool, int, float, enum.Enum)):
+        return value.value if isinstance(value, enum.Enum) else value
+    if isinstance(value, str):
+        if value in _closed_values().get(name, ()):
+            return value
+        if name == "since" and _DURATION.match(value):
+            return value
+        if name in {"before", "after"} and _ISO_TIME.match(value):
+            return value
+        if name == "id":
+            source, _, _ = value.partition("::")
+            digest = hashlib.sha256(value.encode()).hexdigest()[:12]
+            return {"source": source if _SOURCE.match(source) else None, "sha256": digest}
+        return {"chars": len(value)}
+    if isinstance(value, (list, tuple)):
+        return {"items": len(value)}
+    return {"type": type(value).__name__}
+
+
+def filter_summary(args: Mapping[str, Any]) -> dict[str, Any]:
+    """The shape of a tool call's arguments, safe to log (see ``_summarise``)."""
+    return {name: _summarise(name, value) for name, value in args.items()}
+
+
+def _principal() -> str:
+    """The calling principal from the current MCP request.
+
+    ``unknown`` without a header (an in-cluster caller that bypassed the gateway,
+    logged rather than refused), ``ambiguous`` if it was sent more than once, and
+    ``other`` if it is not shaped like a client id.
+    """
+    from mcp.server.lowlevel.server import request_ctx
+
+    try:
+        request = request_ctx.get().request
+    except LookupError:
+        return UNKNOWN_PRINCIPAL
+    headers = getattr(request, "headers", None)
+    values = headers.getlist(PRINCIPAL_HEADER) if headers is not None else []
+    if not values or not values[0]:
+        return UNKNOWN_PRINCIPAL
+    if len(values) > 1:
+        return AMBIGUOUS_PRINCIPAL
+    return values[0] if _PRINCIPAL.match(values[0]) else OTHER_PRINCIPAL
+
+
+def record_tool_call(
+    *,
+    server: str,
+    tier: str,
+    tool: str,
+    principal: str,
+    args: Mapping[str, Any],
+    rows: int | None,
+    duration: float,
+    outcome: str,
+) -> None:
+    """Emit one audit event for an MCP tool call: a JSON log line and metrics.
+
+    The event answers "which principal read which tier, how much, and when"; it
+    carries argument shapes and a row count, never row content.
+    """
+    event = {
+        "event": "mcp.tool_call",
+        "server": server,
+        "tier": tier,
+        "tool": tool,
+        "principal": principal,
+        "filters": filter_summary(args),
+        "rows": rows,
+        "duration_ms": round(duration * 1000, 1),
+        "outcome": outcome,
+    }
+    audit_log.info(json.dumps(event, sort_keys=True, default=str))
+    attrs = {"server": server, "tier": tier, "tool": tool, "principal": principal}
+    mcp_calls.add(1, {**attrs, "outcome": outcome})
+    if rows is not None:
+        mcp_rows.add(rows, attrs)
+    mcp_duration.record(duration * 1000, {"server": server, "tier": tier, "tool": tool})
+
+
+def audited(*, server: str, tier: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """Decorate an MCP tool so every call is recorded by :func:`record_tool_call`.
+
+    Apply it beneath ``@mcp.tool()``: ``functools.wraps`` keeps the signature, so
+    the tool's schema is unchanged. The row count is the envelope's ``count``. A
+    call that raises is recorded with the exception type and re-raised.
+
+    Only calls that reach the tool are recorded: FastMCP rejects arguments that
+    fail its schema, or an unknown tool name, before the tool runs.
+    """
+
+    def decorate(fn: Callable[..., Any]) -> Callable[..., Any]:
+        if inspect.iscoroutinefunction(fn):
+            raise TypeError(f"audited supports sync tools only; {fn.__name__} is async")
+        signature = inspect.signature(fn)
+
+        @functools.wraps(fn)
+        def call(*args: Any, **kwargs: Any) -> Any:
+            start = time.perf_counter()
+            principal = _principal()
+            kwargs = dict(signature.bind_partial(*args, **kwargs).arguments)
+            try:
+                result = fn(**kwargs)
+            except Exception as exc:
+                record_tool_call(
+                    server=server, tier=tier, tool=fn.__name__, principal=principal,
+                    args=kwargs, rows=None, duration=time.perf_counter() - start,
+                    outcome=type(exc).__name__,
+                )
+                raise
+            record_tool_call(
+                server=server, tier=tier, tool=fn.__name__, principal=principal, args=kwargs,
+                rows=result.get("count") if isinstance(result, Mapping) else None,
+                duration=time.perf_counter() - start, outcome="ok",
+            )
+            return result
+
+        return call
+
+    return decorate
