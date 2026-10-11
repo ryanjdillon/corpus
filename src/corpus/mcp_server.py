@@ -10,8 +10,9 @@ from pydantic import Field
 from . import search
 from .config import settings
 from .envelope import wrap
+from .tiers import tier
 
-TIER = "sensitive"
+TIER = tier("sensitive").name
 # Raw mail: the subject, sender and body are the third-party text; ids, dates,
 # scores and the computed data-class label are not.
 SEARCH_UNTRUSTED = ("from_addr", "snippet", "subject")

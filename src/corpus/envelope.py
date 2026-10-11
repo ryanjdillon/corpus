@@ -20,7 +20,9 @@ wrapped: a tool raises and MCP returns ``isError`` with the message.
 
 from __future__ import annotations
 
+import html
 import re
+import unicodedata
 from collections.abc import Iterable, Mapping
 from enum import StrEnum
 from typing import Any
@@ -43,25 +45,57 @@ class Flag(StrEnum):
 
 
 # Cheap, high-precision signals that text addresses an AI rather than a person:
-# override phrasing, chat-template and tool-call syntax, and URLs that carry
-# credentials. Ordinary mail ("please reply by Friday", "Travel agent: Kari")
-# must not match; a miss costs a flag, a false hit costs the reader's trust in it.
+# override phrasing, an address to an AI, chat-template and tool-call syntax, and
+# URLs that carry credentials, in English and Norwegian (Bokmål and Nynorsk).
+# Precision matters more than recall: a consumer may withhold a flagged row's
+# summary, so a false hit hides a real alert, and readers learn to ignore a flag
+# that cries wolf. Ordinary mail ("this is an automated system message",
+# "ignore these instructions if you have already renewed") must not match. Text
+# is normalised first (see ``_normalise``), so the patterns see single spaces
+# and plain Latin letters.
+_OVERRIDE = "(?:previous|prior|above|earlier|preceding|existing|original)"
 _PATTERNS = (
     (
-        r"\b(?:ignore|disregard|forget|override)\s+(?:all\s+)?(?:of\s+)?"
-        r"(?:the\s+|your\s+|any\s+)?(?:previous|prior|above|earlier|preceding|original)\s+"
+        r"\b(?:ignore|disregard|forget|override)\s(?:all\s)?(?:of\s)?"
+        r"(?:the\s|your\s|any\s)?" + _OVERRIDE + r"\s"
         r"(?:instructions?|prompts?|directions|guidelines|rules)\b"
     ),
-    r"\b(?:the|your)\s+(?:system|developer)\s+(?:prompt|instructions?)\b",
-    r"\byou\s+are\s+now\s+(?:an?\s+)?(?:ai|assistant|language\s+model|llm|chatbot)\b",
-    r"\bto\s+(?:any|the)\s+(?:ai|llm|assistant|agent)s?\s+(?:reading|processing|summari[sz]ing)\b",
+    r"\b(?:reveal|print|show|repeat|ignore|override)\s(?:the\s|your\s)?system\sprompt\b",
+    r"\byou\sare\snow\s(?:an?\s)?(?:ai|llm|language\smodel|chatbot|assistant)\b",
+    # Without "now", only a bare "you are an AI", so "if you are an AI researcher"
+    # or "an assistant professor" stays clear.
+    r"\byou\sare\s(?:an?\s)?(?:ai|llm|language\smodel|chatbot)(?:[\s-](?:assistant|agent))?(?![\s-]?\w)",
+    r"\bto\s(?:any|the)\s(?:ai|llm|assistant|agent)s?\s(?:reading|processing|summari[sz]ing)\b",
+    (
+        r"\b(?:ignorer|se\sbort\sfr[aå]|glem)\s(?:alle\s|alt\s)?(?:de\s)?"
+        r"(?:tidligere|forrige|ovenst[aå]ende|eksisterande|eksisterende)\s"
+        r"(?:instruksjon(?:er|ar|ene|ane)?|retningslinjer|reglar|regler)\b"
+    ),
+    r"\b(?:du|De)\ser\s(?:n[aå]\s|no\s)?(?:en\s|ein\s)?(?:ai|ki)-?(?:assistent|agent)\b",
+    r"\b(?:vis|gjenta|ignorer)\s(?:din\s)?systemprompt(?:en)?\b",
     r"<\|?(?:im_start|im_end|system|tool_call|function_call)\|?>",
     r"</?tool_call>",
-    r"\[/?INST\]|<</?SYS>>",
-    r"\"(?:tool_calls?|function_call)\"\s*:",
+    r"\[/?inst\]|<</?sys>>",
+    r"\"(?:tool_calls?|function_call)\"\s?:",
     r"\bhttps?://[^\s/:@]+:[^\s/@]+@",
 )
 _INSTRUCTION_LIKE = re.compile("|".join(_PATTERNS), re.IGNORECASE)
+
+# Cyrillic and Greek letters that render like Latin ones, so a homoglyph swap
+# ("Ignоre" with a Cyrillic o) cannot slip past the Latin patterns.
+_CONFUSABLES = str.maketrans(
+    "аеорсухіјѕԁԛԝАЕОРСУХІЈЅВНКМТαοερτυνικΑΟΕΡΤΥΝΙΚΒΜΗΖΧ",
+    "aeopcyxijsdqwAEOPCYXIJSBHKMTaoeptuvikAOEPTYNIKBMHZX",
+)
+_SPACE = re.compile(r"\s+")
+
+
+def _normalise(text: str) -> str:
+    """Fold *text* to what the patterns expect: NFKC, entities decoded, invisible
+    format characters removed, homoglyphs mapped to Latin, whitespace single."""
+    text = unicodedata.normalize("NFKC", html.unescape(text))
+    text = "".join(c for c in text if unicodedata.category(c) != "Cf")
+    return _SPACE.sub(" ", text.translate(_CONFUSABLES))
 
 
 def _texts(value: Any) -> Iterable[str]:
@@ -78,7 +112,7 @@ def _texts(value: Any) -> Iterable[str]:
 
 def instruction_like(text: str) -> bool:
     """Whether *text* reads like instructions addressed to an AI."""
-    return _INSTRUCTION_LIKE.search(text) is not None
+    return _INSTRUCTION_LIKE.search(_normalise(text)) is not None
 
 
 def flags(row: Mapping[str, Any], untrusted_fields: Iterable[str]) -> list[str]:

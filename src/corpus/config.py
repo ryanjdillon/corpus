@@ -106,6 +106,9 @@ class Settings(BaseSettings):
     # (corpus_index_ro) that reads only the sanitized DB, never a raw body — the
     # trust gate for cloud-model consumers. Empty => index disabled.
     index_database_url: str = ""
+    # The name corpus-index serves under, and reports in every result envelope, so
+    # deployments of the same server (one per mailbox) can be told apart.
+    index_server_name: str = "corpus-index"
     # The sanitized DB the one-way sync WRITES to (corpus_app @ ai_sanitized). The
     # projection drops raw content/subject/sender; only cloud-safe fields land here.
     # Empty => sync disabled.
