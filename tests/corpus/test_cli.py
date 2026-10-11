@@ -276,6 +276,15 @@ def test_enrich_command(runner, configure, shutdown, enrich_store_cls, run_enric
     shutdown.assert_called_once()
 
 
+def test_enrich_command_passes_redo_recovered(
+    runner, configure, shutdown, enrich_store_cls, run_enrich
+):
+    run_enrich.return_value = {"scanned": 1, "enriched": 1, "audited": 0, "ineligible": 0}
+    result = runner.invoke(cli.main, ["enrich", "--redo-recovered"])
+    assert result.exit_code == 0, result.output
+    assert run_enrich.call_args.kwargs["redo_recovered"] is True
+
+
 def test_enrich_command_reports_ineligible_documents(
     runner, configure, shutdown, enrich_store_cls, run_enrich
 ):

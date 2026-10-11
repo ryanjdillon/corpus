@@ -16,6 +16,7 @@ from corpus.enrich_batch import run_audit, run_enrich
 from corpus.enrich_store import EnrichStore
 from corpus.enricher import Enricher, EnrichError
 from corpus.enrichment import (
+    RECOVERED_MARKER,
     RECOVERED_SCHEMA_VERSION,
     SCHEMA_VERSION,
     Category,
@@ -57,6 +58,7 @@ def store():
     m = create_autospec(EnrichStore, instance=True)
     m.enriched_ids.return_value = set()
     m.rejected_ids.return_value = set()
+    m.enriched_ids_marked.return_value = set()
     return m
 
 
@@ -169,6 +171,60 @@ def test_upgrade_stale_only_counts_current_schema_as_done(
     )
 
     store.enriched_ids.assert_called_once_with(SCHEMA_VERSION)
+
+
+def _lunch(*ids: int) -> tuple:
+    return tuple((f"d{i}", "are we on for lunch?", MAIL) for i in ids)
+
+
+def test_redo_recovered_reenriches_only_recovered_records(store, enricher, audit, documents):
+    # d1 is current, d2 is stale from an older schema, d3 was recovered from a
+    # stall: only d3 goes back to the model, without redoing every stale record.
+    store.enriched_ids.return_value = {"d1", "d2", "d3"}
+    store.enriched_ids_marked.return_value = {"d3"}
+
+    r = run_enrich(
+        store, documents=documents(*_lunch(1, 2, 3)), enricher=enricher, audit=audit,
+        redo_recovered=True,
+    )
+
+    store.enriched_ids_marked.assert_called_once_with(RECOVERED_MARKER)
+    assert r["enriched"] == 1
+    assert [c.args[0] for c in store.save_enrichment.call_args_list] == ["d3"]
+
+
+def test_redo_recovered_still_passes_over_rejected_records(store, enricher, audit, documents):
+    store.enriched_ids.return_value = {"d1", "d2"}
+    store.enriched_ids_marked.return_value = {"d1", "d2"}
+    store.rejected_ids.return_value = {"d2"}
+
+    run_enrich(
+        store, documents=documents(*_lunch(1, 2)), enricher=enricher, audit=audit,
+        redo_recovered=True,
+    )
+
+    assert [c.args[0] for c in store.save_enrichment.call_args_list] == ["d1"]
+
+
+def test_redo_recovered_respects_the_limit(store, enricher, audit, documents):
+    store.enriched_ids.return_value = {"d1", "d2", "d3"}
+    store.enriched_ids_marked.return_value = {"d1", "d2", "d3"}
+
+    r = run_enrich(
+        store, documents=documents(*_lunch(1, 2, 3)), enricher=enricher, audit=audit,
+        redo_recovered=True, limit=2,
+    )
+
+    assert r["enriched"] == 2
+
+
+def test_recovered_records_are_not_redone_by_default(store, enricher, audit, documents):
+    store.enriched_ids.return_value = {"d1"}
+
+    r = run_enrich(store, documents=documents(*_lunch(1)), enricher=enricher, audit=audit)
+
+    store.enriched_ids_marked.assert_not_called()
+    assert r["enriched"] == 0
 
 
 def test_rejection_is_recorded_with_reason_and_model(store, enricher, documents, clean_doc):

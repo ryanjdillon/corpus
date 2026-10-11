@@ -41,6 +41,16 @@ def test_resume_ids_can_exclude_stale_schema_versions(pg):
         assert est.enriched_ids("sv2") == {"new"}
 
 
+def test_marked_ids_match_the_marker_under_any_schema_version(pg):
+    with EnrichStore() as est:
+        est.save_enrichment("old", {"one_line": "a"}, "local", "sv1+recovered")
+        est.save_enrichment("new", {"one_line": "b"}, "local", "sv2+recovered")
+        est.save_enrichment("clean", {"one_line": "c"}, "local", "sv2")
+        est.save_rejection("rejected", "400: too long", "local")
+
+        assert est.enriched_ids_marked("+recovered") == {"old", "new"}
+
+
 def test_rejection_is_per_model_and_cleared_by_a_later_enrichment(pg):
     with EnrichStore() as est:
         est.save_rejection("d1", "400: too long", "remote")

@@ -82,9 +82,13 @@ def ingest(source: str, batch_size: int) -> None:
     "--retry-rejected", is_flag=True,
     help="also retry documents this model previously rejected",
 )
+@click.option(
+    "--redo-recovered", is_flag=True,
+    help="also re-enrich records recovered from a reply that stalled in whitespace",
+)
 def enrich(
     source: str | None, account: str | None, limit: int, force: bool, upgrade_stale: bool,
-    retry_rejected: bool,
+    retry_rejected: bool, redo_recovered: bool,
 ) -> None:
     """Batch-enrich stored documents with summary and classification.
 
@@ -99,6 +103,7 @@ def enrich(
             r = run_enrich(
                 store, source=source, account=account, limit=limit, force=force,
                 upgrade_stale=upgrade_stale, retry_rejected=retry_rejected,
+                redo_recovered=redo_recovered,
             )
         msg = f"enriched {r['enriched']}, audited {r['audited']} of {r['scanned']} scanned"
         if r["ineligible"]:

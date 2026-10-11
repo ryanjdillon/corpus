@@ -30,7 +30,7 @@ import msgspec
 from . import scan
 from .config import settings
 from .enricher import Enricher, EnrichError
-from .enrichment import RECOVERED_SCHEMA_VERSION, SCHEMA_VERSION
+from .enrichment import RECOVERED_MARKER, RECOVERED_SCHEMA_VERSION, SCHEMA_VERSION
 from .fetchers.policy import enrichable_kinds, may_enrich
 from .secret_audit import audit_secrets, audit_texts, merge_audits
 from .store import iter_documents
@@ -68,6 +68,7 @@ def run_enrich(
     force: bool = False,
     upgrade_stale: bool = False,
     retry_rejected: bool = False,
+    redo_recovered: bool = False,
     enricher: Enricher | None = None,
     documents=iter_documents,
     audit=audit_secrets,
@@ -79,6 +80,10 @@ def run_enrich(
     ``upgrade_stale``, docs enriched under an older ``SCHEMA_VERSION`` are treated
     as not yet done and re-enriched; it is opt-in so that a scheduled run on a
     remote model does not re-send the whole archive after a schema change.
+    ``redo_recovered`` re-enriches only the records recovered from a stalled reply
+    (their schema version carries ``RECOVERED_MARKER``, under any schema), not
+    every stale one. A recovered record this model has since rejected stays
+    passed over unless ``retry_rejected``.
 
     A document the model rejects (4xx, or unparseable output) is recorded as
     rejected by that model and passed over by later runs on it; ``retry_rejected``
@@ -115,6 +120,8 @@ def run_enrich(
             seen: set[str] = set()
         else:
             seen = store.enriched_ids(SCHEMA_VERSION if upgrade_stale else None)
+            if redo_recovered:
+                seen -= store.enriched_ids_marked(RECOVERED_MARKER)
             if not retry_rejected:
                 seen |= store.rejected_ids(enricher.model)
         queued = 0
@@ -167,7 +174,7 @@ def run_enrich(
             store.save_rejection(doc_id, result, enricher.model)
             return
         # A recovered record is kept but stored under a marked version, so it
-        # counts as stale: --upgrade-stale enriches it again in full.
+        # counts as stale: --redo-recovered or --upgrade-stale enriches it again.
         version = RECOVERED_SCHEMA_VERSION if recovered else SCHEMA_VERSION
         store.save_enrichment(doc_id, msgspec.to_builtins(enrichment), enricher.model, version)
         counts["enriched"] += 1
