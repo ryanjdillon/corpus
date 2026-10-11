@@ -148,3 +148,17 @@ def test_decode_rejects_strings_beyond_the_bounds(field, value):
     record = {"one_line": "x", "abstract": "y", "category": "personal", field: value}
     with pytest.raises(msgspec.ValidationError):
         enrichment.decode(msgspec.json.encode(record))
+
+
+def test_every_enrichment_field_is_classified_as_free_text_or_not():
+    # A new field must join FREE_TEXT_FIELDS or be added here deliberately: each
+    # of these is an enum, a boolean, a date, or a bounded amount and currency.
+    structured = {
+        "category", "domain", "transactional_type", "unsubscribe_available",
+        "requires_action", "action_type", "deadline", "waiting_on", "importance",
+        "time_sensitive", "monetary_amounts", "sensitivity_level", "suggested_disposition",
+    }
+    fields = set(enrichment.Enrichment.__struct_fields__)
+
+    assert set(enrichment.FREE_TEXT_FIELDS) <= fields
+    assert fields - set(enrichment.FREE_TEXT_FIELDS) == structured

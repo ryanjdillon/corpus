@@ -172,6 +172,11 @@ embed_batch_size = _meter.create_histogram(
     unit="{record}",
     description="Records per embed request.",
 )
+enrich_instruction_like = _meter.create_counter(
+    "corpus.enrich.instruction_like",
+    unit="{document}",
+    description="Enrichments whose free text reads like instructions to an AI, by model.",
+)
 mcp_calls = _meter.create_counter(
     "corpus.mcp.calls",
     unit="{call}",

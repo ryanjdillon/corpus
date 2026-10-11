@@ -66,6 +66,7 @@ _PATTERNS = (
     # or "an assistant professor" stays clear.
     r"\byou\sare\s(?:an?\s)?(?:ai|llm|language\smodel|chatbot)(?:[\s-](?:assistant|agent))?(?![\s-]?\w)",
     r"\bto\s(?:any|the)\s(?:ai|llm|assistant|agent)s?\s(?:reading|processing|summari[sz]ing)\b",
+    r"\b(?:new|updated|additional)\sinstructions?\sfor\s(?:the\s|any\s|an?\s)?(?:ai|llm|assistant|agent)s?\b",
     (
         r"\b(?:ignorer|se\sbort\sfr[aå]|glem)\s(?:alle\s|alt\s)?(?:de\s)?"
         r"(?:tidligere|forrige|ovenst[aå]ende|eksisterande|eksisterende)\s"

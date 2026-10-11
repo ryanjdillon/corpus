@@ -199,6 +199,15 @@ class Enrichment(msgspec.Struct):
     suggested_disposition: Disposition = Disposition.keep
 
 
+#: The ``Enrichment`` fields a model writes as free text, which can repeat an
+#: injected instruction from the email it summarises. Every other field is a schema
+#: enum, a boolean, a date, or a bounded amount and currency.
+FREE_TEXT_FIELDS = (
+    "one_line", "abstract", "key_points", "action_summary", "people", "organizations",
+    "topics", "projects", "locations", "appointments",
+)
+
+
 class SecretSeverity(enum.Enum):
     """How dangerous a confirmed secret is, worst first."""
 
