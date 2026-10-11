@@ -8,6 +8,8 @@ signal, never a raw body or secret.
 
 from __future__ import annotations
 
+from typing import Any
+
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
@@ -35,7 +37,7 @@ mcp = FastMCP(
 )
 
 
-def _rows(tool: str, rows: list[dict], *, total: int | None = None) -> dict:
+def _rows(tool: str, rows: list[dict], *, total: int | None = None) -> dict[str, Any]:
     return wrap(
         rows, server=mcp.name, tool=tool, tier=TIER, untrusted_fields=UNTRUSTED_COLS, total=total
     )
@@ -46,7 +48,7 @@ def index_action_items(
     limit: int = Field(50, description="max items"),
     domain: str | None = Field(None, description="filter by life-area domain (banking, health, work…)"),
     importance: str | None = Field(None, description="filter: high | medium | low"),
-) -> dict:
+) -> dict[str, Any]:
     """Messages that need an action from you, ranked by importance then urgency."""
     return _rows(
         "index_action_items",
@@ -55,7 +57,7 @@ def index_action_items(
 
 
 @mcp.tool()
-def index_due_soon(limit: int = Field(50, description="max items")) -> dict:
+def index_due_soon(limit: int = Field(50, description="max items")) -> dict[str, Any]:
     """Time-sensitive items, or items carrying a deadline."""
     return _rows("index_due_soon", index_query.due_soon(limit=limit))
 
@@ -64,26 +66,26 @@ def index_due_soon(limit: int = Field(50, description="max items")) -> dict:
 def index_waiting_on(
     who: str = Field("them", description="'them' = you're waiting on someone; 'me' = they're waiting on you"),
     limit: int = Field(50, description="max items"),
-) -> dict:
+) -> dict[str, Any]:
     """Threads awaiting a reply."""
     return _rows("index_waiting_on", index_query.waiting_on(who=who, limit=limit))
 
 
 @mcp.tool()
-def index_by_domain(domain: str, limit: int = Field(50, description="max items")) -> dict:
+def index_by_domain(domain: str, limit: int = Field(50, description="max items")) -> dict[str, Any]:
     """Recent sanitized items in a life-area domain."""
     return _rows("index_by_domain", index_query.by_domain(domain, limit=limit))
 
 
 @mcp.tool()
-def index_summary(id: str) -> dict:
+def index_summary(id: str) -> dict[str, Any]:
     """The sanitized summary + priority signal for one message id (0 or 1 rows)."""
     row = index_query.summary(id)
     return _rows("index_summary", [row] if row else [])
 
 
 @mcp.tool()
-def index_stats() -> dict:
+def index_stats() -> dict[str, Any]:
     """Counts of sanitized items by domain and suggested disposition.
 
     One row per group: ``dimension`` (``domain`` or ``disposition``), ``key`` and

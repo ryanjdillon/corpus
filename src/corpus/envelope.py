@@ -48,15 +48,17 @@ class Flag(StrEnum):
 # must not match; a miss costs a flag, a false hit costs the reader's trust in it.
 _PATTERNS = (
     (
-        r"\b(?:ignore|disregard|forget|override)\b[^.\n]{0,40}"
-        r"\b(?:instructions?|prompts?|directions|guidelines)\b"
+        r"\b(?:ignore|disregard|forget|override)\s+(?:all\s+)?(?:of\s+)?"
+        r"(?:the\s+|your\s+|any\s+)?(?:previous|prior|above|earlier|preceding|original)\s+"
+        r"(?:instructions?|prompts?|directions|guidelines|rules)\b"
     ),
-    r"\b(?:system|developer)\s+(?:prompt|message|instructions?)\b",
-    r"\byou\s+are\s+(?:now\s+)?(?:an?\s+)?(?:ai|assistant|language\s+model|llm|chatbot)\b",
-    r"\b(?:ai|llm)\s+(?:assistant|agent)s?\s*[:,]",
+    r"\b(?:the|your)\s+(?:system|developer)\s+(?:prompt|instructions?)\b",
+    r"\byou\s+are\s+now\s+(?:an?\s+)?(?:ai|assistant|language\s+model|llm|chatbot)\b",
+    r"\bto\s+(?:any|the)\s+(?:ai|llm|assistant|agent)s?\s+(?:reading|processing|summari[sz]ing)\b",
     r"<\|?(?:im_start|im_end|system|tool_call|function_call)\|?>",
     r"</?tool_call>",
-    r"\"(?:tool_calls?|function_call|arguments)\"\s*:",
+    r"\[/?INST\]|<</?SYS>>",
+    r"\"(?:tool_calls?|function_call)\"\s*:",
     r"\bhttps?://[^\s/:@]+:[^\s/@]+@",
 )
 _INSTRUCTION_LIKE = re.compile("|".join(_PATTERNS), re.IGNORECASE)

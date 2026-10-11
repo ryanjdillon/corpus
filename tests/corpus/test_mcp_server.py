@@ -7,6 +7,7 @@ envelope tests splice spec-bound doubles over the search layer the tools call.
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import create_autospec
 
 import pytest
@@ -84,3 +85,10 @@ def test_stats_are_label_rows_with_a_total(monkeypatch):
     assert out["total"] == 5
     assert out["untrusted"] is False
     assert [(r["label"], r["count"]) for r in out["rows"]] == [("personal", 3), ("newsletter", 2)]
+
+
+def test_every_tool_declares_structured_output():
+    tools = asyncio.run(mcp_server.mcp.list_tools())
+
+    assert tools
+    assert all(t.outputSchema for t in tools), [t.name for t in tools if not t.outputSchema]

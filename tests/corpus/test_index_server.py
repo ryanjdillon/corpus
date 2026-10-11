@@ -3,6 +3,7 @@ they pass through arguments and never reach past index_query."""
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import create_autospec
 
 import pytest
@@ -137,3 +138,12 @@ def test_run_serves_streamable_http(monkeypatch):
 def test_serves_stateless_http():
     # Idle sessions must not expire under long-lived clients (they would get 404).
     assert index_server.mcp.settings.stateless_http is True
+
+
+def test_every_tool_declares_structured_output():
+    # A bare ``dict`` return annotation makes FastMCP drop the output schema and
+    # structuredContent; ``dict[str, Any]`` keeps the envelope structured.
+    tools = asyncio.run(index_server.mcp.list_tools())
+
+    assert tools
+    assert all(t.outputSchema for t in tools), [t.name for t in tools if not t.outputSchema]
