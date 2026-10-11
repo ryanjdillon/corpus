@@ -115,6 +115,7 @@ sender. `corpus index` serves that database to cloud-side consumers over MCP.
 |---|---|
 | `CORPUS_SANITIZED_DATABASE_URL` | DSN the sync writes to |
 | `CORPUS_INDEX_DATABASE_URL` | DSN the index server reads with (a read-only role) |
+| `CORPUS_INDEX_SERVER_NAME` | the MCP server name the index serves under and reports in each result (default `corpus-index`) |
 | `CORPUS_SANITIZED_DB_SCHEMA` | schema of the sanitized `messages` table; empty means `CORPUS_DB_SCHEMA` |
 | `CORPUS_INDEX_SENSITIVITY_GATE` | sensitivity at which free-text summaries are withheld (default `high`) |
 | `CORPUS_TIER_ACCESS` | JSON map of tier name to the principals allowed to reach its MCP surface, e.g. `{"sanitized": ["orchestrator"]}`; a tier without an entry grants no one |

@@ -15,6 +15,12 @@ from .config import settings
 from .embeddings import Embedder
 from .store import get_document_store
 
+# The keys of each query's rows, in column order. The MCP surface classifies each
+# key as trusted or not (see ``envelope``), so a key is added here, never inline.
+SEARCH_KEYS = ("id", "score", "subject", "from_addr", "sent_at", "label", "snippet")
+QUERY_KEYS = ("id", "subject", "from_addr", "sent_at", "label")
+GET_KEYS = ("id", "content", "meta")
+
 
 def semantic_search(
     query: str, top_k: int = 10, filters: dict[str, Any] | None = None
@@ -29,15 +35,21 @@ def semantic_search(
     retriever = PgvectorEmbeddingRetriever(document_store=store)
     result = retriever.run(query_embedding=qvec, top_k=top_k, filters=filters)
     return [
-        {
-            "id": d.id,
-            "score": d.score,
-            "subject": d.meta.get("subject"),
-            "from_addr": d.meta.get("from_addr"),
-            "sent_at": d.meta.get("sent_at"),
-            "label": d.meta.get("label"),
-            "snippet": (d.content or "")[:300],
-        }
+        dict(
+            zip(
+                SEARCH_KEYS,
+                (
+                    d.id,
+                    d.score,
+                    d.meta.get("subject"),
+                    d.meta.get("from_addr"),
+                    d.meta.get("sent_at"),
+                    d.meta.get("label"),
+                    (d.content or "")[:300],
+                ),
+                strict=True,
+            )
+        )
         for d in result["documents"]
     ]
 
@@ -101,10 +113,7 @@ def structured_query(
     with psycopg.connect(settings.database_url) as conn, conn.cursor() as cur:
         cur.execute(sql, params)
         rows = cur.fetchall()
-    return [
-        {"id": r[0], "subject": r[1], "from_addr": r[2], "sent_at": r[3], "label": r[4]}
-        for r in rows
-    ]
+    return [dict(zip(QUERY_KEYS, r, strict=True)) for r in rows]
 
 
 def get_document(id: str) -> dict[str, Any] | None:
@@ -120,7 +129,7 @@ def get_document(id: str) -> dict[str, Any] | None:
         row = cur.fetchone()
     if row is None:
         return None
-    return {"id": row[0], "content": row[1], "meta": row[2]}
+    return dict(zip(GET_KEYS, row, strict=True))
 
 
 def stats() -> dict[str, Any]:

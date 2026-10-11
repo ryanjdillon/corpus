@@ -53,7 +53,10 @@ vocabulary (ids, dates, counts, schema enums such as `importance` or `domain`,
 the data-class `label`) are trusted.
 
 The sanitized tier's untrusted columns are `sanitized_store.UNTRUSTED_COLS`,
-next to the projection itself. On the full surface each tool names its own:
+next to the projection itself; the full surface's row keys are
+`search.SEARCH_KEYS`, `QUERY_KEYS` and `GET_KEYS`. Tests require every column
+and key to be classified, so a new one cannot ship unmarked by accident. On the
+full surface each tool names its own:
 
 | Tool | Untrusted fields |
 | --- | --- |
@@ -72,12 +75,16 @@ The stats tools return one row per group (`label` and `count` on `corpus`;
 
 | Flag | Meaning |
 | --- | --- |
-| `instruction_like` | An untrusted field reads like instructions to an AI: override phrasing ("ignore previous instructions"), an address to an AI ("to any AI reading this"), chat-template or tool-call syntax, or a URL carrying credentials. |
+| `instruction_like` | An untrusted field reads like instructions to an AI, in English or Norwegian: override phrasing ("ignore previous instructions", "ignorer alle tidligere instruksjoner"), an address to an AI ("to any AI reading this", "du er nå en AI-assistent"), a request for the system prompt, chat-template or tool-call syntax, or a URL carrying credentials. |
 
 A flagged row is marked, never dropped: an injected email should still reach the
 human reading the briefing, visibly marked as suspicious, but no agent should
 act on it. The check runs when the result is built, over every untrusted field,
-so it covers rows already stored and a pattern change applies at once. The
+so it covers rows already stored and a pattern change applies at once. Text is
+normalised first (NFKC, HTML entities decoded, invisible format characters
+removed, Cyrillic and Greek look-alikes mapped to Latin, whitespace collapsed),
+so a phrase split across lines or disguised with a zero-width space still
+matches. The
 patterns aim for precision: ordinary mail ("please reply by Friday", "this is an
 automated system message", "ignore these instructions if you have already
 renewed") must not match, or readers learn to ignore the flag. The flag is a

@@ -14,6 +14,7 @@ import pytest
 
 from corpus import mcp_server, search
 from corpus.envelope import KIND
+from corpus.search import GET_KEYS, QUERY_KEYS, SEARCH_KEYS
 
 
 def _patch(monkeypatch, name, value):
@@ -92,3 +93,17 @@ def test_every_tool_declares_structured_output():
 
     assert tools
     assert all(t.outputSchema for t in tools), [t.name for t in tools if not t.outputSchema]
+
+
+@pytest.mark.parametrize(
+    ("keys", "untrusted", "trusted"),
+    [
+        (SEARCH_KEYS, mcp_server.SEARCH_UNTRUSTED, {"id", "score", "sent_at", "label"}),
+        (QUERY_KEYS, mcp_server.QUERY_UNTRUSTED, {"id", "sent_at", "label"}),
+        (GET_KEYS, mcp_server.GET_UNTRUSTED, {"id"}),
+    ],
+)
+def test_every_raw_row_key_is_classified(keys, untrusted, trusted):
+    # A new key must be marked untrusted or added here deliberately.
+    assert set(untrusted) <= set(keys)
+    assert set(keys) - set(untrusted) == trusted

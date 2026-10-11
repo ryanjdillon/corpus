@@ -17,11 +17,12 @@ from . import index_query
 from .config import settings
 from .envelope import wrap
 from .sanitized_store import UNTRUSTED_COLS
+from .tiers import tier
 
-TIER = "sanitized"
+TIER = tier("sanitized").name
 
 mcp = FastMCP(
-    "corpus-index",
+    settings.index_server_name,
     host=settings.host,
     port=settings.mcp_port,
     # Every tool is a self-contained query, so no session state is needed. A
