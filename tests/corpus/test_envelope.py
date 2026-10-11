@@ -8,7 +8,18 @@ from __future__ import annotations
 
 import pytest
 
-from corpus.envelope import KIND, NOTICE, Flag, flags, instruction_like, wrap
+from corpus.envelope import (
+    KIND,
+    NOTICE,
+    Flag,
+    clamp,
+    decode_cursor,
+    encode_cursor,
+    flags,
+    instruction_like,
+    offset_of,
+    wrap,
+)
 
 
 @pytest.mark.parametrize(
@@ -172,3 +183,45 @@ def test_wrap_passes_pagination_through():
     out = wrap([], server="s", tool="t", tier="x", untrusted_fields=(), next_cursor="c2", total=9)
 
     assert (out["next_cursor"], out["total"]) == ("c2", 9)
+
+
+def test_a_cursor_resumes_the_same_query():
+    args = {"domain": "banking", "importance": None}
+    cursor = encode_cursor("index_action_items", args, 100)
+
+    assert decode_cursor(cursor, "index_action_items", args) == 100
+    assert decode_cursor(cursor, "index_action_items", {**args, "limit": 7}) == 100
+    assert decode_cursor(None, "index_action_items", args) is None
+
+
+@pytest.mark.parametrize(
+    ("tool", "args"),
+    [("index_action_items", {"domain": "health", "importance": None}),
+     ("index_due_soon", {"domain": "banking", "importance": None})],
+)
+def test_a_cursor_from_another_query_is_refused(tool, args):
+    cursor = encode_cursor("index_action_items", {"domain": "banking", "importance": None}, 100)
+
+    with pytest.raises(ValueError, match="different query"):
+        decode_cursor(cursor, tool, args)
+
+
+@pytest.mark.parametrize("cursor", ["not base64 !!", "bm90IGpzb24", "WzFd"])
+def test_a_malformed_cursor_is_refused(cursor):
+    with pytest.raises(ValueError, match="invalid cursor"):
+        decode_cursor(cursor, "t", {})
+
+
+@pytest.mark.parametrize("position", [-1, "10", True, 1.5, [1], 1000, 10**9])
+def test_an_offset_must_be_a_bounded_non_negative_int(position):
+    with pytest.raises(ValueError, match="invalid cursor"):
+        offset_of(position, 1000)
+
+
+def test_an_offset_within_bounds_is_returned():
+    assert (offset_of(None, 1000), offset_of(999, 1000)) == (0, 999)
+
+
+@pytest.mark.parametrize(("limit", "clamped"), [(500, 100), (100, 100), (7, 7), (0, 1), (-3, 1)])
+def test_limit_is_clamped_not_refused(limit, clamped):
+    assert clamp(limit, 100) == clamped

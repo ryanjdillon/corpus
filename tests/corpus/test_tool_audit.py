@@ -197,7 +197,7 @@ def test_audited_tools_keep_their_input_schema():
     tools = {t.name: t for t in asyncio.run(index_server.mcp.list_tools())}
 
     assert set(tools["index_action_items"].inputSchema["properties"]) == {
-        "limit", "domain", "importance"
+        "limit", "domain", "importance", "cursor"
     }
 
 

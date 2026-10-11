@@ -43,17 +43,24 @@ def _rows(sql: str, params: list, *, connect: Connect = psycopg.connect) -> list
         return cur.fetchall()
 
 
-# Priority ordering: importance, then urgency, then recency. Constant SQL (no input).
+# Priority ordering: importance, then urgency, then recency, then id. Constant SQL
+# (no input). The id makes the order total, so offset pages neither skip nor
+# repeat rows that tie on everything else.
 _ORDER = (
     "CASE importance WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END, "
-    "time_sensitive DESC NULLS LAST, sent_at DESC NULLS LAST"
+    "time_sensitive DESC NULLS LAST, sent_at DESC NULLS LAST, id"
 )
 
 Rows = Callable[[str, list], list[dict]]
 
 
 def action_items(
-    limit: int = 50, domain: str | None = None, importance: str | None = None, *, rows: Rows = _rows
+    limit: int = 50,
+    domain: str | None = None,
+    importance: str | None = None,
+    offset: int = 0,
+    *,
+    rows: Rows = _rows,
 ) -> list[dict]:
     """Items that need an action from the owner, ranked by importance + urgency."""
     clauses, params = ["requires_action = true"], []
@@ -63,36 +70,43 @@ def action_items(
     if importance:
         clauses.append("importance = %s")
         params.append(importance)
-    params.append(limit)
+    params += [limit, offset]
     where = " AND ".join(clauses)
-    return rows(f"SELECT {_SELECT} FROM {_table()} WHERE {where} ORDER BY {_ORDER} LIMIT %s", params)
-
-
-def due_soon(limit: int = 50, *, rows: Rows = _rows) -> list[dict]:
-    """Time-sensitive items, or items carrying a deadline."""
     return rows(
-        f"SELECT {_SELECT} FROM {_table()} WHERE time_sensitive = true OR deadline IS NOT NULL "
-        f"ORDER BY deadline NULLS LAST, {_ORDER} LIMIT %s",
-        [limit],
+        f"SELECT {_SELECT} FROM {_table()} WHERE {where} ORDER BY {_ORDER} LIMIT %s OFFSET %s",
+        params,
     )
 
 
-def waiting_on(who: str = "them", limit: int = 50, *, rows: Rows = _rows) -> list[dict]:
+def due_soon(limit: int = 50, offset: int = 0, *, rows: Rows = _rows) -> list[dict]:
+    """Time-sensitive items, or items carrying a deadline."""
+    return rows(
+        f"SELECT {_SELECT} FROM {_table()} WHERE time_sensitive = true OR deadline IS NOT NULL "
+        f"ORDER BY deadline NULLS LAST, {_ORDER} LIMIT %s OFFSET %s",
+        [limit, offset],
+    )
+
+
+def waiting_on(
+    who: str = "them", limit: int = 50, offset: int = 0, *, rows: Rows = _rows
+) -> list[dict]:
     """Items flagged as awaiting a reply.
 
     'them' = owner is waiting on someone, 'me' = someone is waiting on the owner.
     """
     return rows(
-        f"SELECT {_SELECT} FROM {_table()} WHERE waiting_on = %s ORDER BY {_ORDER} LIMIT %s",
-        [who, limit],
+        f"SELECT {_SELECT} FROM {_table()} WHERE waiting_on = %s "
+        f"ORDER BY {_ORDER} LIMIT %s OFFSET %s",
+        [who, limit, offset],
     )
 
 
-def by_domain(domain: str, limit: int = 50, *, rows: Rows = _rows) -> list[dict]:
+def by_domain(domain: str, limit: int = 50, offset: int = 0, *, rows: Rows = _rows) -> list[dict]:
     """Recent sanitized items in a life-area domain (banking, health, work…)."""
     return rows(
-        f"SELECT {_SELECT} FROM {_table()} WHERE domain = %s ORDER BY {_ORDER} LIMIT %s",
-        [domain, limit],
+        f"SELECT {_SELECT} FROM {_table()} WHERE domain = %s "
+        f"ORDER BY {_ORDER} LIMIT %s OFFSET %s",
+        [domain, limit, offset],
     )
 
 
