@@ -7,6 +7,12 @@ setup:
     uv venv --python python3.12
     uv pip install -e '.[test,dev]'
 
+# Re-pin the runtime and test dependencies the image and CI install
+# (deploy/constraints.txt; the image ignores the test pins).
+# Run after changing dependencies in pyproject.toml, or to take upstream updates.
+lock:
+    uv pip compile pyproject.toml --extra test --python-version 3.12 --python-platform x86_64-unknown-linux-gnu --upgrade --custom-compile-command "just lock" -o deploy/constraints.txt
+
 # Fast unit tests.
 test:
     uv run pytest

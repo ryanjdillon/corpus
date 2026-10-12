@@ -48,5 +48,10 @@ enforced against `@commitlint/config-conventional` both in CI and locally by
 
 ## Build
 
-`deploy/Dockerfile` builds a wheel and installs it. Pushing a `v*` tag builds and
+`deploy/Dockerfile` builds a wheel and installs it against
+`deploy/constraints.txt`, which pins every runtime dependency. `pyproject.toml`
+states only ranges, so without the pins a rebuild of the same release could pull
+a different presidio, spaCy or grpcio. CI installs with the same constraints, so
+the tests run against what ships. Run `just lock` after changing dependencies, or
+to take upstream updates, and commit the result. Pushing a `v*` tag builds and
 publishes `ghcr.io/<owner>/corpus` (see `.github/workflows/docker.yml`).
