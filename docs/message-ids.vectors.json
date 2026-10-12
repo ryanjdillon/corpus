@@ -1,0 +1,173 @@
+{
+  "version": "corpus.id/v1",
+  "valid": [
+    {
+      "id": "gmail:personal::18c2f4a9b0d1e7f3",
+      "kind": "gmail",
+      "mailbox": "personal",
+      "uid": "18c2f4a9b0d1e7f3"
+    },
+    {
+      "id": "gmail:work-2::0123456789abcdef0123456789abcdef",
+      "kind": "gmail",
+      "mailbox": "work-2",
+      "uid": "0123456789abcdef0123456789abcdef"
+    },
+    {
+      "id": "imap:kbl-post::INBOX:1700000000:42",
+      "kind": "imap",
+      "mailbox": "kbl-post",
+      "uid": "INBOX:1700000000:42",
+      "imap": {
+        "folder": "INBOX",
+        "uidvalidity": 1700000000,
+        "uid": 42
+      }
+    },
+    {
+      "id": "imap:kbl::Styret/Lønn:1:7",
+      "kind": "imap",
+      "mailbox": "kbl",
+      "uid": "Styret/Lønn:1:7",
+      "imap": {
+        "folder": "Styret/Lønn",
+        "uidvalidity": 1,
+        "uid": 7
+      }
+    },
+    {
+      "id": "imap:example::Archive.2025:Q1:300:9",
+      "kind": "imap",
+      "mailbox": "example",
+      "uid": "Archive.2025:Q1:300:9",
+      "imap": {
+        "folder": "Archive.2025:Q1",
+        "uidvalidity": 300,
+        "uid": 9
+      }
+    },
+    {
+      "id": "jmap:fastmail::Mf3a9b2c1-d4e5_f6",
+      "kind": "jmap",
+      "mailbox": "fastmail",
+      "uid": "Mf3a9b2c1-d4e5_f6"
+    },
+    {
+      "id": "graph:office::AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0AAAA=",
+      "kind": "graph",
+      "mailbox": "office",
+      "uid": "AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0AAAA="
+    },
+    {
+      "id": "imap:x::A::B:1:7",
+      "kind": "imap",
+      "mailbox": "x",
+      "uid": "A::B:1:7",
+      "imap": {
+        "folder": "A::B",
+        "uidvalidity": 1,
+        "uid": 7
+      }
+    },
+    {
+      "id": "imap:kbl::Sent Items:12:3",
+      "kind": "imap",
+      "mailbox": "kbl",
+      "uid": "Sent Items:12:3",
+      "imap": {
+        "folder": "Sent Items",
+        "uidvalidity": 12,
+        "uid": 3
+      }
+    },
+    {
+      "id": "imap:kbl::::1:7",
+      "kind": "imap",
+      "mailbox": "kbl",
+      "uid": "::1:7",
+      "imap": {
+        "folder": ":",
+        "uidvalidity": 1,
+        "uid": 7
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "id": "pop3:personal::18c2f4a9b0d1e7f3",
+      "why": "unknown kind"
+    },
+    {
+      "id": "gmail:personal:18c2f4a9b0d1e7f3",
+      "why": "missing ::"
+    },
+    {
+      "id": "gmail:personal::18c2f4a9:b0d1e7f3",
+      "why": "gmail uid with :"
+    },
+    {
+      "id": "gmail:personal::18C2F4A9B0D1E7F3",
+      "why": "uppercase hex"
+    },
+    {
+      "id": "gmail:personal::18c2f4",
+      "why": "gmail uid too short"
+    },
+    {
+      "id": "imap:kbl:::1700000000:42",
+      "why": "empty imap folder"
+    },
+    {
+      "id": "imap:kbl::INBOX:1700000000",
+      "why": "imap uid without uidvalidity"
+    },
+    {
+      "id": "imap:kbl::INBOX:x:42",
+      "why": "non-numeric uidvalidity"
+    },
+    {
+      "id": "Gmail:personal::18c2f4a9b0d1e7f3",
+      "why": "uppercase kind"
+    },
+    {
+      "id": "gmail:Personal::18c2f4a9b0d1e7f3",
+      "why": "uppercase mailbox"
+    },
+    {
+      "id": "gmail:::18c2f4a9b0d1e7f3",
+      "why": "empty mailbox"
+    },
+    {
+      "id": "gmail:personal::",
+      "why": "empty uid"
+    },
+    {
+      "id": "https://mail.google.com/mail/u/0/#inbox/18c2f4a9b0d1e7f3",
+      "why": "a uri is not an id"
+    },
+    {
+      "id": "imap:kbl::INBOX:01:7",
+      "why": "leading zero in uidvalidity"
+    },
+    {
+      "id": "imap:kbl::INBOX:1:0",
+      "why": "uid 0"
+    },
+    {
+      "id": "gmail:personal::18c2f4a9b0d1e7f3\n",
+      "why": "trailing newline"
+    },
+    {
+      "id": "gmail:personal::18c2f4a9b0d1e7f3 ",
+      "why": "trailing space"
+    },
+    {
+      "id": "gmail:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa::18c2f4a9b0d1e7f3",
+      "why": "33-character mailbox"
+    },
+    {
+      "id": "imap:kbl.post::INBOX:1:7",
+      "why": "mailbox with ."
+    }
+  ]
+}
