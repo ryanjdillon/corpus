@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from unittest.mock import create_autospec
 
-from corpus import search, telemetry
+import pytest
+
+from corpus import telemetry
+from corpus.store import DocumentStore
 
 
 def test_enabled_reflects_env(monkeypatch):
@@ -43,18 +46,31 @@ def test_instrumentation_views_prefix_all_names():
     assert all(v._name.startswith("corpus.") for v in views)
 
 
-def test_corpus_size_observations(monkeypatch):
-    stats = create_autospec(search.stats)
+@pytest.fixture
+def documents():
+    """Autospec ``DocumentStore`` as a context manager yielding an instance mock."""
+    cls = create_autospec(DocumentStore)
+    cls.return_value.__enter__.return_value = create_autospec(DocumentStore, instance=True)
+    return cls
+
+
+def test_corpus_size_observations(documents):
+    stats = documents.return_value.__enter__.return_value.stats
     stats.return_value = {"total": 3, "by_label": {"personal": 2, "bulk": 1}}
-    monkeypatch.setattr(search, "stats", stats)
-    obs = telemetry._corpus_size_observations(None)
+    obs = telemetry._corpus_size_observations(None, documents=documents)
     assert {o.attributes["label"]: o.value for o in obs} == {"personal": 2, "bulk": 1}
+    documents.return_value.__exit__.assert_called_once()  # the store is closed
 
 
-def test_corpus_size_observations_swallows_errors(monkeypatch):
-    stats = create_autospec(search.stats, side_effect=RuntimeError("db down"))
-    monkeypatch.setattr(search, "stats", stats)
-    assert telemetry._corpus_size_observations(None) == []
+def test_corpus_size_observations_swallows_errors(documents):
+    stats = documents.return_value.__enter__.return_value.stats
+    stats.side_effect = RuntimeError("db down")
+    assert telemetry._corpus_size_observations(None, documents=documents) == []
+
+
+def test_corpus_size_observations_swallows_an_unreachable_store(documents):
+    documents.side_effect = OSError("connection refused")
+    assert telemetry._corpus_size_observations(None, documents=documents) == []
 
 
 def test_configure_sets_providers_and_is_idempotent(monkeypatch):

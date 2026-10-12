@@ -18,10 +18,9 @@ from __future__ import annotations
 
 import logging
 
-import psycopg
-
 from .config import settings
 from .embeddings import Embedder
+from .store import DocumentStore
 
 log = logging.getLogger("corpus.sanitize")
 
@@ -86,55 +85,23 @@ def project(doc_id: str, meta: dict | None, enr: dict | None, gate: str = "high"
     }
 
 
-def iter_enriched(read_dsn: str, source: str | None = None, *, connect=psycopg.connect):
-    """Stream (id, meta, enrichment, enriched_at) for enriched documents, newest first.
-
-    Reads from the sensitive DB via a server-side cursor. A source that has never
-    stored a document has no tables yet (the vector store creates them on first
-    insert), which reads as no documents rather than an error.
-    """
-    schema = settings.db_schema
-    docs = f"{schema}.{settings.documents_table}"
-    enr = f"{schema}.enrichments"
-    where = "WHERE e.enrichment IS NOT NULL"
-    params: list = []
-    if source:
-        where += " AND d.meta->>'source' = %s"
-        params.append(source)
-    sql = (
-        f"SELECT d.id, d.meta, e.enrichment, e.enriched_at FROM {docs} d "
-        f"JOIN {enr} e ON e.doc_id = d.id {where} "
-        "ORDER BY d.meta->>'sent_at' DESC NULLS LAST, d.id"
-    )
-    with connect(read_dsn) as conn:
-        with conn.cursor() as check:
-            for table in (docs, enr):
-                check.execute("SELECT to_regclass(%s)", (table,))
-                if check.fetchone()[0] is None:
-                    return
-        with conn.cursor(name="corpus_sync_scan") as cur:
-            cur.itersize = 500
-            cur.execute(sql, params)
-            yield from cur
-
-
 def run_sync(
     store,
     *,
+    documents: DocumentStore,
     source: str | None = None,
     limit: int = 0,
     force: bool = False,
-    documents=iter_enriched,
     embedder: Embedder | None = None,
-    read_dsn: str | None = None,
     batch_size: int = 64,
 ) -> dict[str, int]:
     """Project enriched documents into the sanitized store.
 
     Skips rows whose source enrichment is unchanged since the last sync unless
-    ``force``. ``limit`` caps the rows projected (0 does all). ``store`` is an open SanitizedStore whose lifecycle the caller owns.
+    ``force``. ``limit`` caps the rows projected (0 does all). ``store`` is an open
+    SanitizedStore and ``documents`` an open DocumentStore on the sensitive tier,
+    whose lifecycles the caller owns.
     """
-    read_dsn = read_dsn or settings.database_url
     embedder = embedder or Embedder()
     seen = {} if force else store.synced_versions()
     counts = {"scanned": 0, "synced": 0, "skipped": 0}
@@ -150,7 +117,7 @@ def run_sync(
             counts["synced"] += 1
         batch.clear()
 
-    for doc_id, meta, enr, enriched_at in documents(read_dsn, source=source):
+    for doc_id, meta, enr, enriched_at in documents.iter_enriched(source=source):
         counts["scanned"] += 1
         if not force and seen.get(doc_id) == enriched_at:
             counts["skipped"] += 1

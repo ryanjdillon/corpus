@@ -6,14 +6,12 @@ import logging
 import re
 import time
 
-from haystack.document_stores.types import DuplicatePolicy
-
 from .classify import classify
 from .config import settings
 from .embeddings import Embedder, EmbedUnavailableError
 from .fetchers import Fetcher, build_fetcher
 from .models import Record
-from .store import existing_ids, get_cursor, get_document_store, set_cursor, to_document
+from .store import DocumentStore, get_cursor, set_cursor, to_document
 from .telemetry import documents_counter, embed_batch_size, embed_duration
 
 log = logging.getLogger("corpus.ingest")
@@ -59,17 +57,28 @@ def _embed_text(record: Record) -> str:
     return f"{record.subject or ''}\n\n{body}"[:_MAX_EMBED_CHARS]
 
 
-def ingest(source: str, batch_size: int = 50, *, fetcher: Fetcher | None = None) -> int:
+def ingest(
+    source: str,
+    batch_size: int = 50,
+    *,
+    fetcher: Fetcher | None = None,
+    documents: DocumentStore | None = None,
+) -> int:
     """Ingest one source: fetch, classify, embed, and upsert its records.
 
     Returns the number of documents written. `fetcher` defaults to the fetcher
     built for `source`; inject one to drive ingestion from an alternate source.
+    `documents` is the store written to; a caller that passes one owns it, and
+    otherwise the run opens and closes its own.
     """
     fetcher = build_fetcher(source) if fetcher is None else fetcher
-    store = get_document_store()
+    if documents is None:
+        with DocumentStore() as own:
+            return ingest(source, batch_size, fetcher=fetcher, documents=own)
+    store = documents
     embedder = Embedder()
     cursor = get_cursor(source)
-    seen = existing_ids(source)
+    seen = store.existing_ids(source)
     log.info("ingest %s from cursor=%s (%d already stored)", source, cursor, len(seen))
 
     batch: list[Record] = []
@@ -88,7 +97,7 @@ def ingest(source: str, batch_size: int = 50, *, fetcher: Fetcher | None = None)
         embed_duration.record(time.monotonic() - start, attrs)
         embed_batch_size.record(len(records), attrs)
         docs = [to_document(r, classify(r), v) for r, v in zip(records, vectors)]
-        store.write_documents(docs, policy=DuplicatePolicy.OVERWRITE)
+        store.write(docs)
         total += len(docs)
         documents_counter.add(len(docs), {"source": source, "outcome": "written"})
         log.info("ingest %s: wrote %d (%d total)", source, len(docs), total)

@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import FastAPI
 from pydantic import BaseModel
 
-from . import __version__, search
+from . import __version__, search, store
 
 app = FastAPI(title="corpus", version=__version__)
 
@@ -39,23 +39,26 @@ def health() -> dict[str, str]:
 @app.post("/search")
 def search_endpoint(req: SearchRequest) -> dict[str, Any]:
     """Return semantic matches for the request query."""
-    return {"results": search.semantic_search(req.query, req.top_k, req.filters)}
+    with store.DocumentStore() as documents:
+        return {"results": search.semantic_search(documents, req.query, req.top_k, req.filters)}
 
 
 @app.post("/query")
 def query_endpoint(req: QueryRequest) -> dict[str, Any]:
     """Return structured metadata matches for the request filters."""
-    results = search.structured_query(
-        label=req.label,
-        account=req.account,
-        before=req.before,
-        after=req.after,
-        limit=req.limit,
-    )
+    with store.DocumentStore() as documents:
+        results = documents.query(
+            label=req.label,
+            account=req.account,
+            before=req.before,
+            after=req.after,
+            limit=req.limit,
+        )
     return {"count": len(results), "results": results}
 
 
 @app.get("/stats")
 def stats_endpoint() -> dict[str, Any]:
     """Return index totals and per-label document counts."""
-    return search.stats()
+    with store.DocumentStore() as documents:
+        return documents.stats()

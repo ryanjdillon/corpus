@@ -11,11 +11,12 @@ without re-enriching -- for when the detectors or the model improve.
 Enrichment is gated on per-source policy (``fetchers.policy``), which is
 default-deny: a document whose source is not declared enrichable is passed over
 and counted, never sent to the model. The gate is applied here rather than in
-``iter_documents`` because that reader is shared with export and audit, and
+``DocumentStore.iter`` because that reader is shared with export and audit, and
 enrichment policy has no business narrowing what they see.
 
-The caller owns the store (opens and closes it); the LLM, the document source, and
-the audit call are injectable, so the orchestration can be exercised without I/O.
+The caller owns both stores (opens and closes them); the LLM, the document store,
+and the audit call are injectable, so the orchestration can be exercised without
+I/O.
 """
 
 from __future__ import annotations
@@ -39,7 +40,7 @@ from .enrichment import (
 from .envelope import flags
 from .fetchers.policy import enrichable_kinds, may_enrich
 from .secret_audit import audit_secrets, audit_texts, merge_audits
-from .store import iter_documents
+from .store import DocumentStore
 
 log = logging.getLogger("corpus.enrich")
 
@@ -68,6 +69,7 @@ def _audit_windowed(audit, text: str, content: str, candidates, model: str):
 def run_enrich(
     store,
     *,
+    documents: DocumentStore,
     source: str | None = None,
     account: str | None = None,
     limit: int = 0,
@@ -76,7 +78,6 @@ def run_enrich(
     retry_rejected: bool = False,
     redo_recovered: bool = False,
     enricher: Enricher | None = None,
-    documents=iter_documents,
     audit=audit_secrets,
     concurrency: int | None = None,
 ) -> dict[str, int]:
@@ -95,7 +96,8 @@ def run_enrich(
     rejected by that model and passed over by later runs on it; ``retry_rejected``
     sends those again. A different model is always given a try. ``limit`` caps
     the documents sent to the model (0 does all), so a capped scheduled run keeps
-    making progress past the already-enriched ones. ``store`` is an open EnrichStore whose lifecycle the caller owns.
+    making progress past the already-enriched ones. ``store`` is an open EnrichStore
+and ``documents`` an open DocumentStore, whose lifecycles the caller owns.
 
     The audit uses ``CORPUS_AUDIT_MODEL`` when set, else the enrichment model.
 
@@ -131,7 +133,7 @@ def run_enrich(
             if not retry_rejected:
                 seen |= store.rejected_ids(enricher.model)
         queued = 0
-        for doc_id, content, meta in documents(source=source, account=account):
+        for doc_id, content, meta in documents.iter(source=source, account=account):
             # The limit caps documents sent to the model, not documents scanned:
             # documents arrive in a stable order, so a scan cap would re-scan the
             # same already-enriched prefix on every run and never reach new mail.
@@ -237,10 +239,10 @@ def run_enrich(
 def run_audit(
     store,
     *,
+    documents: DocumentStore,
     source: str | None = None,
     account: str | None = None,
     limit: int = 0,
-    documents=iter_documents,
     audit=audit_secrets,
     model: str | None = None,
 ) -> dict[str, int]:
@@ -258,7 +260,7 @@ def run_audit(
     if not model:
         raise ValueError("no model configured (set CORPUS_AUDIT_MODEL or CORPUS_ENRICH_MODEL)")
     scanned = audited = 0
-    for doc_id, content, meta in documents(source=source, account=account):
+    for doc_id, content, meta in documents.iter(source=source, account=account):
         if limit and scanned >= limit:
             break
         scanned += 1

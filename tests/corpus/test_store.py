@@ -2,8 +2,9 @@ from datetime import UTC, datetime
 
 import pytest
 
+from corpus.enrich_store import EnrichStore
 from corpus.models import Classification, Record
-from corpus.store import get_cursor, set_cursor, to_document
+from corpus.store import DocumentStore, get_cursor, set_cursor, to_document
 
 pytestmark = pytest.mark.integration
 
@@ -41,14 +42,109 @@ def test_cursor_roundtrip(pg):
     assert get_cursor("imap:test") == "12:150"
 
 
-def test_write_and_read_back(pg):
-    from corpus.store import get_document_store
+def _doc(uid: str, *, source: str = "imap:test", account: str = "me@x.org", sent_at=None):
+    rec = Record(
+        source=source,
+        source_uid=uid,
+        kind="email",
+        account=account,
+        subject=f"mail {uid}",
+        sent_at=sent_at,
+        body_text=f"body {uid}",
+    )
+    return to_document(rec, Classification(label="personal", confidence=0.5), [0.1] * 16)
 
-    store = get_document_store()
+
+@pytest.fixture
+def documents(pg):
+    """An open DocumentStore on the test schema, closed after the test."""
+    with DocumentStore() as store:
+        yield store
+
+
+def test_write_and_read_back(documents):
     rec = _record("1", "kayak")
     doc = to_document(rec, Classification(label="personal", confidence=0.5), [0.1] * 16)
-    store.write_documents([doc])
-    assert store.count_documents() == 1
-    fetched = store.filter_documents()
-    assert fetched[0].id == "imap:test::1"
-    assert fetched[0].meta["subject"] == "kayak"
+    documents.write([doc])
+    assert documents.stats()["total"] == 1
+    fetched = list(documents.iter())
+    assert fetched[0][0] == "imap:test::1"
+    assert fetched[0][2]["subject"] == "kayak"
+
+
+def test_write_overwrites_an_existing_id(documents):
+    documents.write([_doc("1")])
+    documents.write([_doc("1")])
+    assert documents.stats()["total"] == 1
+
+
+def test_a_missing_table_reads_as_an_empty_corpus(documents):
+    # Haystack creates the table on its first write, and the store must not.
+    assert documents.exists() is False
+    assert documents.existing_ids("imap:test") == set()
+    assert list(documents.iter()) == []
+    assert list(documents.iter_enriched()) == []
+
+
+def test_existing_ids_are_per_source(documents):
+    documents.write([_doc("1"), _doc("2"), _doc("3", source="gmail:other")])
+    assert documents.exists() is True
+    assert documents.existing_ids("imap:test") == {"imap:test::1", "imap:test::2"}
+
+
+def test_iter_is_newest_first_undated_last_ties_by_id(documents):
+    day = datetime(2026, 1, 2, tzinfo=UTC)
+    documents.write([
+        _doc("a", sent_at=datetime(2026, 1, 1, tzinfo=UTC)),
+        _doc("c", sent_at=day),
+        _doc("b", sent_at=day),
+        _doc("z"),  # undated
+    ])
+    assert [i for i, _, _ in documents.iter()] == [
+        "imap:test::b", "imap:test::c", "imap:test::a", "imap:test::z",
+    ]
+
+
+def test_iter_filters_by_source_and_account(documents):
+    documents.write([
+        _doc("1"), _doc("2", account="you@x.org"), _doc("3", source="gmail:other"),
+    ])
+    assert {i for i, _, _ in documents.iter(source="imap:test")} == {
+        "imap:test::1", "imap:test::2",
+    }
+    assert {i for i, _, _ in documents.iter(account="you@x.org")} == {"imap:test::2"}
+    assert [i for i, _, _ in documents.iter(source="imap:test", account="me@x.org")] == [
+        "imap:test::1"
+    ]
+
+
+def test_an_abandoned_iteration_leaves_the_store_usable(documents):
+    documents.write([_doc("1"), _doc("2")])
+    stream = documents.iter()
+    next(stream)
+    stream.close()
+    assert documents.get("imap:test::2")["id"] == "imap:test::2"
+
+
+def test_iter_enriched_joins_documents_and_enrichments(documents):
+    documents.write([
+        _doc("1", sent_at=datetime(2026, 1, 1, tzinfo=UTC)),
+        _doc("2", sent_at=datetime(2026, 1, 2, tzinfo=UTC)),
+        _doc("3", source="gmail:other"),
+        _doc("4"),  # never enriched
+    ])
+    # Only the documents table exists yet: nothing is enriched.
+    assert list(documents.iter_enriched()) == []
+    with EnrichStore() as enrichments:
+        for uid in ("imap:test::1", "imap:test::2", "gmail:other::3"):
+            enrichments.save_enrichment(uid, {"one_line": uid}, "local", "sv1")
+        enrichments.save_rejection("imap:test::4", "400: too long", "local")
+
+    rows = list(documents.iter_enriched(source="imap:test"))
+
+    assert [(r[0], r[1]["source"], r[2]) for r in rows] == [
+        ("imap:test::2", "imap:test", {"one_line": "imap:test::2"}),
+        ("imap:test::1", "imap:test", {"one_line": "imap:test::1"}),
+    ]
+    assert all(r[3] is not None for r in rows)  # enriched_at, the sync's version
+    assert len(list(documents.iter_enriched())) == 3

@@ -160,7 +160,7 @@
       "sources": [
         {
           "path": "src/corpus/store.py",
-          "label": "pgvector + iter_documents"
+          "label": "DocumentStore: documents table"
         },
         {
           "path": "src/corpus/enrich_store.py",

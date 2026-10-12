@@ -454,14 +454,20 @@ class RecordingStore:
         self.audits[doc_id] = {"candidates": list(candidates), "result": result}
 
 
-def fixture_documents(records: list[dict]) -> Callable:
-    """Return an ``iter_documents``-shaped callable over fixture records."""
+class FixtureDocuments:
+    """In-memory stand-in for ``DocumentStore``'s read side over fixture records.
 
-    def documents(**_):
-        for rec in records:
+    ``run_enrich`` only streams documents, so only ``iter`` is needed; the
+    filters are ignored because every fixture record is in scope.
+    """
+
+    def __init__(self, records: list[dict]) -> None:
+        self._records = records
+
+    def iter(self, source=None, account=None) -> Iterator[tuple[str, str, dict]]:
+        """Yield (id, content, meta) for each fixture record, as the store would."""
+        for rec in self._records:
             yield rec["id"], rec["body"], {"source": EVAL_SOURCE, "subject": rec["subject"]}
-
-    return documents
 
 
 def classify_label(rec: dict) -> str:
@@ -612,7 +618,7 @@ def run_records(records: list[dict], enricher, audit: Callable, *,
         run_enrich(
             store,
             enricher=metered,
-            documents=fixture_documents(records),
+            documents=FixtureDocuments(records),
             audit=metered_audit(audit, meter, audit_calls),
             concurrency=concurrency,
             force=True,

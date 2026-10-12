@@ -12,8 +12,9 @@ import hashlib
 import re
 from typing import Any
 
-from . import leaks, pii, store
+from . import leaks, pii
 from .redact import Span
+from .store import DocumentStore
 
 # Tight literal-phrase gate for recovery/backup codes: these have no deterministic
 # value signature (that's why the noisy token regex was removed), but the wording
@@ -105,9 +106,12 @@ def audit_candidates(content: str | None) -> list[str]:
 
 
 def scan_archive(
-    source: str | None = None, account: str | None = None, limit: int = 0
+    documents: DocumentStore,
+    source: str | None = None,
+    account: str | None = None,
+    limit: int = 0,
 ) -> dict[str, Any]:
-    """Scan stored documents for secrets.
+    """Scan the documents in *documents* (an open store the caller owns) for secrets.
 
     Returns ``{scanned, with_secrets, totals, hits}`` where ``totals`` is per-type
     counts and each hit is ``{id, secret_types, from_addr, subject, sent_at}`` — no
@@ -116,7 +120,7 @@ def scan_archive(
     totals: dict[str, int] = {}
     hits: list[dict[str, Any]] = []
     scanned = 0
-    for doc_id, content, meta in store.iter_documents(source=source, account=account):
+    for doc_id, content, meta in documents.iter(source=source, account=account):
         if limit and scanned >= limit:
             break
         scanned += 1
