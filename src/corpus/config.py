@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     embedding_dimensions: int = 1024
     # Generous: a slow endpoint may take a while for a batch under load.
     embed_timeout: float = 300.0
+    # A search tool call waits on its query embedding, so it gets one short attempt.
+    embed_query_timeout: float = 15.0
 
     # Optional local model used only to break low-confidence classification ties.
     classify_model: str = ""  # empty => rule + prototype classification only
@@ -72,9 +74,9 @@ class Settings(BaseSettings):
     chunk_tokens: int = 512
     chunk_overlap: int = 64
 
-    # HTTP service.
+    # MCP servers (``corpus serve <tier>``): one tier per process, so each
+    # deployment of a tier binds its own port.
     host: str = "0.0.0.0"
-    port: int = 8000
     mcp_port: int = 9000
 
     # scan-gate: the egress policy (corpus.egress) inline on the path to model

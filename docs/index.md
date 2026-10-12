@@ -12,7 +12,7 @@ A raw markdown layer keeps each item verbatim, and corpus derives a configurable
 set of access-controlled storage tiers from it — you set each tier's projection,
 the tool that exposes it, and who may read it, human or agent.
 
-corpus answers three kinds of question, over a REST API and an MCP server:
+corpus answers three kinds of question, over MCP (`corpus serve <tier>`):
 
 - **Find by meaning** — semantic search: vector similarity with optional metadata
   filters.

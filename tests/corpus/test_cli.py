@@ -10,7 +10,6 @@ from __future__ import annotations
 from unittest.mock import create_autospec
 
 import pytest
-import uvicorn
 from click.testing import CliRunner
 
 from corpus import (
@@ -18,13 +17,12 @@ from corpus import (
     enrich_batch,
     enrich_store,
     export,
-    index_server,
     ingest,
-    mcp_server,
     sanitize,
     sanitized_store,
     scan,
     scan_gate,
+    serving,
     store,
     telemetry,
 )
@@ -54,14 +52,6 @@ def shutdown(monkeypatch):
 
 
 @pytest.fixture
-def instrument_fastapi(monkeypatch):
-    """Autospec ``telemetry.instrument_fastapi``."""
-    mock = create_autospec(telemetry.instrument_fastapi)
-    monkeypatch.setattr(telemetry, "instrument_fastapi", mock)
-    return mock
-
-
-@pytest.fixture
 def register_gauge(monkeypatch):
     """Autospec ``telemetry.register_corpus_size_gauge``."""
     mock = create_autospec(telemetry.register_corpus_size_gauge)
@@ -70,26 +60,10 @@ def register_gauge(monkeypatch):
 
 
 @pytest.fixture
-def uvicorn_run(monkeypatch):
-    """Autospec ``uvicorn.run`` so no server binds a port."""
-    mock = create_autospec(uvicorn.run)
-    monkeypatch.setattr(uvicorn, "run", mock)
-    return mock
-
-
-@pytest.fixture
-def mcp_run(monkeypatch):
-    """Autospec the MCP server ``run``."""
-    mock = create_autospec(mcp_server.run)
-    monkeypatch.setattr(mcp_server, "run", mock)
-    return mock
-
-
-@pytest.fixture
-def index_run(monkeypatch):
-    """Autospec the corpus-index server ``run``."""
-    mock = create_autospec(index_server.run)
-    monkeypatch.setattr(index_server, "run", mock)
+def serve(monkeypatch):
+    """Autospec ``serving.serve`` so no MCP server binds a port."""
+    mock = create_autospec(serving.serve)
+    monkeypatch.setattr(serving, "serve", mock)
     return mock
 
 
@@ -195,27 +169,34 @@ def scan_archive(monkeypatch):
     return mock
 
 
-def test_api_command(runner, configure, instrument_fastapi, register_gauge, uvicorn_run):
-    result = runner.invoke(cli.main, ["api"])
+@pytest.mark.parametrize(
+    ("args", "tier", "service", "gauge"),
+    [
+        (["serve", "sensitive"], "sensitive", "corpus-mcp", True),
+        (["serve", "sanitized"], "sanitized", "corpus-index", False),
+        (["mcp"], "sensitive", "corpus-mcp", True),
+        (["index"], "sanitized", "corpus-index", False),
+    ],
+)
+def test_serve_command(runner, configure, register_gauge, serve, args, tier, service, gauge):
+    result = runner.invoke(cli.main, args)
     assert result.exit_code == 0, result.output
-    assert configure.call_args.args == ("corpus",)
-    instrument_fastapi.assert_called_once()
-    register_gauge.assert_called_once()
-    uvicorn_run.assert_called_once()
+    assert configure.call_args.args == (service,)
+    # The corpus-size gauge reads the sensitive store, so only its server reports it.
+    assert register_gauge.called is gauge
+    serve.assert_called_once_with(tier)
 
 
-def test_mcp_command(runner, configure, mcp_run):
-    result = runner.invoke(cli.main, ["mcp"])
-    assert result.exit_code == 0, result.output
-    assert configure.call_args.args == ("corpus-mcp",)
-    mcp_run.assert_called_once()
+@pytest.mark.parametrize("alias", ["mcp", "index"])
+def test_the_old_server_commands_are_deprecated(runner, configure, register_gauge, serve, alias):
+    result = runner.invoke(cli.main, [alias])
+    assert "deprecated" in result.output.lower()
 
 
-def test_index_command(runner, configure, index_run):
-    result = runner.invoke(cli.main, ["index"])
-    assert result.exit_code == 0, result.output
-    assert configure.call_args.args == ("corpus-index",)
-    index_run.assert_called_once()
+def test_serve_refuses_an_unknown_tier(runner, serve):
+    result = runner.invoke(cli.main, ["serve", "raw"])
+    assert result.exit_code != 0
+    serve.assert_not_called()
 
 
 def test_scan_gate_command(runner, configure, shutdown, scan_gate_serve):

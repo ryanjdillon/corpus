@@ -1,9 +1,8 @@
 """OpenTelemetry: export traces + metrics over OTLP.
 
 No-op unless OTEL_EXPORTER_OTLP_ENDPOINT is set, so local runs and tests do not
-export. Traces cover the FastAPI surface and outgoing httpx calls; metrics add
-ingest counters/histograms and a corpus-size gauge that HTTP metrics can't
-provide. Heavy SDK/exporter imports are deferred to configure() so importing this
+export. Traces cover outgoing httpx calls; metrics add ingest counters and
+histograms, MCP tool-call counts, and a corpus-size gauge. Heavy SDK/exporter imports are deferred to configure() so importing this
 module (for the metric instruments) stays cheap.
 """
 
@@ -38,14 +37,10 @@ def enabled() -> bool:
     return bool(os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
 
 
-# Auto-instrumentation emits standard semconv names (http.server.duration, …).
+# Auto-instrumentation emits standard semconv names (http.client.duration, …).
 # Rename them under the corpus. prefix so every metric this service exports is
 # discoverable as corpus_* (the custom instruments below are already prefixed).
 _INSTRUMENTATION_METRICS = [
-    "http.server.duration",
-    "http.server.active_requests",
-    "http.server.request.size",
-    "http.server.response.size",
     "http.client.duration",
     "http.client.request.size",
     "http.client.response.size",
@@ -94,15 +89,6 @@ def configure(default_service_name: str) -> None:
     atexit.register(shutdown)
     _configured = True
     log.info("OpenTelemetry configured for %s", service)
-
-
-def instrument_fastapi(app) -> None:
-    """Instrument a FastAPI app for request traces + HTTP server metrics."""
-    if not enabled():
-        return
-    from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-
-    FastAPIInstrumentor.instrument_app(app)
 
 
 def _corpus_size_observations(_options, *, documents: Callable[[], Any] | None = None):
@@ -219,14 +205,21 @@ _ISO_TIME = re.compile(r"^\d{4}-\d{2}-\d{2}(?:[T ][\d:.]{2,15}(?:Z|[+-]\d{2}:?\d
 @functools.cache
 def _closed_values() -> dict[str, frozenset[str]]:
     """The closed vocabularies a string argument may be logged verbatim from."""
+    from typing import get_args
+
     from .classify import LABELS
     from .enrichment import Domain, Importance, WaitingOn
+    from .query import GroupBy, Order
 
+    waiting = frozenset(w.value for w in WaitingOn)
     return {
         "label": LABELS,
         "domain": frozenset(d.value for d in Domain),
         "importance": frozenset(i.value for i in Importance),
-        "who": frozenset(w.value for w in WaitingOn),
+        "who": waiting,
+        "waiting_on": waiting,
+        "order": frozenset(get_args(Order)),
+        "group_by": frozenset(get_args(GroupBy)),
     }
 
 
@@ -234,19 +227,21 @@ def _summarise(name: str, value: Any) -> Any:
     """One argument, safe to log.
 
     Verbatim only when the value itself is safe: None, a bool or a number, a member
-    of the argument's closed vocabulary, or a date or duration. A document id keeps
-    its source and is otherwise hashed, since the rest can name a mail folder. Any
-    other string (a search query, an address, a value outside the vocabulary) is
-    logged as its length, so the log never carries what a caller searched for.
+    of the argument's closed vocabulary (or a list of them), or a date or duration.
+    A document id keeps its source and is otherwise hashed, since the rest can name
+    a mail folder. Any other string (a search query, an address, a value outside
+    the vocabulary) is logged as its length, so the log never carries what a caller
+    searched for. A mapping (a query spec, its filters, a range) is summarised
+    field by field, so the log states the window and filters a call read.
     """
     if value is None or isinstance(value, (bool, int, float, enum.Enum)):
         return value.value if isinstance(value, enum.Enum) else value
     if isinstance(value, str):
         if value in _closed_values().get(name, ()):
             return value
-        if name == "since" and _DURATION.match(value):
+        if name in {"since", "until"} and _DURATION.match(value):
             return value
-        if name in {"before", "after"} and _ISO_TIME.match(value):
+        if name in {"before", "after", "since", "until"} and _ISO_TIME.match(value):
             return value
         if name == "id":
             source, _, _ = value.partition("::")
@@ -254,7 +249,12 @@ def _summarise(name: str, value: Any) -> Any:
             return {"source": source if _SOURCE.match(source) else None, "sha256": digest}
         return {"chars": len(value)}
     if isinstance(value, (list, tuple)):
+        vocabulary = _closed_values().get(name, ())
+        if value and all(isinstance(v, str) and v in vocabulary for v in value):
+            return list(value)
         return {"items": len(value)}
+    if isinstance(value, Mapping):
+        return filter_summary(value)
     return {"type": type(value).__name__}
 
 

@@ -212,49 +212,6 @@ class DocumentStore(Store):
         )
         yield from self._stream("corpus_sync_scan", sql, params, self._table, enrichments)
 
-    def query(
-        self,
-        label: str | None = None,
-        account: str | None = None,
-        before: str | None = None,
-        after: str | None = None,
-        limit: int = 500,
-        older_than: tuple[str, str] | None = None,
-    ) -> list[dict[str, Any]]:
-        """Query metadata analytically (non-semantic), newest first, up to *limit*.
-
-        Rows (keyed by ``QUERY_KEYS``) are ordered by ``(sent_at, id)`` descending,
-        a total order, so ``older_than`` (the last row's ``(sent_at, id)``) resumes
-        after it: a keyset page, which mail arriving between pages cannot shift.
-        """
-        clauses = []
-        params: list[Any] = []
-        if label:
-            clauses.append("meta->>'label' = %s")
-            params.append(label)
-        if account:
-            clauses.append("meta->>'account' = %s")
-            params.append(account)
-        if before:
-            clauses.append("meta->>'sent_at' < %s")
-            params.append(before)
-        if after:
-            clauses.append("meta->>'sent_at' >= %s")
-            params.append(after)
-        if older_than:
-            clauses.append("(coalesce(meta->>'sent_at', ''), id) < (%s, %s)")
-            params += list(older_than)
-        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
-        sql = (
-            f"SELECT id, meta->>'subject', meta->>'from_addr', meta->>'sent_at', "
-            f"meta->>'label' FROM {self._table}{where} "
-            # coalesce: a row without a date sorts last and still compares in the
-            # keyset (a NULL would compare as unknown and drop out of later pages).
-            f"ORDER BY coalesce(meta->>'sent_at', '') DESC, id DESC LIMIT %s"
-        )
-        params.append(limit)
-        return [dict(zip(QUERY_KEYS, r, strict=True)) for r in self._read(sql, params)]
-
     def query_spec(
         self, spec: QuerySpec, policy: QueryPolicy, position: Position | None = None
     ) -> Page:

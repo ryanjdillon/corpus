@@ -17,7 +17,9 @@ from mcp.shared.context import RequestContext
 from starlette.requests import Request
 from starlette.testclient import TestClient
 
-from corpus import index_query, index_server
+from corpus import serving
+from corpus.query import Page
+from corpus.sanitized_store import SanitizedStore
 from corpus.telemetry import audited, filter_summary
 
 
@@ -188,24 +190,53 @@ def test_an_id_with_an_unexpected_source_drops_it():
 
 
 def test_lists_are_summarised_by_size():
-    assert filter_summary({"terms": ["a", "b"], "opts": {"k": 1}}) == {
-        "terms": {"items": 2}, "opts": {"type": "dict"}
+    assert filter_summary({"terms": ["a", "b"], "opts": {1, 2}}) == {
+        "terms": {"items": 2}, "opts": {"type": "set"}
     }
 
 
-def test_audited_tools_keep_their_input_schema():
-    tools = {t.name: t for t in asyncio.run(index_server.mcp.list_tools())}
+def test_a_query_spec_is_summarised_field_by_field():
+    spec = {
+        "filters": {"domain": ["travel", "work"], "organization": "Example Travel AS",
+                    "sent_at": {"since": "14d", "until": "2026-01-01"}},
+        "group_by": ["month"], "order": "newest", "text": "ferry",
+    }
+
+    assert filter_summary({"spec": spec}) == {"spec": {
+        "filters": {"domain": ["travel", "work"], "organization": {"chars": 17},
+                    "sent_at": {"since": "14d", "until": "2026-01-01"}},
+        "group_by": ["month"], "order": "newest", "text": {"chars": 5},
+    }}
+
+
+@pytest.fixture
+def index_store():
+    """The sanitized tier's store: a spec-bound SanitizedStore."""
+    store = create_autospec(SanitizedStore, instance=True)
+    store.__enter__.return_value = store
+    store.query.return_value = Page([], None)
+    return store
+
+
+@pytest.fixture
+def index(index_store):
+    """The sanitized tier's server, reading ``index_store``."""
+    open_store = create_autospec(serving.open_index_store, return_value=index_store)
+    return serving.build_mcp("sanitized", open_store=open_store)
+
+
+def test_audited_tools_keep_their_input_schema(index):
+    tools = {t.name: t for t in asyncio.run(index.list_tools())}
 
     assert set(tools["index_action_items"].inputSchema["properties"]) == {
         "limit", "domain", "importance", "cursor"
     }
 
 
-def test_the_principal_reaches_the_audit_through_a_real_mcp_request(monkeypatch, caplog):
+def test_the_principal_reaches_the_audit_through_a_real_mcp_request(index, index_store, caplog):
     # End to end through FastMCP's streamable-HTTP app: the header the gateway
     # sets must be what the audit records.
-    due_soon = create_autospec(index_query.due_soon, return_value=[{"id": "a"}])
-    monkeypatch.setattr(index_server.index_query, "due_soon", due_soon)
+    index_store.query.return_value = Page([{"id": "a"}], None)
     caplog.set_level(logging.INFO, logger="corpus.audit")
     call = {
         "jsonrpc": "2.0", "id": 1, "method": "tools/call",
@@ -213,7 +244,7 @@ def test_the_principal_reaches_the_audit_through_a_real_mcp_request(monkeypatch,
     }
     headers = {"accept": "application/json, text/event-stream", "x-client-id": "orchestrator"}
 
-    with TestClient(index_server.mcp.streamable_http_app()) as client:
+    with TestClient(index.streamable_http_app()) as client:
         response = client.post("/mcp", headers=headers, json=call)
 
     assert response.status_code == 200

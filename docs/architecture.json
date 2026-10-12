@@ -31,7 +31,7 @@
       "sources": [
         {
           "path": "src/corpus/cli.py",
-          "label": "api|mcp|index|ingest|scan|scan-gate|enrich"
+          "label": "serve <tier>|ingest|scan|scan-gate|enrich|sync"
         },
         {
           "path": "src/corpus/export.py",
@@ -56,8 +56,8 @@
     {
       "id": "adapters",
       "type": "backend",
-      "label": "api / mcp_server",
-      "sublabel": "REST + MCP tools",
+      "label": "serving",
+      "sublabel": "MCP tools per tier",
       "pos": [
         1140,
         90
@@ -68,10 +68,8 @@
       ],
       "sources": [
         {
-          "path": "src/corpus/api.py"
-        },
-        {
-          "path": "src/corpus/mcp_server.py"
+          "path": "src/corpus/serving.py",
+          "label": "build_mcp(tier): generic tools + presets"
         },
         {
           "path": "src/corpus/envelope.py"
@@ -324,12 +322,8 @@
       "kind": null,
       "sources": [
         {
-          "path": "src/corpus/index_query.py",
-          "label": "whitelisted queries over sanitized messages"
-        },
-        {
-          "path": "src/corpus/index_server.py",
-          "label": "sanitized MCP surface"
+          "path": "src/corpus/serving.py",
+          "label": "build_mcp('sanitized'): sanitized MCP surface"
         }
       ]
     },
@@ -397,7 +391,7 @@
       "id": "adapters-search",
       "from": "adapters",
       "to": "search",
-      "label": "semantic_search / query",
+      "label": "query_spec / semantic_search",
       "labelAt": [
         1215,
         240
@@ -514,7 +508,7 @@
       "dot": "violet",
       "title": "Query + entrypoints",
       "items": [
-        "search (HNSW + SQL) behind the api / mcp_server adapters; cli runs api, mcp, ingest, scan, scan-gate, enrich, audit-secrets"
+        "search (HNSW + SQL) behind serving, which builds one MCP server per tier; cli runs serve <tier>, ingest, scan, scan-gate, enrich, sync, audit-secrets"
       ]
     }
   ]

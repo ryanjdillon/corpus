@@ -62,7 +62,7 @@ corpus supports three isolation mechanisms, applied in layers:
 ## Identity (authentication)
 
 - Humans and agents authenticate via **OIDC**; the gateway validates JWTs
-  (JWKS) for the REST API and MCP-spec OAuth for the MCP endpoint, then forwards
+  (JWKS) through MCP-spec OAuth for each tier's MCP endpoint, then forwards
   validated claims to corpus.
 - Agents authenticate with their **own workload credentials** (client-credentials
   grant) — a named principal, never a shared key.
