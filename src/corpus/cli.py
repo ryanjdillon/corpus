@@ -97,11 +97,12 @@ def enrich(
     telemetry.configure("corpus-enrich")
     from .enrich_batch import run_enrich
     from .enrich_store import EnrichStore
+    from .store import DocumentStore
 
     try:
-        with EnrichStore() as store:
+        with EnrichStore() as store, DocumentStore() as documents:
             r = run_enrich(
-                store, source=source, account=account, limit=limit, force=force,
+                store, documents=documents, source=source, account=account, limit=limit, force=force,
                 upgrade_stale=upgrade_stale, retry_rejected=retry_rejected,
                 redo_recovered=redo_recovered,
             )
@@ -129,12 +130,13 @@ def sync(source: str | None, limit: int, force: bool) -> None:
     telemetry.configure("corpus-sync")
     from .sanitize import run_sync
     from .sanitized_store import SanitizedStore
+    from .store import DocumentStore
     from .tiers import tier
 
     src, dst = tier("sensitive"), tier("sanitized")
     try:
-        with SanitizedStore(dst.dsn) as store:
-            r = run_sync(store, source=source, limit=limit, force=force, read_dsn=src.dsn)
+        with SanitizedStore(dst.dsn) as store, DocumentStore(src.dsn) as documents:
+            r = run_sync(store, documents=documents, source=source, limit=limit, force=force)
         click.echo(f"synced {r['synced']}, skipped {r['skipped']} of {r['scanned']} scanned")
     finally:
         telemetry.shutdown()
@@ -149,9 +151,11 @@ def export(source: str | None, account: str | None, limit: int, force: bool) -> 
     """Materialize stored documents into the local markdown vault (one file each)."""
     telemetry.configure("corpus-export")
     from .export import export_archive
+    from .store import DocumentStore
 
     try:
-        r = export_archive(source=source, account=account, limit=limit, force=force)
+        with DocumentStore() as documents:
+            r = export_archive(documents, source=source, account=account, limit=limit, force=force)
         click.echo(f"wrote {r['written']}, unchanged {r['unchanged']} of {r['scanned']} scanned")
     finally:
         telemetry.shutdown()
@@ -169,10 +173,11 @@ def audit_secrets_cmd(source: str | None, account: str | None, limit: int) -> No
     telemetry.configure("corpus-audit")
     from .enrich_batch import run_audit
     from .enrich_store import EnrichStore
+    from .store import DocumentStore
 
     try:
-        with EnrichStore() as store:
-            r = run_audit(store, source=source, account=account, limit=limit)
+        with EnrichStore() as store, DocumentStore() as documents:
+            r = run_audit(store, documents=documents, source=source, account=account, limit=limit)
         click.echo(f"audited {r['audited']} of {r['scanned']} scanned")
     finally:
         telemetry.shutdown()
@@ -192,8 +197,10 @@ def audit_secrets_cmd(source: str | None, account: str | None, limit: int) -> No
 def scan(source: str | None, account: str | None, limit: int, json_out: str | None) -> None:
     """Scan stored documents for secrets — reports types + counts, never values."""
     from .scan import scan_archive
+    from .store import DocumentStore
 
-    report = scan_archive(source=source, account=account, limit=limit)
+    with DocumentStore() as documents:
+        report = scan_archive(documents, source=source, account=account, limit=limit)
     click.echo(f"scanned {report['scanned']}; {report['with_secrets']} contain secrets")
     for secret_type, count in sorted(report["totals"].items(), key=lambda kv: -kv[1]):
         messages = sum(1 for h in report["hits"] if secret_type in h["secret_types"])

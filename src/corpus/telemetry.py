@@ -105,17 +105,19 @@ def instrument_fastapi(app) -> None:
     FastAPIInstrumentor.instrument_app(app)
 
 
-def _corpus_size_observations(_options):
+def _corpus_size_observations(_options, *, documents: Callable[[], Any] | None = None):
     """Report stored documents per data-class label for the corpus-size gauge.
 
-    Never raises — a DB blip must not break metric export.
+    *documents* opens the store to read (default ``store.DocumentStore``). Never
+    raises — a DB blip must not break metric export.
     """
     from opentelemetry.metrics import Observation
 
     try:
-        from . import search
+        from .store import DocumentStore
 
-        by_label = search.stats().get("by_label", {})
+        with (documents or DocumentStore)() as store:
+            by_label = store.stats().get("by_label", {})
     except Exception as exc:  # noqa: BLE001
         log.warning("corpus-size gauge: %s", exc)
         return []

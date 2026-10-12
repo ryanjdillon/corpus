@@ -112,7 +112,9 @@ def corpus_search(
     offset = offset_of(decode_cursor(cursor, "corpus_search", {"query": query}), SEARCH_DEPTH)
     n = clamp(top_k, SEARCH_MAX_LIMIT)
     # One beyond the page shows whether more exist, up to the depth search ranks.
-    ranked = search.semantic_search(query, min(offset + n + 1, SEARCH_DEPTH))[offset:]
+    with store.DocumentStore() as documents:
+        ranked = search.semantic_search(documents, query, min(offset + n + 1, SEARCH_DEPTH))
+    ranked = ranked[offset:]
     next_cursor = (
         encode_cursor("corpus_search", {"query": query}, offset + n) if len(ranked) > n else None
     )
@@ -165,10 +167,11 @@ def corpus_query(
     else:
         raise ValueError("invalid cursor")
     n = clamp(limit, QUERY_MAX_LIMIT)
-    results = search.structured_query(
-        label=label, account=account, before=before, after=lower, limit=n + 1,
-        older_than=older_than,
-    )
+    with store.DocumentStore() as documents:
+        results = documents.query(
+            label=label, account=account, before=before, after=lower, limit=n + 1,
+            older_than=older_than,
+        )
     next_cursor = None
     if len(results) > n:
         last = results[n - 1]
@@ -190,7 +193,8 @@ def corpus_get(
         A ``corpus.result/v1`` envelope with 0 or 1 ``rows``, each with ``id``,
         ``content`` (full body), and ``meta``.
     """
-    doc = search.get_document(id)
+    with store.DocumentStore() as documents:
+        doc = documents.get(id)
     return _rows("corpus_get", [doc] if doc else [], GET_UNTRUSTED)
 
 
@@ -203,7 +207,8 @@ def corpus_stats() -> dict[str, Any]:
         A ``corpus.result/v1`` envelope with one row per label (``label`` and
         ``count``) and the document count as ``total``.
     """
-    s = search.stats()
+    with store.DocumentStore() as documents:
+        s = documents.stats()
     rows = [{"label": label, "count": n} for label, n in s["by_label"].items()]
     return _rows("corpus_stats", rows, (), total=s["total"])
 

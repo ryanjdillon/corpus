@@ -18,6 +18,7 @@ import pytest
 from corpus.fetchers import Fetcher
 from corpus.ingest import _MAX_EMBED_CHARS, _embed_text, ingest
 from corpus.models import Record
+from corpus.store import DocumentStore
 
 _TEST_DIM = 16
 _POISON = "POISON"
@@ -134,6 +135,12 @@ def rejecting_embeddings(monkeypatch):
         server.server_close()
 
 
+def _stored() -> dict[str, dict]:
+    """Map each stored document id to its metadata (empty before the first write)."""
+    with DocumentStore() as documents:
+        return {doc_id: meta for doc_id, _, meta in documents.iter()}
+
+
 @pytest.mark.integration
 def test_ingest_writes_and_advances_cursor(pg, fake_embeddings, make_fetcher):
     fetcher = make_fetcher(_records(3), cursor="1:3")
@@ -141,9 +148,9 @@ def test_ingest_writes_and_advances_cursor(pg, fake_embeddings, make_fetcher):
     count = ingest("imap:test", batch_size=2, fetcher=fetcher)
     assert count == 3
 
-    from corpus.store import get_cursor, get_document_store
+    from corpus.store import get_cursor
 
-    assert get_document_store().count_documents() == 3
+    assert len(_stored()) == 3
     assert get_cursor("imap:test") == "1:3"
 
 
@@ -152,10 +159,8 @@ def test_ingest_applies_classification(pg, fake_embeddings, make_fetcher):
     fetcher = make_fetcher(_records(1), cursor="1:1")
     ingest("imap:test", fetcher=fetcher)
 
-    from corpus.store import get_document_store
-
-    doc = get_document_store().filter_documents()[0]
-    assert doc.meta["label"] == "promotional"
+    (meta,) = _stored().values()
+    assert meta["label"] == "promotional"
 
 
 @pytest.mark.integration
@@ -164,9 +169,7 @@ def test_ingest_is_idempotent(pg, fake_embeddings, make_fetcher):
     ingest("imap:test", fetcher=fetcher)
     ingest("imap:test", fetcher=fetcher)  # same ids overwrite, not duplicate
 
-    from corpus.store import get_document_store
-
-    assert get_document_store().count_documents() == 2
+    assert len(_stored()) == 2
     # The second run tells the fetcher what is already stored, so it can skip
     # downloading those records.
     assert fetcher.fetch.call_args.kwargs["known"] == {r.key() for r in _records(2)}
@@ -181,11 +184,8 @@ def test_ingest_skips_bad_record_and_stores_rest(pg, rejecting_embeddings, make_
     count = ingest("imap:test", batch_size=4, fetcher=fetcher)
     assert count == 3
 
-    from corpus.store import get_document_store
-
-    store = get_document_store()
-    assert store.count_documents() == 3
-    ids = {d.id for d in store.filter_documents()}
+    ids = set(_stored())
+    assert len(ids) == 3
     assert "imap:test::2" not in ids  # the poisoned record was skipped
     assert {"imap:test::0", "imap:test::1", "imap:test::3"} <= ids
 
@@ -225,9 +225,7 @@ def test_ingest_aborts_when_embedder_unavailable(pg, monkeypatch, make_fetcher):
         fetcher = make_fetcher(_records(4), cursor="1:4")
         with pytest.raises(EmbedUnavailableError):
             ingest("imap:test", batch_size=4, fetcher=fetcher)
-        from corpus.store import get_document_store
-
-        assert get_document_store().count_documents() == 0  # aborted, nothing stored
+        assert _stored() == {}  # aborted, nothing stored
     finally:
         server.shutdown()
         server.server_close()

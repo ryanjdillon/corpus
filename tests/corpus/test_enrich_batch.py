@@ -23,6 +23,7 @@ from corpus.enrichment import (
     Enrichment,
     SecretAudit,
 )
+from corpus.store import DocumentStore
 
 # Stored documents always carry meta["source"] (store.py sets it from
 # Record.source), and enrichment is gated on it, so the fixtures carry one too.
@@ -49,8 +50,14 @@ def video_doc():
 
 @pytest.fixture
 def documents():
-    """Wrap docs into the injected iter_documents callable (ignores its filters)."""
-    return lambda *docs: (lambda **_: iter(docs))
+    """Build a spec-bound DocumentStore whose ``iter`` yields *docs* (ignores its filters)."""
+
+    def _make(*docs):
+        store = create_autospec(DocumentStore, instance=True)
+        store.iter.side_effect = lambda **_: iter(docs)
+        return store
+
+    return _make
 
 
 @pytest.fixture

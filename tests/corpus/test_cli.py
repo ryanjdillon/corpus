@@ -25,8 +25,10 @@ from corpus import (
     sanitized_store,
     scan,
     scan_gate,
+    store,
     telemetry,
 )
+from corpus.tiers import tier
 
 
 @pytest.fixture
@@ -115,6 +117,17 @@ def enrich_store_cls(monkeypatch):
         enrich_store.EnrichStore, instance=True
     )
     monkeypatch.setattr(enrich_store, "EnrichStore", cls)
+    return cls
+
+
+@pytest.fixture
+def document_store_cls(monkeypatch):
+    """Autospec ``DocumentStore`` as a context manager yielding an instance mock."""
+    cls = create_autospec(store.DocumentStore)
+    cls.return_value.__enter__.return_value = create_autospec(
+        store.DocumentStore, instance=True
+    )
+    monkeypatch.setattr(store, "DocumentStore", cls)
     return cls
 
 
@@ -213,13 +226,17 @@ def test_scan_gate_command(runner, configure, shutdown, scan_gate_serve):
     shutdown.assert_called_once()
 
 
-def test_sync_command(runner, configure, shutdown, sanitized_store_cls, run_sync):
+def test_sync_command(
+    runner, configure, shutdown, sanitized_store_cls, run_sync, document_store_cls
+):
     run_sync.return_value = {"synced": 3, "skipped": 1, "scanned": 4}
     result = runner.invoke(cli.main, ["sync"])
     assert result.exit_code == 0, result.output
     assert configure.call_args.args == ("corpus-sync",)
     assert "synced 3" in result.output
     assert run_sync.call_args.kwargs["source"] is None
+    # The sync reads the sensitive tier's documents.
+    assert document_store_cls.call_args.args == (tier("sensitive").dsn,)
 
 
 def test_ingest_command(runner, configure, shutdown, ingest_fn):
@@ -233,7 +250,7 @@ def test_ingest_command(runner, configure, shutdown, ingest_fn):
     shutdown.assert_called_once()
 
 
-def test_scan_command(runner, scan_archive, tmp_path):
+def test_scan_command(runner, scan_archive, tmp_path, document_store_cls):
     scan_archive.return_value = {
         "scanned": 3,
         "with_secrets": 1,
@@ -265,7 +282,9 @@ def test_ingest_flushes_telemetry_on_error(runner, configure, shutdown, ingest_f
     shutdown.assert_called_once()  # flushed even on failure
 
 
-def test_enrich_command(runner, configure, shutdown, enrich_store_cls, run_enrich):
+def test_enrich_command(
+    runner, configure, shutdown, enrich_store_cls, run_enrich, document_store_cls
+):
     run_enrich.return_value = {"scanned": 5, "enriched": 4, "audited": 1, "ineligible": 0}
     result = runner.invoke(cli.main, ["enrich", "--limit", "5"])
     assert result.exit_code == 0, result.output
@@ -277,7 +296,7 @@ def test_enrich_command(runner, configure, shutdown, enrich_store_cls, run_enric
 
 
 def test_enrich_command_passes_redo_recovered(
-    runner, configure, shutdown, enrich_store_cls, run_enrich
+    runner, configure, shutdown, enrich_store_cls, run_enrich, document_store_cls
 ):
     run_enrich.return_value = {"scanned": 1, "enriched": 1, "audited": 0, "ineligible": 0}
     result = runner.invoke(cli.main, ["enrich", "--redo-recovered"])
@@ -286,7 +305,7 @@ def test_enrich_command_passes_redo_recovered(
 
 
 def test_enrich_command_reports_ineligible_documents(
-    runner, configure, shutdown, enrich_store_cls, run_enrich
+    runner, configure, shutdown, enrich_store_cls, run_enrich, document_store_cls
 ):
     run_enrich.return_value = {"scanned": 5, "enriched": 1, "audited": 0, "ineligible": 4}
     result = runner.invoke(cli.main, ["enrich"])
@@ -295,7 +314,7 @@ def test_enrich_command_reports_ineligible_documents(
 
 
 def test_enrich_command_reports_a_policy_refusal_without_a_traceback(
-    runner, configure, shutdown, enrich_store_cls, run_enrich
+    runner, configure, shutdown, enrich_store_cls, run_enrich, document_store_cls
 ):
     run_enrich.side_effect = ValueError("source 'youtube:@chan' is not declared enrichable")
     result = runner.invoke(cli.main, ["enrich", "--source", "youtube:@chan"])
@@ -305,7 +324,9 @@ def test_enrich_command_reports_a_policy_refusal_without_a_traceback(
     shutdown.assert_called_once()  # telemetry still flushed on refusal
 
 
-def test_audit_secrets_command(runner, configure, shutdown, enrich_store_cls, run_audit):
+def test_audit_secrets_command(
+    runner, configure, shutdown, enrich_store_cls, run_audit, document_store_cls
+):
     run_audit.return_value = {"scanned": 3, "audited": 2}
     result = runner.invoke(cli.main, ["audit-secrets"])
     assert result.exit_code == 0, result.output
@@ -314,7 +335,7 @@ def test_audit_secrets_command(runner, configure, shutdown, enrich_store_cls, ru
     shutdown.assert_called_once()
 
 
-def test_export_command(runner, configure, shutdown, export_archive):
+def test_export_command(runner, configure, shutdown, export_archive, document_store_cls):
     export_archive.return_value = {"scanned": 5, "written": 4, "unchanged": 1}
     result = runner.invoke(cli.main, ["export", "--limit", "5"])
     assert result.exit_code == 0, result.output

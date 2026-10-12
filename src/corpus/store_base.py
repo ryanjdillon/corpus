@@ -24,12 +24,17 @@ class Store(ABC):
 
     @abstractmethod
     def schema_ddl(self) -> str:
-        """Return idempotent DDL that creates this tier's objects."""
+        """Return idempotent DDL that creates this tier's objects, or ``""`` for none."""
 
     def _create_schema(self) -> None:
         """Run :meth:`schema_ddl` once, at construction."""
+        ddl = self.schema_ddl()
+        # A tier whose objects another component creates (the documents table is
+        # Haystack's) declares no DDL; Postgres rejects an empty statement.
+        if not ddl:
+            return
         with self._conn.cursor() as cur:
-            cur.execute(self.schema_ddl())
+            cur.execute(ddl)
         self._conn.commit()
 
     def _write(self, sql: str, params: object = None) -> None:

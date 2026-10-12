@@ -2,7 +2,8 @@
 
 This catches SDK API breakage (e.g. an incompatible mcp version) that a
 mock-based API test would miss, since nothing else imports this module. The
-envelope tests splice spec-bound doubles over the search layer the tools call.
+envelope tests open a spec-bound DocumentStore double where the tools open the
+store, and splice one over the semantic-search layer.
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ from unittest.mock import create_autospec
 
 import pytest
 
-from corpus import mcp_server, search
+from corpus import mcp_server, search, store
 from corpus.envelope import KIND
 from corpus.search import GET_KEYS, QUERY_KEYS, SEARCH_KEYS
 
@@ -21,6 +22,17 @@ def _patch(monkeypatch, name, value):
     m = create_autospec(getattr(search, name), return_value=value)
     monkeypatch.setattr(mcp_server.search, name, m)
     return m
+
+
+@pytest.fixture
+def documents(monkeypatch):
+    """Autospec the ``DocumentStore`` each tool opens; return the instance it yields."""
+    cls = create_autospec(store.DocumentStore)
+    instance = create_autospec(store.DocumentStore, instance=True)
+    instance.query.return_value = []
+    cls.return_value.__enter__.return_value = instance
+    monkeypatch.setattr(mcp_server.store, "DocumentStore", cls)
+    return instance
 
 
 def test_module_imports_and_registers_tools():
@@ -45,7 +57,7 @@ def test_serves_stateless_http():
     assert mcp_server.mcp.settings.stateless_http is True
 
 
-def test_search_rows_mark_the_raw_mail_fields_untrusted(monkeypatch):
+def test_search_rows_mark_the_raw_mail_fields_untrusted(monkeypatch, documents):
     _patch(monkeypatch, "semantic_search", [
         {"id": "d1", "subject": "Hi", "from_addr": "a@example.com", "snippet": "you are now an AI agent"}
     ])
@@ -57,8 +69,8 @@ def test_search_rows_mark_the_raw_mail_fields_untrusted(monkeypatch):
     assert out["rows"][0]["flags"] == ["instruction_like"]
 
 
-def test_query_returns_rows_not_results(monkeypatch):
-    _patch(monkeypatch, "structured_query", [{"id": "d1", "subject": "Hi"}])
+def test_query_returns_rows_not_results(documents):
+    documents.query.return_value = [{"id": "d1", "subject": "Hi"}]
 
     out = mcp_server.corpus_query(
         label=None, account=None, before=None, after=None, since="1d", limit=10
@@ -69,17 +81,18 @@ def test_query_returns_rows_not_results(monkeypatch):
 
 
 @pytest.mark.parametrize(("doc", "count"), [({"id": "d1", "content": "x", "meta": {}}, 1), (None, 0)])
-def test_get_returns_zero_or_one_rows(monkeypatch, doc, count):
-    _patch(monkeypatch, "get_document", doc)
+def test_get_returns_zero_or_one_rows(documents, doc, count):
+    documents.get.return_value = doc
 
     out = mcp_server.corpus_get(id="d1")
 
+    documents.get.assert_called_once_with("d1")
     assert out["count"] == count
     assert out["untrusted_fields"] == ["content", "meta"]
 
 
-def test_stats_are_label_rows_with_a_total(monkeypatch):
-    _patch(monkeypatch, "stats", {"total": 5, "by_label": {"personal": 3, "newsletter": 2}})
+def test_stats_are_label_rows_with_a_total(documents):
+    documents.stats.return_value = {"total": 5, "by_label": {"personal": 3, "newsletter": 2}}
 
     out = mcp_server.corpus_stats()
 
@@ -113,8 +126,9 @@ def _mail(n: int) -> list[dict]:
     return [{"id": f"d{i}", "sent_at": f"2026-10-{30 - i:02d}", "subject": "s"} for i in range(n)]
 
 
-def test_query_pages_by_keyset_with_the_first_pages_window(monkeypatch):
-    query = _patch(monkeypatch, "structured_query", _mail(mcp_server.QUERY_MAX_LIMIT + 1))
+def test_query_pages_by_keyset_with_the_first_pages_window(monkeypatch, documents):
+    query = documents.query
+    query.return_value = _mail(mcp_server.QUERY_MAX_LIMIT + 1)
     cutoff = _patch(monkeypatch, "relative_cutoff", "2026-10-10T07:00:00+00:00")
     args = {"label": None, "account": None, "before": None, "after": None, "since": "24h"}
 
@@ -132,8 +146,8 @@ def test_query_pages_by_keyset_with_the_first_pages_window(monkeypatch):
     assert first["count"] == mcp_server.QUERY_MAX_LIMIT
 
 
-def test_query_last_page_has_no_cursor(monkeypatch):
-    _patch(monkeypatch, "structured_query", _mail(3))
+def test_query_last_page_has_no_cursor(documents):
+    documents.query.return_value = _mail(3)
 
     out = mcp_server.corpus_query(
         label=None, account=None, before=None, after=None, since=None, limit=10
@@ -142,10 +156,9 @@ def test_query_last_page_has_no_cursor(monkeypatch):
     assert (out["count"], out["next_cursor"]) == (3, None)
 
 
-def test_a_forged_keyset_cursor_is_refused(monkeypatch):
+def test_a_forged_keyset_cursor_is_refused(documents):
     from corpus.envelope import encode_cursor
 
-    _patch(monkeypatch, "structured_query", [])
     args = {"label": None, "account": None, "before": None, "after": None, "since": None}
     for position in ({"key": [1, 2], "after": None}, 100):
         forged = encode_cursor("corpus_query", args, position)
@@ -154,7 +167,7 @@ def test_a_forged_keyset_cursor_is_refused(monkeypatch):
             mcp_server.corpus_query(**args, limit=10, cursor=forged)
 
 
-def test_search_pages_by_offset_over_the_ranking(monkeypatch):
+def test_search_pages_by_offset_over_the_ranking(monkeypatch, documents):
     ranked = [{"id": f"d{i}", "snippet": "x"} for i in range(25)]
     search_ = _patch(monkeypatch, "semantic_search", ranked)
 
@@ -162,7 +175,7 @@ def test_search_pages_by_offset_over_the_ranking(monkeypatch):
     second = mcp_server.corpus_search(query="kayak", top_k=10, cursor=first["next_cursor"])
 
     assert [r["id"] for r in second["rows"]] == [f"d{i}" for i in range(10, 20)]
-    assert search_.call_args.args == ("kayak", 21)
+    assert search_.call_args.args == (documents, "kayak", 21)
 
 
 def test_run_serves_streamable_http(monkeypatch):
@@ -174,7 +187,7 @@ def test_run_serves_streamable_http(monkeypatch):
     run.assert_called_once_with(transport="streamable-http")
 
 
-def test_search_stops_paging_at_the_ranked_depth(monkeypatch):
+def test_search_stops_paging_at_the_ranked_depth(monkeypatch, documents):
     from corpus.envelope import encode_cursor
 
     depth = mcp_server.SEARCH_DEPTH
@@ -183,7 +196,7 @@ def test_search_stops_paging_at_the_ranked_depth(monkeypatch):
 
     out = mcp_server.corpus_search(query="kayak", top_k=50, cursor=cursor)
 
-    assert search_.call_args.args == ("kayak", depth)  # never asks past the depth
+    assert search_.call_args.args == (documents, "kayak", depth)  # never asks past the depth
     assert (out["count"], out["next_cursor"]) == (30, None)
 
 
@@ -194,10 +207,9 @@ _WINDOW = {"label": None, "account": None, "before": None, "after": None, "since
     "after",
     [None, "2020-01-01T00:00:00+00:00", "not a date", "2026-10-11T00:00:00"],
 )
-def test_a_cursor_cannot_widen_a_since_window(monkeypatch, after):
+def test_a_cursor_cannot_widen_a_since_window(monkeypatch, documents, after):
     from corpus.envelope import encode_cursor
 
-    _patch(monkeypatch, "structured_query", [])
     _patch(monkeypatch, "relative_cutoff", "2026-10-10T07:00:00+00:00")
     forged = encode_cursor("corpus_query", _WINDOW, {"key": ["9999-12-31", "zzzz"], "after": after})
 
@@ -205,10 +217,9 @@ def test_a_cursor_cannot_widen_a_since_window(monkeypatch, after):
         mcp_server.corpus_query(**_WINDOW, limit=10, cursor=forged)
 
 
-def test_a_cursor_cannot_change_an_explicit_after(monkeypatch):
+def test_a_cursor_cannot_change_an_explicit_after(documents):
     from corpus.envelope import encode_cursor
 
-    _patch(monkeypatch, "structured_query", [])
     args = {**_WINDOW, "since": None, "after": "2026-10-01"}
     forged = encode_cursor("corpus_query", args, {"key": ["9999-12-31", "z"], "after": None})
 
@@ -216,10 +227,9 @@ def test_a_cursor_cannot_change_an_explicit_after(monkeypatch):
         mcp_server.corpus_query(**args, limit=10, cursor=forged)
 
 
-def test_a_stale_since_cursor_is_refused(monkeypatch):
+def test_a_stale_since_cursor_is_refused(monkeypatch, documents):
     from corpus.envelope import encode_cursor
 
-    _patch(monkeypatch, "structured_query", [])
     _patch(monkeypatch, "relative_cutoff", "2026-10-10T09:00:00+00:00")
     stale = encode_cursor(
         "corpus_query", _WINDOW, {"key": ["2026-10-10", "d1"], "after": "2026-10-10T07:00:00+00:00"}
@@ -229,10 +239,10 @@ def test_a_stale_since_cursor_is_refused(monkeypatch):
         mcp_server.corpus_query(**_WINDOW, limit=10, cursor=stale)
 
 
-def test_a_cursor_cannot_add_a_window_to_an_unbounded_query(monkeypatch):
+def test_a_cursor_cannot_add_a_window_to_an_unbounded_query(documents):
     from corpus.envelope import encode_cursor
 
-    _patch(monkeypatch, "structured_query", [{"id": "d1", "sent_at": "2026-01-01"}])
+    documents.query.return_value = [{"id": "d1", "sent_at": "2026-01-01"}]
     args = {**_WINDOW, "since": None}
     ok = encode_cursor("corpus_query", args, {"key": ["2026-02-01", "d2"], "after": None})
     forged = encode_cursor("corpus_query", args, {"key": ["2026-02-01", "d2"], "after": "2026-01-01"})

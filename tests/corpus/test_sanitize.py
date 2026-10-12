@@ -7,12 +7,12 @@ from __future__ import annotations
 
 from unittest.mock import create_autospec
 
-import psycopg
 import pytest
 
 from corpus import sanitize
 from corpus.embeddings import Embedder
 from corpus.sanitized_store import SanitizedStore
+from corpus.store import DocumentStore
 
 
 @pytest.fixture
@@ -31,8 +31,14 @@ def embedder():
 
 @pytest.fixture
 def documents():
-    """Wrap canned (id, meta, enrichment, enriched_at) tuples into the injected reader."""
-    return lambda *docs: (lambda read_dsn, source=None: iter(docs))
+    """Build a spec-bound DocumentStore yielding canned (id, meta, enrichment, enriched_at)."""
+
+    def _make(*docs):
+        store = create_autospec(DocumentStore, instance=True)
+        store.iter_enriched.side_effect = lambda source=None: iter(docs)
+        return store
+
+    return _make
 
 
 def test_sender_domain_is_org_not_person():
@@ -86,7 +92,7 @@ def test_run_sync_projects_embeds_upserts(store, embedder, documents):
         _doc("d1", {"from_addr": "a@b.com"}, {"one_line": "hi", "sensitivity_level": "low"}),
         _doc("d2", {"from_addr": "c@d.com"}, {"one_line": "yo", "sensitivity_level": "low"}),
     )
-    r = sanitize.run_sync(store, documents=docs, embedder=embedder, read_dsn="x")
+    r = sanitize.run_sync(store, documents=docs, embedder=embedder)
 
     assert r == {"scanned": 2, "synced": 2, "skipped": 0}
     assert store.save_message.call_count == 2
@@ -97,7 +103,7 @@ def test_run_sync_skips_unchanged(store, embedder, documents):
     store.synced_versions.return_value = {"d1": "v1"}
     docs = documents(_doc("d1", {}, {"one_line": "x", "sensitivity_level": "low"}, "v1"))
 
-    r = sanitize.run_sync(store, documents=docs, embedder=embedder, read_dsn="x")
+    r = sanitize.run_sync(store, documents=docs, embedder=embedder)
 
     assert r == {"scanned": 1, "synced": 0, "skipped": 1}
     store.save_message.assert_not_called()
@@ -110,7 +116,7 @@ def test_run_sync_limit_reaches_past_already_synced_rows(store, embedder, docume
     docs = documents(*(_doc(f"d{i}", {}, {"one_line": f"m{i}", "sensitivity_level": "low"})
                        for i in range(5)))
 
-    r = sanitize.run_sync(store, documents=docs, embedder=embedder, limit=2, read_dsn="x")
+    r = sanitize.run_sync(store, documents=docs, embedder=embedder, limit=2)
 
     assert r == {"scanned": 4, "synced": 2, "skipped": 2}
     assert [c.args[0]["id"] for c in store.save_message.call_args_list] == ["d2", "d3"]
@@ -120,7 +126,7 @@ def test_run_sync_force_reprojects(store, embedder, documents):
     store.synced_versions.return_value = {"d1": "v1"}
     docs = documents(_doc("d1", {}, {"one_line": "x", "sensitivity_level": "low"}, "v1"))
 
-    r = sanitize.run_sync(store, documents=docs, embedder=embedder, force=True, read_dsn="x")
+    r = sanitize.run_sync(store, documents=docs, embedder=embedder, force=True)
 
     assert r["synced"] == 1
 
@@ -130,43 +136,13 @@ def test_run_sync_default_embedder(monkeypatch, store, documents):
     default = create_autospec(Embedder, instance=True)
     default.embed.side_effect = lambda texts: [[0.1] for _ in texts]
     monkeypatch.setattr(sanitize, "Embedder", lambda: default)
-    r = sanitize.run_sync(store, documents=documents(), read_dsn="x")
+    r = sanitize.run_sync(store, documents=documents())
     assert r == {"scanned": 0, "synced": 0, "skipped": 0}
 
 
-@pytest.fixture
-def cursor():
-    cur = create_autospec(psycopg.Cursor, instance=True)
-    cur.fetchone.return_value = ("corpus.documents",)  # tables exist by default
-    cur.__iter__.return_value = iter([])
-    return cur
+def test_run_sync_reads_only_the_requested_source(store, embedder, documents):
+    docs = documents()
 
+    sanitize.run_sync(store, documents=docs, embedder=embedder, source="gmail:personal")
 
-@pytest.fixture
-def connect(cursor):
-    conn = create_autospec(psycopg.Connection, instance=True)
-    # create_autospec does not spec method return values, so wire the
-    # ``with`` context managers: connect() -> conn, conn.cursor(...) -> cursor.
-    conn.__enter__.return_value = conn
-    conn.cursor.return_value.__enter__.return_value = cursor
-    return create_autospec(psycopg.connect, return_value=conn)
-
-
-def test_iter_enriched_joins_documents_and_enrichments(connect, cursor):
-    rows = [("d1", {"source": "gmail:personal"}, {"one_line": "x"}, "v1")]
-    cursor.__iter__.return_value = iter(rows)
-
-    out = list(sanitize.iter_enriched("dsn", source="gmail:personal", connect=connect))
-
-    assert out == rows
-    sql, params = cursor.execute.call_args.args
-    assert "JOIN" in sql and "enrichments" in sql and "e.enrichment IS NOT NULL" in sql
-    assert params == ["gmail:personal"]
-
-
-def test_iter_enriched_is_empty_before_the_first_ingest(connect, cursor):
-    # A mailbox that has never received mail has no documents table yet.
-    cursor.fetchone.return_value = (None,)
-
-    assert list(sanitize.iter_enriched("dsn", connect=connect)) == []
-    assert all("to_regclass" in c.args[0] for c in cursor.execute.call_args_list)
+    docs.iter_enriched.assert_called_once_with(source="gmail:personal")

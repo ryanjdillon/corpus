@@ -17,7 +17,7 @@ Point that at a document which is not a message — an article, a transcript, a
 file — and it does not fail. It returns well-formed, confidently-typed,
 fabricated metadata: an action type, a due signal, an importance. Those then rank
 alongside real obligations wherever enrichment is read, and because
-`iter_documents` orders by `sent_at` descending, anything with a date sorts
+`DocumentStore.iter` orders by `sent_at` descending, anything with a date sorts
 straight into "recent".
 
 The failure is silent and self-consistent, which is what makes it expensive. A
