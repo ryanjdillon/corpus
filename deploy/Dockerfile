@@ -25,7 +25,11 @@ ENV CORPUS_LEAKS_BIN=betterleaks
 RUN useradd --create-home --uid 1000 corpus
 COPY --from=leaks /usr/local/bin/betterleaks /usr/local/bin/betterleaks
 COPY --from=build /dist/*.whl /tmp/
-RUN pip install --no-cache-dir /tmp/*.whl && rm -f /tmp/*.whl
+# Install against the pinned constraints, so a rebuild of the same release gets the
+# same dependency set (pyproject.toml only states ranges). `just lock` regenerates it.
+COPY deploy/constraints.txt /tmp/constraints.txt
+RUN pip install --no-cache-dir -c /tmp/constraints.txt /tmp/*.whl \
+ && rm -f /tmp/*.whl /tmp/constraints.txt
 USER corpus
 ENTRYPOINT ["corpus"]
 CMD ["api"]

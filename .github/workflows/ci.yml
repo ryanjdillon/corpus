@@ -43,8 +43,9 @@ jobs:
           python-version: "3.12"
           cache: pip
 
+      # The same pins the image installs, so CI tests what ships.
       - name: Install
-        run: pip install -e '.[test]'
+        run: pip install -c deploy/constraints.txt -e '.[test]'
 
       # ubuntu-latest runners ship a running Docker daemon, so the Docker-SDK
       # fixtures (pgvector, GreenMail) run here. Clearing addopts includes the
