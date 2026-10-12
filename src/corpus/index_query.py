@@ -7,51 +7,50 @@ material — as the restricted ``corpus_index_ro`` role. That table is written b
 one-way sync (``corpus sync`` → ``SanitizedStore``); nothing here writes.
 
 Queries connect via ``CORPUS_INDEX_DATABASE_URL`` (the sanitized DB, read-only
-role). ``COLS`` from ``sanitized_store`` is the single projection contract, so the
-returned columns track the tier's schema and never include the embedding.
+role). Each function here is a fixed preset over :meth:`SanitizedStore.query` or
+:meth:`SanitizedStore.aggregate`, so the tier's SQL lives in one place. ``COLS``
+from ``sanitized_store`` is the single projection contract, so the returned
+columns track the tier's schema and never include the embedding.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
 
-import psycopg
-from psycopg.rows import dict_row
+import msgspec
 
 from .config import settings
-from .sanitized_store import COLS, sanitized_schema
+from .query import SANITIZED_POLICY, Filters, QuerySpec
+from .sanitized_store import SanitizedStore
 
-# The safe columns to return: the sanitized projection, never the embedding.
-_SELECT = ", ".join(COLS)
+#: The most rows one index tool call returns. The MCP surface clamps a larger
+#: ``limit`` to it, and the caller pages on with ``next_cursor``.
+MAX_LIMIT = 100
 
-Connect = Callable[..., psycopg.Connection]
-
-
-def _table() -> str:
-    return f"{sanitized_schema()}.messages"
-
-
-def _rows(sql: str, params: list, *, connect: Connect = psycopg.connect) -> list[dict]:
-    """Run a query as the restricted index role; rows come back as dicts."""
-    if not settings.index_database_url:
-        raise RuntimeError("CORPUS_INDEX_DATABASE_URL not set (corpus-index disabled)")
-    with (
-        connect(settings.index_database_url, row_factory=dict_row) as conn,
-        conn.cursor() as cur,
-    ):
-        cur.execute(sql, params)
-        return cur.fetchall()
-
-
-# Priority ordering: importance, then urgency, then recency, then id. Constant SQL
-# (no input). The id makes the order total, so offset pages neither skip nor
-# repeat rows that tie on everything else.
-_ORDER = (
-    "CASE importance WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END, "
-    "time_sensitive DESC NULLS LAST, sent_at DESC NULLS LAST, id"
+#: The presets' policy: the sanitized tier's, plus the two dimensions only these
+#: fixed queries use (``due``, and grouping by disposition). Its row cap is one
+#: above ``MAX_LIMIT`` because the MCP surface fetches one row beyond a full page
+#: to learn whether another exists.
+PRESETS = msgspec.structs.replace(
+    SANITIZED_POLICY,
+    max_limit=MAX_LIMIT + 1,
+    filterable=SANITIZED_POLICY.filterable | {"due"},
+    aggregatable=SANITIZED_POLICY.aggregatable | {"suggested_disposition"},
 )
 
-Rows = Callable[[str, list], list[dict]]
+Reader = Callable[[], SanitizedStore]
+
+
+def reader() -> SanitizedStore:
+    """Open the sanitized store as the restricted index role, read-only."""
+    if not settings.index_database_url:
+        raise RuntimeError("CORPUS_INDEX_DATABASE_URL not set (corpus-index disabled)")
+    return SanitizedStore(settings.index_database_url, read_only=True)
+
+
+def _page(spec: QuerySpec, offset: int, open_store: Reader) -> list[dict]:
+    with open_store() as store:
+        return store.query(spec, PRESETS, offset).rows
 
 
 def action_items(
@@ -60,68 +59,53 @@ def action_items(
     importance: str | None = None,
     offset: int = 0,
     *,
-    rows: Rows = _rows,
+    open_store: Reader = reader,
 ) -> list[dict]:
     """Items that need an action from the owner, ranked by importance + urgency."""
-    clauses, params = ["requires_action = true"], []
-    if domain:
-        clauses.append("domain = %s")
-        params.append(domain)
-    if importance:
-        clauses.append("importance = %s")
-        params.append(importance)
-    params += [limit, offset]
-    where = " AND ".join(clauses)
-    return rows(
-        f"SELECT {_SELECT} FROM {_table()} WHERE {where} ORDER BY {_ORDER} LIMIT %s OFFSET %s",
-        params,
-    )
+    filters = Filters(requires_action=True, domain=domain or None, importance=importance or None)
+    return _page(QuerySpec(filters=filters, order="priority", limit=limit), offset, open_store)
 
 
-def due_soon(limit: int = 50, offset: int = 0, *, rows: Rows = _rows) -> list[dict]:
+def due_soon(limit: int = 50, offset: int = 0, *, open_store: Reader = reader) -> list[dict]:
     """Time-sensitive items, or items carrying a deadline."""
-    return rows(
-        f"SELECT {_SELECT} FROM {_table()} WHERE time_sensitive = true OR deadline IS NOT NULL "
-        f"ORDER BY deadline NULLS LAST, {_ORDER} LIMIT %s OFFSET %s",
-        [limit, offset],
-    )
+    spec = QuerySpec(filters=Filters(due=True), order="deadline", limit=limit)
+    return _page(spec, offset, open_store)
 
 
 def waiting_on(
-    who: str = "them", limit: int = 50, offset: int = 0, *, rows: Rows = _rows
+    who: str = "them", limit: int = 50, offset: int = 0, *, open_store: Reader = reader
 ) -> list[dict]:
     """Items flagged as awaiting a reply.
 
     'them' = owner is waiting on someone, 'me' = someone is waiting on the owner.
     """
-    return rows(
-        f"SELECT {_SELECT} FROM {_table()} WHERE waiting_on = %s "
-        f"ORDER BY {_ORDER} LIMIT %s OFFSET %s",
-        [who, limit, offset],
-    )
+    spec = QuerySpec(filters=Filters(waiting_on=who), order="priority", limit=limit)
+    return _page(spec, offset, open_store)
 
 
-def by_domain(domain: str, limit: int = 50, offset: int = 0, *, rows: Rows = _rows) -> list[dict]:
+def by_domain(
+    domain: str, limit: int = 50, offset: int = 0, *, open_store: Reader = reader
+) -> list[dict]:
     """Recent sanitized items in a life-area domain (banking, health, work…)."""
-    return rows(
-        f"SELECT {_SELECT} FROM {_table()} WHERE domain = %s "
-        f"ORDER BY {_ORDER} LIMIT %s OFFSET %s",
-        [domain, limit, offset],
-    )
+    spec = QuerySpec(filters=Filters(domain=domain), order="priority", limit=limit)
+    return _page(spec, offset, open_store)
 
 
-def summary(doc_id: str, *, rows: Rows = _rows) -> dict | None:
+def summary(doc_id: str, *, open_store: Reader = reader) -> dict | None:
     """The sanitized summary + priority signal for one item id."""
-    got = rows(f"SELECT {_SELECT} FROM {_table()} WHERE id = %s", [doc_id])
-    return got[0] if got else None
+    with open_store() as store:
+        return store.get(doc_id)
 
 
-def stats(*, rows: Rows = _rows) -> dict:
+def stats(*, open_store: Reader = reader) -> dict:
     """Counts of sanitized items by domain and suggested disposition."""
-    total = rows(f"SELECT count(*) AS total FROM {_table()}", [])[0]["total"]
-    by_dom = {r["domain"]: r["n"] for r in rows(f"SELECT domain, count(*) AS n FROM {_table()} GROUP BY 1", [])}
-    by_disp = {
-        r["d"]: r["n"]
-        for r in rows(f"SELECT suggested_disposition AS d, count(*) AS n FROM {_table()} GROUP BY 1", [])
+    with open_store() as store:
+        by_dom = store.aggregate(QuerySpec(group_by=["domain"], limit=PRESETS.max_limit), PRESETS)
+        by_disp = store.aggregate(
+            QuerySpec(group_by=["suggested_disposition"], limit=PRESETS.max_limit), PRESETS
+        )
+    return {
+        "total": by_dom.total,
+        "by_domain": {g["domain"]: g["count"] for g in by_dom.groups},
+        "by_disposition": {g["suggested_disposition"]: g["count"] for g in by_disp.groups},
     }
-    return {"total": total, "by_domain": by_dom, "by_disposition": by_disp}

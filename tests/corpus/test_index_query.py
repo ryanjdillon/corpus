@@ -1,139 +1,124 @@
-"""The corpus-index query layer builds sanitized, parameterized queries over the
-sanitized ``messages`` table, and never selects raw content, sender, or secrets."""
+"""The corpus-index presets are fixed queries over the sanitized store, read as the
+restricted index role, and never select raw content, sender, or secrets."""
 
 from __future__ import annotations
 
 from unittest.mock import create_autospec
 
-import psycopg
 import pytest
 
 from corpus import index_query
+from corpus.query import Aggregate, Filters, Page, QuerySpec
+from corpus.sanitized_store import COLS, SanitizedStore
 
 
 @pytest.fixture
-def rows():
-    """A spec-bound ``_rows`` double returning one canned sanitized row."""
-    m = create_autospec(index_query._rows)
-    m.return_value = [{"id": "gmail:personal::1", "one_line": "x"}]
-    return m
+def store():
+    """A spec-bound SanitizedStore returning one canned sanitized row."""
+    s = create_autospec(SanitizedStore, instance=True)
+    s.__enter__.return_value = s
+    s.query.return_value = Page([{"id": "gmail:personal::1", "one_line": "x"}], None)
+    return s
 
 
 @pytest.fixture
-def cursor():
-    """A spec-bound psycopg cursor that behaves as its own context manager."""
-    cur = create_autospec(psycopg.Cursor, instance=True)
-    cur.__enter__.return_value = cur
-    cur.fetchall.return_value = []
-    return cur
-
-
-@pytest.fixture
-def conn(cursor):
-    """A spec-bound psycopg connection wrapping ``cursor``, as a context manager."""
-    c = create_autospec(psycopg.Connection, instance=True)
-    c.__enter__.return_value = c
-    c.cursor.return_value = cursor
-    return c
-
-
-@pytest.fixture
-def connect(conn):
-    """A spec-bound ``psycopg.connect`` double handing back ``conn``."""
-    f = create_autospec(psycopg.connect)
-    f.return_value = conn
+def open_store(store):
+    """A spec-bound reader factory handing back ``store``."""
+    f = create_autospec(index_query.reader)
+    f.return_value = store
     return f
 
 
-def test_action_items_filters_and_orders(rows):
-    index_query.action_items(limit=10, domain="banking", importance="high", rows=rows)
-    sql, params = rows.call_args.args
+def test_action_items_filters_and_orders(store, open_store):
+    rows = index_query.action_items(
+        limit=10, domain="banking", importance="high", offset=20, open_store=open_store
+    )
 
-    assert "requires_action = true" in sql
-    assert "domain = %s" in sql and "importance = %s" in sql
-    assert "ORDER BY" in sql and "LIMIT %s" in sql
-    assert params == ["banking", "high", 10, 0]  # filters, limit, offset: positionally bound
-
-
-def test_action_items_no_filters(rows):
-    index_query.action_items(rows=rows)
-    sql, params = rows.call_args.args
-
-    assert "requires_action = true" in sql
-    assert "domain = %s" not in sql and "importance = %s" not in sql
-    assert params == [50, 0]  # just the default limit and offset
-
-
-def test_waiting_on_binds_who(rows):
-    index_query.waiting_on(who="me", limit=5, rows=rows)
-    sql, params = rows.call_args.args
-
-    assert "waiting_on = %s" in sql
-    assert params == ["me", 5, 0]
+    assert rows == [{"id": "gmail:personal::1", "one_line": "x"}]
+    store.query.assert_called_once_with(
+        QuerySpec(
+            filters=Filters(requires_action=True, domain="banking", importance="high"),
+            order="priority",
+            limit=10,
+        ),
+        index_query.PRESETS,
+        20,
+    )
+    store.__exit__.assert_called_once()  # the reader connection is closed
 
 
-def test_by_domain_binds_domain(rows):
-    index_query.by_domain("health", rows=rows)
-    _, params = rows.call_args.args
-    assert params == ["health", 50, 0]
+def test_action_items_no_filters(store, open_store):
+    index_query.action_items(open_store=open_store)
+    spec, _, offset = store.query.call_args.args
+
+    assert spec.filters == Filters(requires_action=True)
+    assert (spec.limit, offset) == (50, 0)  # the default limit and offset
 
 
-def test_summary_returns_first_or_none(rows):
-    rows.return_value = [{"id": "x"}]
-    assert index_query.summary("x", rows=rows) == {"id": "x"}
-    rows.return_value = []
-    assert index_query.summary("x", rows=rows) is None
+def test_waiting_on_binds_who(store, open_store):
+    index_query.waiting_on(who="me", limit=5, open_store=open_store)
+    spec, _, offset = store.query.call_args.args
+
+    assert spec.filters == Filters(waiting_on="me")
+    assert (spec.order, spec.limit, offset) == ("priority", 5, 0)
 
 
-def test_queries_target_the_sanitized_table_and_stay_cloud_safe(rows):
-    index_query.action_items(rows=rows)
-    sql = rows.call_args.args[0]
-    assert ".messages" in sql  # the sanitized tier's table, not a raw table or view
-
-    # the priority signal the planner needs is in the projection…
-    for col in ("one_line", "requires_action", "time_sensitive", "importance", "waiting_on"):
-        assert col in index_query._SELECT
-    # …and raw content, sender, secrets, and the embedding are never selected
-    for banned in ("content", "subject", "from_addr", "summary_embedding", "secret"):
-        assert banned not in index_query._SELECT
+def test_by_domain_binds_domain(store, open_store):
+    index_query.by_domain("health", open_store=open_store)
+    spec, _, offset = store.query.call_args.args
+    assert (spec.filters, spec.order, spec.limit, offset) == (
+        Filters(domain="health"), "priority", 50, 0,
+    )
 
 
-def test_due_soon_and_by_domain_shapes(rows):
-    index_query.due_soon(limit=7, rows=rows)
-    sql, params = rows.call_args.args
-    assert "time_sensitive = true OR deadline IS NOT NULL" in sql
-    assert params == [7, 0]
+def test_due_soon_is_due_items_by_deadline(store, open_store):
+    index_query.due_soon(limit=7, open_store=open_store)
+    spec, _, offset = store.query.call_args.args
+    assert (spec.filters, spec.order, spec.limit, offset) == (Filters(due=True), "deadline", 7, 0)
 
 
-def test_stats_aggregates(rows):
-    def fake(sql, params):
-        if "count(*) AS total" in sql:
-            return [{"total": 3}]
-        if "domain," in sql:
-            return [{"domain": "banking", "n": 2}]
-        return [{"d": "keep", "n": 3}]
+def test_summary_returns_the_row_or_none(store, open_store):
+    store.get.return_value = {"id": "x"}
+    assert index_query.summary("x", open_store=open_store) == {"id": "x"}
+    store.get.return_value = None
+    assert index_query.summary("x", open_store=open_store) is None
+    store.get.assert_called_with("x")
 
-    rows.side_effect = fake
 
-    assert index_query.stats(rows=rows) == {
+def test_stats_aggregates(store, open_store):
+    store.aggregate.side_effect = [
+        Aggregate([{"domain": "banking", "count": 2}], 3, False),
+        Aggregate([{"suggested_disposition": "keep", "count": 3}], 3, False),
+    ]
+
+    assert index_query.stats(open_store=open_store) == {
         "total": 3,
         "by_domain": {"banking": 2},
         "by_disposition": {"keep": 3},
     }
+    dims = [c.args[0].group_by for c in store.aggregate.call_args_list]
+    assert dims == [["domain"], ["suggested_disposition"]]
+
+
+def test_presets_stay_inside_the_sanitized_policy_plus_their_own_dimensions():
+    sanitized = index_query.SANITIZED_POLICY
+    assert index_query.PRESETS.filterable - sanitized.filterable == {"due"}
+    assert index_query.PRESETS.aggregatable - sanitized.aggregatable == {"suggested_disposition"}
+    # the cap is the MCP page plus the one row fetched to learn whether more exist
+    assert index_query.PRESETS.max_limit == index_query.MAX_LIMIT + 1
+
+
+def test_projection_stays_cloud_safe():
+    # the priority signal the planner needs is in the projection…
+    for col in ("one_line", "requires_action", "time_sensitive", "importance", "waiting_on"):
+        assert col in COLS
+    # …and raw content, sender, secrets, and the embedding are never selected
+    for banned in ("content", "subject", "from_addr", "summary_embedding", "secret"):
+        assert not any(banned in c for c in COLS)
 
 
 def test_query_layer_raises_without_index_url(monkeypatch):
-    # a real query (default rows) refuses to run if the restricted DSN isn't set
+    # a real query (default reader) refuses to run if the restricted DSN isn't set
     monkeypatch.setattr(index_query.settings, "index_database_url", "")
     with pytest.raises(RuntimeError, match="CORPUS_INDEX_DATABASE_URL"):
         index_query.action_items()
-
-
-def test_rows_executes_against_the_index_dsn(monkeypatch, connect, conn, cursor):
-    monkeypatch.setattr(index_query.settings, "index_database_url", "postgresql://ro@db/ai_sanitized")
-    cursor.fetchall.return_value = [{"id": "1"}]
-
-    assert index_query._rows("SELECT 1", [], connect=connect) == [{"id": "1"}]
-
-    connect.assert_called_once_with("postgresql://ro@db/ai_sanitized", row_factory=index_query.dict_row)
-    assert cursor.execute.call_args.args == ("SELECT 1", [])

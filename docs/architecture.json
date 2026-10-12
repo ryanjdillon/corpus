@@ -193,6 +193,10 @@
         {
           "path": "src/corpus/search.py",
           "label": "semantic / structured"
+        },
+        {
+          "path": "src/corpus/query.py",
+          "label": "QuerySpec + tier policy → allow-listed SQL"
         }
       ]
     },

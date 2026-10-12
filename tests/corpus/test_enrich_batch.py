@@ -54,7 +54,7 @@ def documents():
 
     def _make(*docs):
         store = create_autospec(DocumentStore, instance=True)
-        store.iter.side_effect = lambda **_: iter(docs)
+        store.iter.side_effect = lambda **_: (d for d in docs)  # a generator, as the store yields
         return store
 
     return _make

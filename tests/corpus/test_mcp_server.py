@@ -13,14 +13,15 @@ from unittest.mock import create_autospec
 
 import pytest
 
-from corpus import mcp_server, search, store
+from corpus import mcp_server, query, search, store
 from corpus.envelope import KIND
-from corpus.search import GET_KEYS, QUERY_KEYS, SEARCH_KEYS
+from corpus.store import GET_KEYS, QUERY_KEYS, SEARCH_KEYS
 
 
 def _patch(monkeypatch, name, value):
-    m = create_autospec(getattr(search, name), return_value=value)
-    monkeypatch.setattr(mcp_server.search, name, m)
+    module = query if name == "relative_cutoff" else search
+    m = create_autospec(getattr(module, name), return_value=value)
+    monkeypatch.setattr(module, name, m)
     return m
 
 

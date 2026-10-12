@@ -13,7 +13,8 @@ class Store(ABC):
 
     The base owns the connection, idempotent schema creation, and lifecycle.
     Subclasses declare their objects in :meth:`schema_ddl` and own their reads and
-    writes, using :meth:`_write` and :meth:`_read`. Instances are meant to be used
+    writes, using :meth:`_write` and :meth:`_read`; neither leaves a transaction
+    open. Instances are meant to be used
     as context managers; the caller owns the lifecycle.
     """
 
@@ -44,8 +45,14 @@ class Store(ABC):
         self._conn.commit()
 
     def _read(self, sql: str, params: object = None) -> list[tuple]:
-        """Execute a query and return all rows."""
-        with self._conn.cursor() as cur:
+        """Execute a query and return all rows, in a transaction that ends with it.
+
+        Without one, a read opens an implicit transaction that stays open until
+        the next write, so a long-lived store would sit idle in a transaction,
+        holding its snapshot. Reads that must share a snapshot run inside one
+        ``self._conn.transaction()`` block; each read is then a savepoint in it.
+        """
+        with self._conn.transaction(), self._conn.cursor() as cur:
             cur.execute(sql, params)
             return cur.fetchall()
 

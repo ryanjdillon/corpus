@@ -17,14 +17,12 @@ from pydantic import Field
 from . import index_query
 from .config import settings
 from .envelope import CURSOR_HELP, clamp, decode_cursor, encode_cursor, offset_of, wrap
+from .index_query import MAX_LIMIT
 from .sanitized_store import UNTRUSTED_COLS
 from .telemetry import audited
 from .tiers import tier
 
 TIER = tier("sanitized").name
-#: The most rows one call returns; a larger ``limit`` is clamped, and the caller
-#: pages on with ``next_cursor``. Bounds what one call can read.
-MAX_LIMIT = 100
 #: The deepest a caller can page. Paging stops (next_cursor is null) here, which
 #: bounds the rows an offset scan skips.
 MAX_OFFSET = 10 * MAX_LIMIT

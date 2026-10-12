@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from contextlib import closing
 from typing import Any
 
 from . import leaks, pii
@@ -121,23 +122,24 @@ def scan_archive(
     totals: dict[str, int] = {}
     hits: list[dict[str, Any]] = []
     scanned = 0
-    for doc_id, content, meta in documents.iter(source=source, account=account):
-        if limit and scanned >= limit:
-            break
-        scanned += 1
-        counts = detect(content)
-        if not counts:
-            continue
-        for secret_type, count in counts.items():
-            totals[secret_type] = totals.get(secret_type, 0) + count
-        meta = meta or {}
-        hits.append(
-            {
-                "id": doc_id,
-                "secret_types": sorted(counts),
-                "from_addr": meta.get("from_addr"),
-                "subject": meta.get("subject"),
-                "sent_at": meta.get("sent_at"),
-            }
-        )
+    with closing(documents.iter(source=source, account=account)) as docs:
+        for doc_id, content, meta in docs:
+            if limit and scanned >= limit:
+                break
+            scanned += 1
+            counts = detect(content)
+            if not counts:
+                continue
+            for secret_type, count in counts.items():
+                totals[secret_type] = totals.get(secret_type, 0) + count
+            meta = meta or {}
+            hits.append(
+                {
+                    "id": doc_id,
+                    "secret_types": sorted(counts),
+                    "from_addr": meta.get("from_addr"),
+                    "subject": meta.get("subject"),
+                    "sent_at": meta.get("sent_at"),
+                }
+            )
     return {"scanned": scanned, "with_secrets": len(hits), "totals": totals, "hits": hits}

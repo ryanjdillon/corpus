@@ -8,6 +8,7 @@ from typing import Annotated, Any
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
+from . import query as query_model
 from . import search, store
 from .config import settings
 from .envelope import CURSOR_HELP, clamp, decode_cursor, encode_cursor, offset_of, wrap
@@ -87,7 +88,7 @@ def _same_window(lower: str | None, after: str | None, since: str | None) -> boo
         return False
     if frozen.tzinfo is None:  # relative_cutoff is always zone-aware
         return False
-    current = datetime.fromisoformat(search.relative_cutoff(since))
+    current = datetime.fromisoformat(query_model.relative_cutoff(since))
     return current - CURSOR_MAX_AGE <= frozen <= current
 
 
@@ -161,7 +162,7 @@ def corpus_query(
     if position is None:
         # Resolve a relative window once, so every page shares the first page's
         # lower bound instead of sliding forward with the clock.
-        lower, older_than = after or (search.relative_cutoff(since) if since else None), None
+        lower, older_than = after or (query_model.relative_cutoff(since) if since else None), None
     elif _keyset(position) and _same_window(position["after"], after, since):
         lower, older_than = position["after"], tuple(position["key"])
     else:

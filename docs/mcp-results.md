@@ -88,7 +88,7 @@ the data-class `label`) are trusted.
 
 The sanitized tier's untrusted columns are `sanitized_store.UNTRUSTED_COLS`,
 next to the projection itself; the full surface's row keys are
-`search.SEARCH_KEYS`, `QUERY_KEYS` and `GET_KEYS`. Tests require every column
+`store.SEARCH_KEYS`, `QUERY_KEYS` and `GET_KEYS`. Tests require every column
 and key to be classified, so a new one cannot ship unmarked by accident. On the
 full surface each tool names its own:
 
