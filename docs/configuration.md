@@ -98,6 +98,31 @@ able to reach a cloud backend. Do not list a model if any route sends that name
 off the network, and keep path-routed cloud endpoints off the skip path. The client id is the caller's `x-client-id` request header, which the
 gateway sets after authenticating the API key.
 
+What is redacted, each replaced by a `[REDACTED:<type>]` placeholder:
+
+- credentials (`leaks`): private keys, API keys and tokens; a private key is
+  blocked by default (`BLOCK_TYPES`) rather than redacted;
+- identity and financial numbers (`pii`): IBANs and crypto wallets on format,
+  and US SSNs, credit cards and US bank numbers only with a context word right
+  beside them, so an order number that looks like a card passes;
+- Norwegian national id numbers (fødselsnummer, D-nummer, H-nummer, and the tax
+  administration's Tenor synthetic test numbers), only when both mod-11 check
+  digits and the birth date are valid;
+- email addresses;
+- phone numbers, only when they are clearly phones: an international prefix
+  (`+47`, or `0047` followed by a separator), or a phone word within 32
+  characters before the number (`tlf`, `telefon`, `mobil`, `mob`, `phone`, `tel`,
+  `cell`, `direkte`, `fax`, including compounds such as `telefonnummer`, and
+  allowing a bracket or one short word in between, as in `Tlf (privat)` or
+  `Phone number:`). A bare digit run passes, because order numbers, references,
+  dates and amounts look the same and redacting them would degrade what the
+  model reads. The redaction ends once the number holds 8 digits after any
+  country code, so a date or org number that follows stays readable.
+
+Email addresses and phone numbers are redacted on egress only. They are too
+common in mail to count as findings in the archive audit; the national id
+number is counted there too.
+
 The envoy-ext-proc adapter expects the request body in `Buffered` processing
 mode, where the proxy sends the whole body as one gRPC message, so
 `CORPUS_SCAN_GATE_GRPC_MAX_MESSAGE_BYTES` must be at least the proxy's body
