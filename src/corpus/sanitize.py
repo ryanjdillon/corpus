@@ -17,6 +17,7 @@ after it is re-enriched), resumable.
 from __future__ import annotations
 
 import logging
+from contextlib import closing
 
 from .config import settings
 from .embeddings import Embedder
@@ -117,22 +118,23 @@ def run_sync(
             counts["synced"] += 1
         batch.clear()
 
-    for doc_id, meta, enr, enriched_at in documents.iter_enriched(source=source):
-        counts["scanned"] += 1
-        if not force and seen.get(doc_id) == enriched_at:
-            counts["skipped"] += 1
-            continue
-        row = project(doc_id, meta, enr, settings.index_sensitivity_gate)
-        row["enriched_at"] = enriched_at
-        batch.append(row)
-        queued += 1
-        if len(batch) >= batch_size:
-            flush()
-        # The limit caps rows projected, not rows scanned: the reader's order is
-        # stable, so a scan cap would re-scan the same already-synced prefix on
-        # every run and never reach older unsynced rows.
-        if limit and queued >= limit:
-            break
+    with closing(documents.iter_enriched(source=source)) as enriched:
+        for doc_id, meta, enr, enriched_at in enriched:
+            counts["scanned"] += 1
+            if not force and seen.get(doc_id) == enriched_at:
+                counts["skipped"] += 1
+                continue
+            row = project(doc_id, meta, enr, settings.index_sensitivity_gate)
+            row["enriched_at"] = enriched_at
+            batch.append(row)
+            queued += 1
+            if len(batch) >= batch_size:
+                flush()
+            # The limit caps rows projected, not rows scanned: the reader's order
+            # is stable, so a scan cap would re-scan the same already-synced
+            # prefix on every run and never reach older unsynced rows.
+            if limit and queued >= limit:
+                break
     flush()
     log.info(
         "synced %d, skipped %d of %d scanned",

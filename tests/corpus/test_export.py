@@ -20,7 +20,7 @@ _DOCS = [
 def documents():
     """A spec-bound DocumentStore whose ``iter`` yields a fresh pass over ``_DOCS``."""
     store = create_autospec(DocumentStore, instance=True)
-    store.iter.side_effect = lambda source=None, account=None: iter(_DOCS)
+    store.iter.side_effect = lambda source=None, account=None: (d for d in _DOCS)  # a generator
     return store
 
 
@@ -54,6 +54,18 @@ def test_export_writes_then_unchanged(documents, writer, tmp_path):
 def test_export_limit(documents, writer):
     result = export_mod.export_archive(documents, limit=1, writer=writer)
     assert result["scanned"] == 1
+
+
+def test_export_closes_a_stream_it_stops_early(documents, writer):
+    # The store streams through a server-side cursor in a transaction, which
+    # only closing the generator ends; garbage collection is not prompt.
+    stream = (d for d in _DOCS)
+    documents.iter.side_effect = None
+    documents.iter.return_value = stream
+
+    export_mod.export_archive(documents, limit=1, writer=writer)
+
+    assert stream.gi_frame is None  # closed, though not exhausted
 
 
 def test_export_passes_the_filters_to_the_store(documents, writer):

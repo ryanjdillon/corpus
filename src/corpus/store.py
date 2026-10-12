@@ -24,6 +24,17 @@ from haystack_integrations.components.retrievers.pgvector import (
 from haystack_integrations.document_stores.pgvector import PgvectorDocumentStore
 
 from .config import settings
+from .query import (
+    SEMANTIC_DEPTH,
+    Aggregate,
+    Layout,
+    Page,
+    Position,
+    QueryPolicy,
+    QuerySpec,
+    build_aggregate,
+    build_query,
+)
 from .store_base import Store
 
 
@@ -35,7 +46,7 @@ def _dsn() -> str:
 #: An HNSW index scan returns at most this many rows whatever the LIMIT, so it is
 #: also the deepest a caller can page into search results. pgvector's default, 40,
 #: would cut paging off silently.
-HNSW_EF_SEARCH = 200
+HNSW_EF_SEARCH = SEMANTIC_DEPTH
 
 # The keys of each query's rows, in column order. The MCP surface classifies each
 # key as trusted or not (see ``envelope``), so a key is added here, never inline.
@@ -44,14 +55,47 @@ QUERY_KEYS = ("id", "subject", "from_addr", "sent_at", "label")
 GET_KEYS = ("id", "content", "meta")
 
 
+def layout(table: str) -> Layout:
+    """The query model's view of the documents table: each dimension's SQL over ``meta``.
+
+    ``sent_at`` is an ISO-8601 string that keeps the email header's UTC offset,
+    so ranges, months and the min/max of a group compare it cast to a
+    ``timestamptz`` (a missing or null date casts to NULL and matches no range).
+    """
+    sent_at = "(meta->>'sent_at')::timestamptz"
+    return Layout(
+        table=table,
+        columns=("id", "meta->>'subject'", "meta->>'from_addr'", "meta->>'sent_at'",
+                 "meta->>'label'"),
+        keys=QUERY_KEYS,
+        filters={name: f"meta->>'{name}' = %s" for name in ("label", "account", "source")},
+        ranges={"sent_at": sent_at},
+        groups={
+            "label": "meta->>'label'",
+            "account": "meta->>'account'",
+            # In UTC, so a month's boundaries do not move with the header's offset.
+            "month": f"to_char({sent_at} AT TIME ZONE 'UTC', 'YYYY-MM')",
+        },
+        text=("meta->>'subject'", "content"),
+        sent_at=sent_at,
+        # The keyset compares the string, which any cursor value can bind to: two
+        # dates that differ only in offset may order slightly apart from true
+        # time, but every row is still paged exactly once. An undated row sorts
+        # last both ways: '' below every date, 'infinity' (a letter) above every
+        # digit.
+        newest="coalesce(meta->>'sent_at', '')",
+        oldest="coalesce(meta->>'sent_at', 'infinity')",
+        embedding="embedding",
+    )
+
+
 class DocumentStore(Store):
     """The sensitive tier's documents table: raw content, JSONB ``meta``, embedding.
 
     Haystack creates the table on its first write, so this store declares no DDL
     and every reader treats a missing table as an empty corpus (or, for the
     point queries, lets the error surface as before). Reads run on the store's
-    own connection, each in a transaction that ends with it, so a long-lived
-    store never sits idle in a transaction. The Haystack handle, built on first
+    own connection. The Haystack handle, built on first
     use, owns a second connection for vector writes and search.
     """
 
@@ -64,6 +108,7 @@ class DocumentStore(Store):
         self._name = table or settings.documents_table
         self._table = f"{self._schema}.{self._name}"
         self._haystack: PgvectorDocumentStore | None = None
+        self._layout = layout(self._table)
         super().__init__(self._dsn)
 
     def schema_ddl(self) -> str:
@@ -91,14 +136,9 @@ class DocumentStore(Store):
             )
         return self._haystack
 
-    def _rows(self, sql: str, params: object = None) -> list[tuple]:
-        """Run one query in a transaction of its own and return all rows."""
-        with self._conn.transaction():
-            return self._read(sql, params)
-
     def _present(self, *tables: str) -> bool:
         """Whether every one of *tables* exists yet."""
-        return all(self._rows("SELECT to_regclass(%s)", (t,))[0][0] is not None for t in tables)
+        return all(self._read("SELECT to_regclass(%s)", (t,))[0][0] is not None for t in tables)
 
     def _stream(self, name: str, sql: str, params: list, *tables: str) -> Iterator[tuple]:
         """Yield *sql*'s rows through server-side cursor *name*, if *tables* exist.
@@ -128,7 +168,7 @@ class DocumentStore(Store):
         """
         if not self.exists():
             return set()
-        rows = self._rows(f"SELECT id FROM {self._table} WHERE meta->>'source' = %s", (source,))
+        rows = self._read(f"SELECT id FROM {self._table} WHERE meta->>'source' = %s", (source,))
         return {row[0] for row in rows}
 
     def iter(
@@ -213,11 +253,37 @@ class DocumentStore(Store):
             f"ORDER BY coalesce(meta->>'sent_at', '') DESC, id DESC LIMIT %s"
         )
         params.append(limit)
-        return [dict(zip(QUERY_KEYS, r, strict=True)) for r in self._rows(sql, params)]
+        return [dict(zip(QUERY_KEYS, r, strict=True)) for r in self._read(sql, params)]
+
+    def query_spec(
+        self, spec: QuerySpec, policy: QueryPolicy, position: Position | None = None
+    ) -> Page:
+        """One page of the documents *spec* matches (``QUERY_KEYS`` rows), within *policy*."""
+        built = build_query(spec, policy, self._layout, position)
+        if not self.exists():
+            return Page([], None)
+        with self._conn.transaction():
+            if spec.semantic is not None:
+                # Match the ranking depth the Haystack handle uses, so a vector
+                # page reaches SEMANTIC_DEPTH, not pgvector's default of 40.
+                with self._conn.cursor() as cur:
+                    cur.execute(f"SET LOCAL hnsw.ef_search = {HNSW_EF_SEARCH}")
+            rows = self._read(built.sql, built.params)
+        return built.page(rows, self._layout.keys)
+
+    def aggregate(self, spec: QuerySpec, policy: QueryPolicy) -> Aggregate:
+        """Count the documents *spec* matches per ``group_by`` group, within *policy*."""
+        built = build_aggregate(spec, policy, self._layout)
+        if not self.exists():
+            return Aggregate([], 0, False)
+        with self._conn.transaction():
+            groups = self._read(built.sql, built.params)
+            total = self._read(built.count_sql, built.count_params)[0][0]
+        return built.result(groups, total)
 
     def get(self, id: str) -> dict[str, Any] | None:
         """Fetch one document by id (``GET_KEYS``: full content and all metadata), or None."""
-        rows = self._rows(f"SELECT id, content, meta FROM {self._table} WHERE id = %s", (id,))
+        rows = self._read(f"SELECT id, content, meta FROM {self._table} WHERE id = %s", (id,))
         return dict(zip(GET_KEYS, rows[0], strict=True)) if rows else None
 
     def stats(self) -> dict[str, Any]:

@@ -2,7 +2,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from corpus import search
+from corpus import query, search
 from corpus.embeddings import Embedder
 from corpus.models import Classification, Record
 from corpus.store import DocumentStore, to_document
@@ -66,15 +66,15 @@ def test_structured_query_since_window(documents, fake_embeddings):
     now = datetime.now(UTC)
     _index("1", "recent", "recent mail", "personal", (now - timedelta(hours=2)).isoformat())
     _index("2", "old", "old mail", "personal", (now - timedelta(days=5)).isoformat())
-    results = documents.query(after=search.relative_cutoff("1d"))
+    results = documents.query(after=query.relative_cutoff("1d"))
     assert {r["id"] for r in results} == {"imap:test::1"}
 
 
 def test_relative_cutoff_parses_and_rejects():
-    cutoff = search.relative_cutoff("2h")
+    cutoff = query.relative_cutoff("2h")
     assert cutoff < datetime.now(UTC).isoformat()
     with pytest.raises(ValueError):
-        search.relative_cutoff("nonsense")
+        query.relative_cutoff("nonsense")
 
 
 def test_get_document_returns_full_record(documents, fake_embeddings):

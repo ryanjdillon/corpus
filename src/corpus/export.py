@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from contextlib import closing
 
 from . import vault
 from .store import DocumentStore
@@ -32,13 +33,14 @@ def export_archive(
     writer is injectable for testing; the default writes real vault files.
     """
     scanned = written = unchanged = 0
-    for doc_id, content, meta in documents.iter(source=source, account=account):
-        if limit and scanned >= limit:
-            break
-        scanned += 1
-        if writer(doc_id, content, meta, force=force):
-            written += 1
-        else:
-            unchanged += 1
+    with closing(documents.iter(source=source, account=account)) as docs:
+        for doc_id, content, meta in docs:
+            if limit and scanned >= limit:
+                break
+            scanned += 1
+            if writer(doc_id, content, meta, force=force):
+                written += 1
+            else:
+                unchanged += 1
     log.info("wrote %d, unchanged %d of %d scanned", written, unchanged, scanned)
     return {"scanned": scanned, "written": written, "unchanged": unchanged}

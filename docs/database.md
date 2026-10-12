@@ -8,12 +8,21 @@ That table keeps each document's metadata in one JSONB `meta` column, so a query
 on it has to know the layout: `meta->>'source'`, and `meta->>'sent_at'` as an
 ISO-8601 string that sorts correctly as text. `DocumentStore` (`store.py`) is the
 only code that knows it. Every read of the table (the structured and keyset-paged
-query, a fetch by id, stats, streaming for enrichment, export, the secret scan and
-the sanitized sync) and the Haystack handle that writes and vector-searches it go
-through that class; no other module holds SQL against the table. Because the
-table appears only on the first write, `DocumentStore` declares no DDL, and its
-streaming readers treat a missing table as an empty corpus. A caller opens the
-store as a context manager and owns its lifecycle.
+query, the [query model](query.md)'s pages and group counts, a fetch by id, stats,
+streaming for enrichment, export, the secret scan and the sanitized sync) and the
+Haystack handle that writes and vector-searches it go through that class; no
+other module holds SQL against the table. Because the table appears only on the
+first write, `DocumentStore` declares no DDL, and its streaming readers treat a
+missing table as an empty corpus. A caller opens the store as a context manager
+and owns its lifecycle.
+
+Every store's reads (`Store._read`) run in a transaction that ends with the read,
+so a long-lived store never sits idle in a transaction holding a snapshot; reads
+that must agree (a count and its groups) share one explicit transaction. The
+streaming readers (`iter`, `iter_enriched`) hold a server-side cursor inside a
+transaction until the generator finishes, so a caller that may stop early wraps
+the generator in `contextlib.closing` rather than leaving it to garbage
+collection.
 
 A small `sync_state` table (source, cursor, updated_at) tracks per-source
 progress. The cursor is opaque — each fetcher encodes whatever it needs to resume

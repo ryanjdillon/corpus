@@ -24,6 +24,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterator
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from contextlib import closing
 from itertools import islice
 
 import msgspec
@@ -133,23 +134,25 @@ and ``documents`` an open DocumentStore, whose lifecycles the caller owns.
             if not retry_rejected:
                 seen |= store.rejected_ids(enricher.model)
         queued = 0
-        for doc_id, content, meta in documents.iter(source=source, account=account):
-            # The limit caps documents sent to the model, not documents scanned:
-            # documents arrive in a stable order, so a scan cap would re-scan the
-            # same already-enriched prefix on every run and never reach new mail.
-            counts["scanned"] += 1
-            doc_source = (meta or {}).get("source")
-            if not may_enrich(doc_source):
-                # Counted apart from ``skipped``, which means a record that
-                # failed: a backfill that enriches nothing must say why.
-                counts["ineligible"] += 1
-                excluded.add(doc_source or "<unset>")
-                continue
-            if doc_id not in seen:
-                queued += 1
-                yield doc_id, content, meta
-                if limit and queued >= limit:
-                    return
+        with closing(documents.iter(source=source, account=account)) as docs:
+            for doc_id, content, meta in docs:
+                # The limit caps documents sent to the model, not documents
+                # scanned: documents arrive in a stable order, so a scan cap would
+                # re-scan the same already-enriched prefix on every run and never
+                # reach new mail.
+                counts["scanned"] += 1
+                doc_source = (meta or {}).get("source")
+                if not may_enrich(doc_source):
+                    # Counted apart from ``skipped``, which means a record that
+                    # failed: a backfill that enriches nothing must say why.
+                    counts["ineligible"] += 1
+                    excluded.add(doc_source or "<unset>")
+                    continue
+                if doc_id not in seen:
+                    queued += 1
+                    yield doc_id, content, meta
+                    if limit and queued >= limit:
+                        return
 
     def work(item: tuple) -> tuple:
         doc_id, content, meta = item
@@ -260,15 +263,19 @@ def run_audit(
     if not model:
         raise ValueError("no model configured (set CORPUS_AUDIT_MODEL or CORPUS_ENRICH_MODEL)")
     scanned = audited = 0
-    for doc_id, content, meta in documents.iter(source=source, account=account):
-        if limit and scanned >= limit:
-            break
-        scanned += 1
-        candidates = scan.audit_candidates(content)
-        if not candidates:
-            continue
-        result = _audit_windowed(audit, _model_text(meta, content), content, candidates, model)
-        store.save_audit(doc_id, candidates, msgspec.to_builtins(result), model, scan.SCAN_VERSION)
-        audited += 1
+    with closing(documents.iter(source=source, account=account)) as docs:
+        for doc_id, content, meta in docs:
+            if limit and scanned >= limit:
+                break
+            scanned += 1
+            candidates = scan.audit_candidates(content)
+            if not candidates:
+                continue
+            text = _model_text(meta, content)
+            result = _audit_windowed(audit, text, content, candidates, model)
+            store.save_audit(
+                doc_id, candidates, msgspec.to_builtins(result), model, scan.SCAN_VERSION
+            )
+            audited += 1
     log.info("audited %d of %d scanned", audited, scanned)
     return {"scanned": scanned, "audited": audited}
