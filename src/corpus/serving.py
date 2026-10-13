@@ -43,6 +43,8 @@ from .embeddings import embed_query
 from .enricher import inline_refs
 from .envelope import CURSOR_HELP, clamp, decode_cursor, encode_cursor, offset_of, wrap
 from .query import (
+    FILTERS,
+    RANGES,
     Filters,
     Page,
     Position,
@@ -185,8 +187,8 @@ def _within(frozen: Any, relative: str, now: Clock) -> bool:
 def _ends(spec: QuerySpec) -> dict[str, str]:
     """Every relative range end *spec* sets, keyed ``<filter>.<since|until>``."""
     ends = {}
-    for name in ("sent_at", "deadline"):
-        bounds = getattr(spec.filters, name)
+    for name in RANGES:
+        bounds = spec.filters.get(name)
         for end in ("since", "until"):
             value = getattr(bounds, end) if bounds is not None else None
             if value is not None and _relative(value):
@@ -197,12 +199,12 @@ def _ends(spec: QuerySpec) -> dict[str, str]:
 def _freeze(spec: QuerySpec, frozen: Mapping[str, str]) -> QuerySpec:
     """*spec* with each relative range end replaced by its frozen absolute value."""
     changes = {}
-    for name in ("sent_at", "deadline"):
-        bounds = getattr(spec.filters, name)
+    for name in RANGES:
+        bounds = spec.filters.get(name)
         if bounds is None:
             continue
         ends = {end: frozen.get(f"{name}.{end}", getattr(bounds, end)) for end in ("since", "until")}
-        changes[name] = Range(**ends)
+        changes[FILTERS[name]] = Range(**ends)
     return msgspec.structs.replace(
         spec, filters=msgspec.structs.replace(spec.filters, **changes)
     )

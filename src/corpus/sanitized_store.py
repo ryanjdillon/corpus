@@ -16,6 +16,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 import psycopg
+from psycopg.types.json import Jsonb
 
 from .config import settings
 from .query import (
@@ -43,7 +44,7 @@ COLS = (
     "domain", "category", "transactional_type", "importance", "requires_action",
     "action_type", "action_summary", "deadline", "waiting_on", "time_sensitive",
     "suggested_disposition", "sensitivity_level", "one_line", "organizations",
-    "enriched_at", "uri",
+    "enriched_at", "uri", "facts",
 )
 
 #: The projection's columns derived from third-party text, which a result
@@ -52,7 +53,10 @@ COLS = (
 #: Every other column is an id, a date, a schema-constrained enum, or ``uri``: a
 #: provider web link the projection admits only as an https URL (see
 #: ``sanitize.web_link``), which corpus derives from the provider, not the email.
-UNTRUSTED_COLS = ("action_summary", "one_line", "organizations", "sender_domain", "thread_id")
+#: ``facts`` holds place and carrier names a model wrote.
+UNTRUSTED_COLS = (
+    "action_summary", "one_line", "organizations", "sender_domain", "thread_id", "facts",
+)
 
 #: Columns the sync writes but no reader returns: the digest of the projection
 #: policy a row was projected under (``sanitize.Policy.digest``), and the digest
@@ -70,6 +74,20 @@ WRITTEN = (*COLS, "policy_hash", "embedded_policy_hash")
 PENDING = "[pending redaction] "
 _ALL = frozenset(WRITTEN)
 _DIGEST = re.compile(r"[0-9a-f]+")
+#: Columns whose stand-in, when the table lacks them, must be typed: an untyped
+#: NULL reads as text, which the ``facts`` operators do not take.
+_ABSENT = {"facts": "NULL::jsonb"}
+#: Columns written through an adapter rather than as a plain value.
+_ADAPT = {"facts": Jsonb}
+
+#: The travel facts (``enrichment.Travel``) in the ``facts`` column. Each
+#: allow-listed ``facts.travel.<key>`` of the query model maps to one fixed
+#: expression over it; no key reaches the SQL.
+_TRAVEL = "facts->'travel'"
+#: The projection writes only ISO dates here (``sanitize.project_facts``), so
+#: the cast cannot fail on a stored row.
+_TRAVEL_START = f"({_TRAVEL}->>'start')::date"
+_TRAVEL_END = f"({_TRAVEL}->>'end')::date"
 
 
 class Backlog(NamedTuple):
@@ -113,8 +131,17 @@ def layout(schema: str) -> Layout:
             # An unknown level ranks NULL and so never passes a ceiling: a
             # sensitivity filter fails closed.
             "max_sensitivity": f"{rank_case('sensitivity_level')} <= %s",
+            "facts.travel": f"coalesce(jsonb_typeof({_TRAVEL}) = 'object', false) = %s",
+            "facts.travel.origin_country": f"{_TRAVEL}->'origin'->>'country' = ANY(%s)",
+            "facts.travel.destination_country": (
+                f"{_TRAVEL}->'destination'->>'country' = ANY(%s)"
+            ),
+            "facts.travel.carrier": f"lower({_TRAVEL}->>'carrier') = lower(%s)",
         },
-        ranges={"sent_at": "sent_at", "deadline": "deadline"},
+        ranges={
+            "sent_at": "sent_at", "deadline": "deadline",
+            "facts.travel.start": _TRAVEL_START, "facts.travel.end": _TRAVEL_END,
+        },
         groups={
             **{name: name for name in (
                 "domain", "sender_domain", "category", "importance", "suggested_disposition",
@@ -122,6 +149,9 @@ def layout(schema: str) -> Layout:
             "organization": "org.name",
             # In UTC, so a month's boundaries do not move with the session's zone.
             "month": "to_char(sent_at AT TIME ZONE 'UTC', 'YYYY-MM')",
+            "facts.travel.origin_country": f"{_TRAVEL}->'origin'->>'country'",
+            "facts.travel.destination_country": f"{_TRAVEL}->'destination'->>'country'",
+            "facts.travel.start_year": f"to_char({_TRAVEL_START}, 'YYYY')",
         },
         joins={"organization": "LEFT JOIN LATERAL unnest(organizations) AS org(name) ON true"},
         text=("one_line", "action_summary"),
@@ -130,11 +160,18 @@ def layout(schema: str) -> Layout:
         oldest="coalesce(sent_at, 'infinity'::timestamptz)",
         key_param="%s::timestamptz",
         timestamp_key=True,
-        dates=frozenset({"deadline"}),
+        dates=frozenset({"deadline", "facts.travel.start", "facts.travel.end"}),
         orders={"priority": PRIORITY, "deadline": f"deadline NULLS LAST, {PRIORITY}"},
         embedding="summary_embedding",
         ranked=_vector_current(_ALL),
     )
+
+
+def _param(row: dict, column: str) -> object:
+    """*row*'s value for *column*, adapted for writing (a ``facts`` dict as jsonb)."""
+    value = row.get(column)
+    adapt = _ADAPT.get(column)
+    return value if value is None or adapt is None else adapt(value)
 
 
 def _vector_current(present: frozenset[str]) -> str:
@@ -188,7 +225,7 @@ def _served(
     ranked = _vector_current(present)
     if projection is None and present >= frozenset(COLS):
         return table, ranked
-    exprs = {c: (c if c in present else "NULL") for c in COLS}
+    exprs = {c: (c if c in present else _ABSENT.get(c, "NULL")) for c in COLS}
     if projection is not None:
         from .sanitize import BOOKKEEPING, REDACTED_COLS
 
@@ -244,6 +281,7 @@ def _ddl(schema: str, dim: int) -> str:
         summary_embedding     vector({dim}),
         enriched_at           timestamptz,
         uri                   text,
+        facts                 jsonb,
         policy_hash           text,
         embedded_policy_hash  text,
         synced_at             timestamptz NOT NULL DEFAULT now()
@@ -252,6 +290,7 @@ def _ddl(schema: str, dim: int) -> str:
     -- re-projected (corpus sync --reproject). A read-only reader opened before
     -- this runs reads the column as NULL (SanitizedStore._present).
     ALTER TABLE {schema}.messages ADD COLUMN IF NOT EXISTS uri text;
+    ALTER TABLE {schema}.messages ADD COLUMN IF NOT EXISTS facts jsonb;
     -- Rows from before the column existed read as projected under no policy, so
     -- the next sync re-projects them, and a serving store degrades them until
     -- then. No reader returns it.
@@ -352,7 +391,7 @@ class SanitizedStore(Store):
 
     def save_message(self, row: dict, embedding: list[float]) -> None:
         """Upsert one projected row and its summary embedding."""
-        self._write(self._sql, [row.get(c) for c in WRITTEN] + [_vector(embedding)])
+        self._write(self._sql, [_param(row, c) for c in WRITTEN] + [_vector(embedding)])
 
     def update_projections(self, rows: list[dict]) -> int:
         """Rewrite the projected columns of existing rows, keeping their embeddings.
@@ -366,7 +405,7 @@ class SanitizedStore(Store):
         changed = 0
         with self._conn.transaction(), self._conn.cursor() as cur:
             for row in rows:
-                values = [row.get(c) for c in projected]
+                values = [_param(row, c) for c in projected]
                 cur.execute(self._update_sql, [*values, row["id"], *values])
                 changed += cur.rowcount
         return changed

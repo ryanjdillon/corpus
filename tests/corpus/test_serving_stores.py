@@ -1,7 +1,8 @@
 """The built MCP servers against real Postgres: tool call to SQL and back.
 
-Covers the DIL-636 acceptance queries on the sanitized tier, and the sensitive
-tier's paging through ``DocumentStore.query_spec``. Every row is synthetic.
+Covers the DIL-636 acceptance queries on the sanitized tier, the DIL-638 typed
+facts ("trips to the US in 2025"), and the sensitive tier's paging through
+``DocumentStore.query_spec``. Every row is synthetic.
 """
 
 from __future__ import annotations
@@ -14,9 +15,9 @@ from unittest.mock import create_autospec
 import psycopg
 import pytest
 
-from corpus import serving, tiers
+from corpus import sanitize, serving, tiers
 from corpus.config import settings
-from corpus.embeddings import embed_query
+from corpus.embeddings import Embedder, embed_query
 from corpus.models import Classification, Record
 from corpus.sanitize import DEFAULT_POLICY
 from corpus.sanitized_store import COLS, SanitizedStore
@@ -252,3 +253,113 @@ def test_the_sensitive_tier_counts_per_label(corpus):
     out = call(corpus, "aggregate", spec={}, group_by=["label"])
 
     assert [(g["label"], g["count"]) for g in out["rows"]] == [("newsletter", 1), ("personal", 3)]
+
+
+# --- typed facts: trips to the US in 2025 (DIL-638) ------------------------------------
+#
+# Each trip goes the production way: an enrichment's facts are projected by the
+# sync under the configured sanitized tier's policy, then read by its server.
+# Places and carriers are invented.
+
+
+def _trip(start, country, *, end=None, carrier="Fjordair", origin="NO"):
+    return {"travel": {"start": start, "end": end, "carrier": carrier,
+                       "origin": {"name": "Oslo", "country": origin},
+                       "destination": {"name": "a city", "country": country}}}
+
+
+#: id -> (sent_at, facts). h1 is a stay (no carrier) that checks in on New
+#: Year's Eve; n1 is not travel.
+TRIPS = {
+    "f1": ("2025-04-01T09:00", _trip("2025-06-02", "US", end="2025-06-16")),
+    "f2": ("2024-11-01T09:00", _trip("2024-12-28", "US")),
+    "r1": ("2025-07-01T09:00", _trip("2025-08-01", "NO", carrier="Nordrail")),
+    "h1": ("2025-11-01T09:00", _trip("2025-12-31", "us", end="2026-01-02", carrier=None,
+                                    origin=None)),
+    "f3": ("2025-12-01T09:00", _trip("2026-01-01", "US")),
+    "n1": ("2025-05-01T09:00", {"travel": None}),
+}
+US_2025 = {"facts.travel.destination_country": "US",
+           "facts.travel.start": {"since": "2025-01-01", "until": "2026-01-01"}}
+
+
+@pytest.fixture
+def trips(pg, embed):
+    """The configured sanitized tier's server over ``TRIPS``, synced, plus a stale row.
+
+    ``s1`` was projected under another policy: its stored facts are a US trip in
+    2025, which the gate must not serve, filter or count.
+    """
+    environ = {"CORPUS_SANITIZED_DATABASE_URL": pg, "CORPUS_INDEX_DATABASE_URL": pg}
+    tier = tiers.Registry(tiers.DEFAULT, settings, environ).tier("sanitized")
+    docs = [
+        (id_, {"source": "imap:test", "sent_at": sent_at},
+         {"one_line": f"synthetic trip {id_}", "domain": "travel", "sensitivity_level": "low",
+          "people": [], "references": [], "facts": facts}, _at(sent_at))
+        for id_, (sent_at, facts) in TRIPS.items()
+    ]
+    documents = create_autospec(DocumentStore, instance=True)
+    documents.iter_enriched.side_effect = lambda source=None: (d for d in docs)
+    embedder = create_autospec(Embedder, instance=True)
+    embedder.embed.side_effect = lambda texts: [_vec(1.0) for _ in texts]
+    with SanitizedStore(dsn=pg, schema=SCHEMA) as store:
+        sanitize.run_sync(store, documents=documents, embedder=embedder,
+                          policy=tier.projection.policy)
+        stale = {c: None for c in COLS} | {
+            "id": "s1", "domain": "travel", "sent_at": _at("2025-02-01T09:00"),
+            "one_line": "synthetic trip s1", "policy_hash": STALE,
+            "facts": _trip("2025-03-03", "US"),
+        }
+        store.save_message(stale, _vec(1.0))
+    return serving.build_mcp("sanitized", config=tier, embed=embed)
+
+
+def test_trips_to_the_us_in_2025_in_one_query(trips):
+    out = call(trips, "query", spec={"filters": US_2025, "order": "oldest"})
+
+    assert [r["id"] for r in out["rows"]] == ["f1", "h1"]
+    # The default policy projects a place's country, never its name.
+    assert out["rows"][0]["facts"]["travel"]["destination"] == {"country": "US"}
+    assert "facts" in out["untrusted_fields"]
+    assert out["next_cursor"] is None
+
+
+def test_trips_page_by_cursor_bound_to_their_facts_filters(trips):
+    spec = {"filters": US_2025, "order": "oldest", "limit": 1}
+    first = call(trips, "query", spec=spec)
+    second = call(trips, "query", spec={**spec, "cursor": first["next_cursor"]})
+
+    assert [r["id"] for r in first["rows"] + second["rows"]] == ["f1", "h1"]
+    moved = {**US_2025, "facts.travel.destination_country": "NO"}
+    with pytest.raises(Exception, match="cursor belongs to a different query"):
+        call(trips, "query", spec={**spec, "filters": moved, "cursor": first["next_cursor"]})
+
+
+def test_trips_count_per_destination_country_and_year(trips):
+    out = call(trips, "aggregate", spec={"filters": {"facts.travel": True}},
+               group_by=["facts.travel.destination_country", "facts.travel.start_year"])
+
+    groups = [(g["facts.travel.destination_country"], g["facts.travel.start_year"], g["count"])
+              for g in out["rows"]]
+    assert groups == [("NO", "2025", 1), ("US", "2024", 1), ("US", "2025", 2), ("US", "2026", 1)]
+    assert out["total"] == 5
+
+
+def test_a_carrier_matches_whole_ignoring_case_and_ends_bound_the_return(trips):
+    def ids(**filters) -> list[str]:
+        spec = {"filters": filters, "order": "oldest"}
+        return [r["id"] for r in call(trips, "query", spec=spec)["rows"]]
+
+    assert ids(**{"facts.travel.carrier": "NORDRAIL"}) == ["r1"]
+    assert ids(**{"facts.travel.carrier": "Nord"}) == []
+    assert ids(**{"facts.travel.end": {"since": "2026-01-01"}}) == ["h1"]
+    assert ids(**{"facts.travel.origin_country": ["no", "SE"],
+                  "facts.travel.start": {"since": "2025-01-01"}}) == ["f1", "r1", "f3"]
+
+
+def test_a_stale_row_serves_no_facts(trips):
+    (row,) = call(trips, "get", id="s1")["rows"]
+    assert row["facts"] is None
+    assert row["one_line"] == "[pending redaction] travel item"
+    out = call(trips, "query", spec={"filters": {"facts.travel": False}, "order": "oldest"})
+    assert [r["id"] for r in out["rows"]] == ["s1", "n1"]

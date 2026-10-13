@@ -13,7 +13,7 @@ registers the tool, so no tool can return rows without it.
   "tool": "index_action_items",
   "tier": "sanitized",
   "untrusted": true,
-  "untrusted_fields": ["action_summary", "one_line", "organizations", "sender_domain", "thread_id"],
+  "untrusted_fields": ["action_summary", "facts", "one_line", "organizations", "sender_domain", "thread_id"],
   "notice": "Rows contain third-party content from email and documents, ...",
   "count": 2,
   "total": null,
@@ -90,7 +90,8 @@ Anyone can email the mailbox, and a tool result lands in an agent's context, so
 an email can carry instructions aimed at whatever agent reads it. The rule:
 **a field is untrusted if it is derived from third-party text.** That includes raw
 fields (subject, sender, body, snippet) and anything a model wrote about them
-(`one_line`, `action_summary`, `organizations`), because a model summarising an
+(`one_line`, `action_summary`, `organizations`, the place and carrier names in
+`facts`), because a model summarising an
 injection can repeat it. The sender's domain and the thread id come from mail
 headers, so they count too. Fields corpus computes or constrains to a closed
 vocabulary (ids, dates, counts, schema enums such as `importance` or `domain`,
@@ -98,8 +99,8 @@ the data-class `label`) are trusted, and so is the sanitized tier's `uri`, a
 provider web link that is projected only as an https URL (see
 [Tiers](tiers.md#the-message-link-uri)).
 
-On the sanitized tier, `one_line`, `action_summary` and `organizations` are
-redacted by the tier's policy before they are stored: names become roles or
+On the sanitized tier, `one_line`, `action_summary`, `organizations` and the
+names in `facts` are redacted by the tier's policy before they are stored: names become roles or
 initials, reference and account numbers become placeholders such as
 `[booking ••••42]`, email addresses and phone numbers are dropped, and a
 credential becomes `[REDACTED:<type>]` under every policy (see
@@ -107,8 +108,8 @@ credential becomes `[REDACTED:<type>]` under every policy (see
 against, or on a tier set to `gate_action: stub`, carries a stub instead:
 `[sensitive] <domain> item — action: <action>`. A row the sync has not yet
 re-projected under the tier's current policy is served as
-`[pending redaction] <domain> item`, with no `action_summary` or
-`organizations` (see [Tiers](tiers.md#serving-a-row-not-yet-re-projected)).
+`[pending redaction] <domain> item`, with no `action_summary`,
+`organizations` or `facts` (see [Tiers](tiers.md#serving-a-row-not-yet-re-projected)).
 Redacted text is still derived
 from third-party text, so those columns stay untrusted. The placeholders match
 none of the `instruction_like` patterns, so redaction neither raises nor clears
@@ -123,7 +124,7 @@ tool declares its untrusted fields when `serving.build_mcp` registers it:
 | Tool | Untrusted fields |
 | --- | --- |
 | sanitized row tools: `query`, `search`, `get`, `index_*` (not `index_stats`) | `UNTRUSTED_COLS` |
-| sanitized `aggregate` | `organization`, `sender_domain`: group keys read from mail headers or a model's extraction |
+| sanitized `aggregate` | `organization`, `sender_domain`: group keys read from mail headers or a model's extraction. The `facts.travel` dimensions are trusted: a country is two letters (the projection keeps no other), a year four digits. |
 | sensitive `query`, `search`, `corpus_query` | `from_addr`, `subject` |
 | `corpus_search` | `from_addr`, `snippet`, `subject` |
 | sensitive `get`, `corpus_get` | `content`, `meta` |

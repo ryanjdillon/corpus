@@ -176,7 +176,7 @@ def test_the_default_policy_keeps_context_and_hides_identifiers():
     )
     assert msgspec.structs.asdict(policy.redact) == {
         "organization": "keep", "person_name": "role", "reference_id": "mask",
-        "financial_id": "mask", "email_address": "drop", "phone": "drop",
+        "financial_id": "mask", "email_address": "drop", "phone": "drop", "place_name": "drop",
     }
 
 

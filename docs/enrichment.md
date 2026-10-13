@@ -144,8 +144,6 @@ also what the projection redacts by: it finds each person's name in the
 summaries and replaces it with the role, initials or nothing, and masks each
 reference value, whether or not the model kept to the prompt. On the sanitized
 tier by default, a name becomes the role and a reference `[booking ••••42]`.
-Typed facts (such as travel itineraries) are a later change, as they also touch
-the query model.
 
 Dropping `people` and `references` does not remove every name. The prompt asks
 only the three summaries to speak in roles, so a name can still appear in
@@ -165,6 +163,58 @@ fallback in one place for any reader of stored rows, and keeps the projection a
 policy over one shape. Bringing the archive to the new shape is
 a separate backfill with `--upgrade-stale`, run as a local GPU job. Do not run
 it in bulk against a shared remote endpoint.
+
+## Typed facts
+
+A few domains have facts worth querying by value, not by words: when a trip
+starts, where it goes. `facts` holds them, typed, beside the core fields. It
+starts with travel and has one key per domain; each is null unless the message
+states it.
+
+`facts.travel` is filled only for a travel booking, e-ticket or itinerary: a
+flight, train, bus or ferry ticket, or a stay. A hotel booking counts as
+travel, since a stay is where a trip goes, even when the journey was booked
+elsewhere. A fare sale, a newsletter, or a dentist's reminder with a date and
+an address is not, and leaves it null.
+
+| Field | Value |
+| --- | --- |
+| `start`, `end` | ISO dates: the first and last day (departure and return, or check-in and check-out). |
+| `origin`, `destination` | `{name, country}`: the place as written and its ISO 3166-1 alpha-2 code (`US`, `NO`), when the model can tell. For a stay, `destination` is where it is and `origin` is null. The sanitized tier keeps only the country by default (see [Tiers](tiers.md#typed-facts)). |
+| `carrier` | The airline, rail, bus or ferry operator; null for a stay. |
+
+Every field may be null. Booking codes, ticket and seat numbers never go here:
+they are `references`, which the projection masks. A place's name is not
+safe to project: for a stay it can be someone's home, address and all, so the
+sanitized tier keeps only its country unless its policy says otherwise.
+
+A country that is not an officially assigned ISO 3166-1 alpha-2 code
+(`enrichment.ISO_COUNTRIES`, a static set) is dropped to null when the reply
+is decoded, rather than refused, and a lower-case code is upper-cased: a place
+without a country is still a fact, and refusing it would lose the record. As
+with roles, that is checked after decoding, not with a `pattern` or `enum`:
+the guided schema adds no JSON-schema keyword (a test pins the set). The
+schema bounds `country` at eight characters, not two: a value past the bound
+refuses the whole record, so a tight bound would lose a trip for writing
+`usa`, and guided decoding would cut `Sweden` to `SW` and `Germany` to `GE`.
+The looser bound lets such a value through to be dropped. Validation cannot
+catch every wrong code: one that lands on an assigned code is valid and wrong
+(`GE` is Georgia), whether guided decoding truncated it (a provider that
+enforces a bound by cutting the value) or the model guessed it, and no
+check of the value alone can tell. The structs' docstrings reach the
+model as schema descriptions, so they are written for it. Place and carrier
+names are written by a model from untrusted mail, so `facts` is in
+`FREE_TEXT_FIELDS`.
+
+`domain` is unchanged: a travel booking is still `domain: travel`, and the
+facts are an addition to it. The projection decides per tier whether `facts`
+is projected (see [Tiers](tiers.md#typed-facts)), and the query model filters
+and counts by them (see [Query model](query.md#typed-facts)).
+
+**Older records.** `facts` changes `SCHEMA_VERSION`. `enrichment.upgrade` gives a
+record written before it `{"travel": null}`, where stored rows are read, as for
+`references`. Filling the facts in for the archive is a re-enrichment
+(`--upgrade-stale`), on the same terms as above.
 
 ## Models
 

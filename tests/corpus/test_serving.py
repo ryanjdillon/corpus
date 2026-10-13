@@ -367,6 +367,27 @@ def test_query_freezes_a_relative_window_for_every_page(index, index_store, cloc
     assert index_store.query.call_args.args[2] == 1
 
 
+def test_query_freezes_a_relative_facts_range_for_every_page(index, index_store, clock):
+    index_store.query.return_value = Page([{"id": "a"}], 1)
+    spec = {"filters": {"facts.travel.start": {"since": "30d"}}, "order": "priority"}
+
+    first = call(index, "query", spec=spec)
+    clock.return_value = NOW + timedelta(minutes=30)
+    call(index, "query", spec={**spec, "cursor": first["next_cursor"]})
+
+    frozen = (NOW - timedelta(days=30)).isoformat()
+    pages = [c.args[0].filters.travel_start for c in index_store.query.call_args_list]
+    assert pages == [Range(since=frozen), Range(since=frozen)]
+
+
+def test_the_query_tool_lists_the_facts_filters_by_their_path(index):
+    spec = _tools(index)["query"].inputSchema["properties"]["spec"]
+    filters = spec["properties"]["filters"]["properties"]
+    assert {"facts.travel.destination_country", "facts.travel.start"} <= set(filters)
+    groups = _tools(index)["aggregate"].inputSchema["properties"]["group_by"]["items"]["enum"]
+    assert "facts.travel.start_year" in groups
+
+
 def test_a_stale_relative_window_cursor_is_refused(index, index_store, clock):
     index_store.query.return_value = Page([{"id": "a"}], 1)
     spec = {"filters": {"sent_at": {"since": "14d"}}, "order": "priority"}

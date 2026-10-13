@@ -37,7 +37,8 @@ from .enrichment import (
 Order = Literal["priority", "newest", "oldest", "deadline"]
 GroupBy = Literal[
     "domain", "sender_domain", "organization", "month", "label", "category", "importance",
-    "account", "suggested_disposition",
+    "account", "suggested_disposition", "facts.travel.origin_country",
+    "facts.travel.destination_country", "facts.travel.start_year",
 ]
 #: Where a page resumes: an offset for the offset-paged orders, or the last row's
 #: ``[sent_at key, id]`` for ``newest``/``oldest``. The caller encodes it.
@@ -48,6 +49,11 @@ Position = int | Sequence[str]
 SEMANTIC_DEPTH = 200
 
 _Short = Annotated[str, msgspec.Meta(min_length=1, max_length=200)]
+#: The most values a list filter takes. Checked here rather than as the schema's
+#: ``maxItems``, which the query model's tool schema does not otherwise use.
+MAX_ANY_OF = 50
+#: An ISO 3166-1 alpha-2 country code, in either case ("US", "no").
+_Country = Annotated[str, msgspec.Meta(pattern=r"^[A-Za-z]{2}$")]
 _DURATION_RE = re.compile(r"^\s*(\d+)\s*([smhdw])\s*$")
 _UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
 
@@ -139,6 +145,12 @@ class Filters(msgspec.Struct, forbid_unknown_fields=True, frozen=True, kw_only=T
     An enum filter takes one value or a list (any of them). ``organization``
     matches any organization containing the text, case-insensitively. ``due`` is
     "time-sensitive or carrying a deadline".
+
+    The ``facts.*`` filters read the enrichment's typed facts, named by their
+    path: ``facts.travel`` (whether a row has travel facts), a country code or a
+    list of them for ``facts.travel.origin_country`` and
+    ``facts.travel.destination_country``, a carrier matched whole but ignoring
+    case, and day ranges for ``facts.travel.start`` and ``facts.travel.end``.
     """
 
     domain: Domain | list[Domain] | None = None
@@ -159,23 +171,47 @@ class Filters(msgspec.Struct, forbid_unknown_fields=True, frozen=True, kw_only=T
     sent_at: Range | None = None
     deadline: Range | None = None
     max_sensitivity: SensitivityLevel | None = None
+    travel: bool | None = msgspec.field(default=None, name="facts.travel")
+    travel_origin_country: _Country | list[_Country] | None = msgspec.field(
+        default=None, name="facts.travel.origin_country"
+    )
+    travel_destination_country: _Country | list[_Country] | None = msgspec.field(
+        default=None, name="facts.travel.destination_country"
+    )
+    travel_carrier: _Short | None = msgspec.field(default=None, name="facts.travel.carrier")
+    travel_start: Range | None = msgspec.field(default=None, name="facts.travel.start")
+    travel_end: Range | None = msgspec.field(default=None, name="facts.travel.end")
 
     def __post_init__(self) -> None:
-        for name in ANY_OF:
-            if getattr(self, name) == []:
+        for name in (*ANY_OF, *_COUNTRIES):
+            value = self.get(name)
+            if value == []:
                 raise ValueError(f"filter {name!r} is an empty list; omit it or name a value")
+            if isinstance(value, list) and len(value) > MAX_ANY_OF:
+                raise ValueError(
+                    f"filter {name!r} lists {len(value)} values; at most {MAX_ANY_OF}"
+                )
+
+    def get(self, name: str) -> Any:
+        """The value of the filter named *name* (as a spec writes it)."""
+        return getattr(self, FILTERS[name])
 
     def used(self) -> list[str]:
-        """The names of the filters this spec sets."""
-        return [name for name in self.__struct_fields__ if getattr(self, name) is not None]
+        """The names (as a spec writes them) of the filters this spec sets."""
+        return [name for name in FILTERS if self.get(name) is not None]
 
 
+#: Every filter: its name as a spec and a policy write it -> its attribute.
+FILTERS = {f.encode_name: f.name for f in msgspec.structs.fields(Filters)}
 #: The filters that take one value or a list of them.
 ANY_OF = (
     "domain", "category", "transactional_type", "importance", "waiting_on", "action_type",
     "suggested_disposition",
 )
-_RANGES = ("sent_at", "deadline")
+#: The filters that take one country code or a list of them.
+_COUNTRIES = ("facts.travel.origin_country", "facts.travel.destination_country")
+#: The range filters.
+RANGES = ("sent_at", "deadline", "facts.travel.start", "facts.travel.end")
 
 
 class QuerySpec(msgspec.Struct, forbid_unknown_fields=True, frozen=True, kw_only=True):
@@ -240,7 +276,7 @@ class QueryPolicy(msgspec.Struct, forbid_unknown_fields=True, frozen=True, kw_on
     search_depth: Annotated[int, msgspec.Meta(ge=1, le=SEMANTIC_DEPTH)] = SEMANTIC_DEPTH
 
     def __post_init__(self) -> None:
-        unknown = sorted(self.filterable - set(Filters.__struct_fields__))
+        unknown = sorted(self.filterable - set(FILTERS))
         if unknown:
             raise ValueError(f"unknown filter(s) {', '.join(map(repr, unknown))}")
 
@@ -251,10 +287,14 @@ SANITIZED_POLICY = QueryPolicy(
         "domain", "category", "transactional_type", "importance", "requires_action",
         "time_sensitive", "waiting_on", "action_type", "suggested_disposition",
         "sender_domain", "organization", "account", "source", "sent_at", "deadline",
-        "max_sensitivity",
+        "max_sensitivity", "facts.travel", "facts.travel.origin_country",
+        "facts.travel.destination_country", "facts.travel.carrier", "facts.travel.start",
+        "facts.travel.end",
     }),
     aggregatable=frozenset({
         "domain", "sender_domain", "organization", "month", "category", "importance",
+        "facts.travel.origin_country", "facts.travel.destination_country",
+        "facts.travel.start_year",
     }),
     orders=frozenset({"priority", "newest", "oldest", "deadline"}),
     text=True,
@@ -357,8 +397,8 @@ def _where(spec: QuerySpec, layout: Layout, now: Callable[[], datetime]) -> tupl
     params: list[Any] = []
     f = spec.filters
     for name in f.used():
-        value = getattr(f, name)
-        if name in _RANGES:
+        value = f.get(name)
+        if name in RANGES:
             if name not in layout.ranges:
                 raise ValueError(f"filter {name!r} is not available on this tier")
             expr = layout.ranges[name]
@@ -379,6 +419,8 @@ def _where(spec: QuerySpec, layout: Layout, now: Callable[[], datetime]) -> tupl
             params.append([_value(v) for v in values])
         elif name == "organization":
             params.append(_like(value))
+        elif name in _COUNTRIES:
+            params.append([c.upper() for c in (value if isinstance(value, list) else [value])])
         elif name == "max_sensitivity":
             params.append(SENSITIVITY_RANK[_value(value)])
         else:
@@ -556,7 +598,9 @@ def build_aggregate(
     size = min(spec.limit, policy.max_limit)
     dims = tuple(spec.group_by)
     joins = "".join(f" {layout.joins[d]}" for d in dims if d in layout.joins)
-    select = ", ".join(f"{layout.groups[d]} AS {d}" for d in dims)
+    # Each group is aliased by its position: a dimension's name (``facts.travel.…``)
+    # is not an identifier, and never reaches the SQL.
+    select = ", ".join(f"{layout.groups[d]} AS g{i}" for i, d in enumerate(dims, 1))
     positions = range(1, len(dims) + 1)
     sql = (
         f"SELECT {select}, count(*), min({layout.sent_at}), max({layout.sent_at}) "

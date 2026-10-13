@@ -122,7 +122,7 @@ def test_committed_fixtures_are_valid_and_stratified():
     assert len(records) >= 300
     assert ev.coverage_gaps(records) == []
     # The generated hard cases come 15 apiece; the hand-written sets are smaller.
-    minimum = {"references": 8, "redteam": 10}
+    minimum = {"references": 8, "redteam": 10, "travel_facts": 5}
     for tag in ev.HARD_CASES:
         assert sum(r["hard_case"] == tag for r in records) >= minimum.get(tag, 15), tag
     bulky = sum(r["labels"]["category"] in ("promotional", "newsletter") for r in records)
@@ -250,6 +250,114 @@ def test_a_reference_may_not_be_a_seeded_secret(fixtures):
 
     with pytest.raises(ev.FixtureError, match="is a seeded secret"):
         ev.validate_record(key)
+
+
+TRIP = {"start": "2026-06-02", "end": "2026-06-16",
+        "origin": {"name": "Oslo", "country": "NO"},
+        "destination": {"name": "Boston", "country": "US"}, "carrier": "Fjordair"}
+
+
+@pytest.fixture
+def flight(booking) -> dict:
+    """The booking as a flight with its travel facts."""
+    booking["labels"]["facts"] = {"travel": dict(TRIP)}
+    booking["hard_case"] = "travel_facts"
+    return booking
+
+
+def test_travel_facts_are_optional_and_a_flight_is_valid(fixtures, flight):
+    ev.validate_record(flight)
+    assert "facts" not in fixtures[0]["labels"]
+    committed = ev.select(ev.load_fixtures(ev.DEFAULT_FIXTURES), "hard_case=travel_facts")
+    travel = [r["labels"]["facts"]["travel"] for r in committed]
+    # A flight, a train, a stay, and two that must leave the facts null.
+    assert sum(t is None for t in travel) == 2
+    assert {t["carrier"] for t in travel if t} == {"Fjordair", "Nordrail", None}
+
+
+@pytest.mark.parametrize(
+    ("travel", "message"),
+    [
+        (TRIP | {"start": "next June"}, "does not fit the schema"),
+        (TRIP | {"booking": "FJX-1234"}, "does not fit the schema"),
+        (TRIP | {"destination": {"name": "Boston", "country": "us"}}, "upper-case ISO"),
+        (TRIP | {"destination": {"name": "Boston", "country": "SW"}}, "upper-case ISO"),
+        (TRIP | {"carrier": "Fjordair FJX-1234"}, "repeats reference 'FJX-1234'"),
+        (TRIP | {"carrier": "Fjordair fjx-1234"}, "repeats reference 'FJX-1234'"),
+    ],
+    ids=["date", "unknown-key", "lower-case-country", "not-iso", "reference", "case"],
+)
+def test_bad_travel_facts_fail_loudly(flight, travel, message):
+    flight["labels"]["facts"] = {"travel": travel}
+
+    with pytest.raises(ev.FixtureError, match=message):
+        ev.validate_record(flight)
+
+
+@pytest.mark.parametrize("value", ["BJØRN-77", 'FJX"77'], ids=["o-slash", "quote"])
+def test_a_reference_a_json_dump_would_escape_is_still_found_in_the_facts(flight, value):
+    # json.dumps writes "\u00d8" and '\\"', so a dump never contains these values.
+    flight["labels"]["references"] = [{"kind": "booking", "value": value}]
+    flight["body"] += f"\nBooking {value}."
+    flight["labels"]["facts"] = {"travel": TRIP | {"carrier": f"Fjordair {value}"}}
+
+    with pytest.raises(ev.FixtureError, match="repeats reference"):
+        ev.validate_record(flight)
+
+
+def test_travel_facts_are_scored_where_the_fixture_states_them(fixtures, flight):
+    shifted = TRIP | {"start": "2026-06-03", "carrier": "FJORDAIR "}
+    rows = [
+        _row(flight, _pred(flight, facts={"travel": shifted})),
+        _row(fixtures[0], _pred(fixtures[0], facts={"travel": TRIP})),  # unlabelled: out
+    ]
+
+    presence = _headline(rows, "travel facts presence accuracy")
+    assert (presence["value"], presence["n"]) == (1.0, 1)
+    # Five fields, the start a day off; the carrier matches ignoring case.
+    assert _headline(rows, "travel facts field accuracy")["value"] == 0.8
+
+
+def test_travel_facts_where_none_are_expected_miss_presence(flight):
+    flight["labels"]["facts"] = {"travel": None}
+    rows = [_row(flight, _pred(flight, facts={"travel": TRIP})),
+            _row(flight, _pred(flight, facts={"travel": None}))]
+
+    assert _headline(rows, "travel facts presence accuracy")["value"] == 0.5
+    assert _headline(rows, "travel facts field accuracy")["n"] == 0
+
+
+def test_a_reference_in_the_travel_facts_is_a_leak(flight):
+    rows = [_row(flight, _pred(flight, facts={"travel": TRIP | {"carrier": "fjx 1234"}})),
+            _row(flight, _pred(flight))]
+
+    leak = _headline(rows, "travel facts reference leak rate")
+    assert (leak["value"], leak["n"]) == (0.5, 2)
+
+
+def test_fake_oracle_exercises_the_travel_facts():
+    records = ev.select(ev.load_fixtures(ev.DEFAULT_FIXTURES), "hard_case=travel_facts")
+    fake = ev.FakeEnricher(records, noise=0.0)
+
+    rows = ev.run_records(records, fake, fake.audit, concurrency=1)
+    report = ev.score_rows(rows, resamples=10)
+
+    assert report["headline"]["travel facts presence accuracy"]["value"] == 1.0
+    assert report["headline"]["travel facts field accuracy"]["value"] == 1.0
+
+
+def test_fake_travel_facts_are_dropped_or_shifted_and_leak_a_reference():
+    reference = {"kind": "booking", "value": "FJX-1234"}
+    outcomes = {
+        ev._fake_facts({"travel": TRIP}, random.Random(seed), 1.0, [reference]).travel is None
+        for seed in range(20)
+    }
+    assert outcomes == {True, False}
+    kept = next(
+        f.travel for seed in range(20)
+        if (f := ev._fake_facts({"travel": TRIP}, random.Random(seed), 1.0, [reference])).travel
+    )
+    assert (kept.start.isoformat(), kept.carrier) == ("2026-06-03", "FJX-1234")
 
 
 def test_select_filters_by_hard_case_and_limit(fixtures):

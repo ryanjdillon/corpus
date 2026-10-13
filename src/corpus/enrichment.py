@@ -211,6 +211,93 @@ class Money(msgspec.Struct):
     currency: Annotated[str, msgspec.Meta(max_length=8)]
 
 
+# The docstrings of the structs below reach the model as schema descriptions,
+# so they are written for it; implementation notes are comments.
+
+#: An ISO 3166-1 alpha-2 country code ("US", "NO"). The bound is looser than a
+#: code on purpose: a value over it refuses the whole record, so it only caps a
+#: runaway string, and :func:`country_code` drops anything else that is not a
+#: code. A bound of two would also let guided decoding cut "Sweden" to a
+#: plausible "SW".
+CountryCode = Annotated[str, msgspec.Meta(max_length=8)]
+
+# The officially assigned codes, one row per first letter.
+_ISO_CODES = """
+    AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ
+    BA BB BD BE BF BG BH BI BJ BL BM BN BO BQ BR BS BT BV BW BY BZ
+    CA CC CD CF CG CH CI CK CL CM CN CO CR CU CV CW CX CY CZ
+    DE DJ DK DM DO DZ
+    EC EE EG EH ER ES ET
+    FI FJ FK FM FO FR
+    GA GB GD GE GF GG GH GI GL GM GN GP GQ GR GS GT GU GW GY
+    HK HM HN HR HT HU
+    ID IE IL IM IN IO IQ IR IS IT
+    JE JM JO JP
+    KE KG KH KI KM KN KP KR KW KY KZ
+    LA LB LC LI LK LR LS LT LU LV LY
+    MA MC MD ME MF MG MH MK ML MM MN MO MP MQ MR MS MT MU MV MW MX MY MZ
+    NA NC NE NF NG NI NL NO NP NR NU NZ
+    OM
+    PA PE PF PG PH PK PL PM PN PR PS PT PW PY
+    QA
+    RE RO RS RU RW
+    SA SB SC SD SE SG SH SI SJ SK SL SM SN SO SR SS ST SV SX SY SZ
+    TC TD TF TG TH TJ TK TL TM TN TO TR TT TV TW TZ
+    UA UG UM US UY UZ
+    VA VC VE VG VI VN VU
+    WF WS
+    YE YT
+    ZA ZM ZW
+"""
+#: The officially assigned ISO 3166-1 alpha-2 codes. Static, so the schema does
+#: not depend on a country package; the list changes a few times a decade.
+ISO_COUNTRIES = frozenset(_ISO_CODES.split())
+
+
+def country_code(value: object) -> str | None:
+    """*value* as an upper-case ISO 3166-1 alpha-2 code, or None if it is not one."""
+    code = value.strip().upper() if isinstance(value, str) else ""
+    return code if code in ISO_COUNTRIES else None
+
+
+# A country that is not an ISO code is dropped to None after decoding rather
+# than refused (a lower-case code is upper-cased): a place without a country is
+# still a fact, and refusing it would lose the whole record. It is not a
+# ``pattern`` or ``enum`` keyword, for the same reason Role is not ``minLength``.
+class Place(msgspec.Struct, forbid_unknown_fields=True):
+    """A place as the message names it, and its ISO 3166-1 alpha-2 country code."""
+
+    name: Name | None = None
+    country: CountryCode | None = None
+
+    def __post_init__(self) -> None:
+        self.country = country_code(self.country)
+
+
+class Travel(msgspec.Struct, forbid_unknown_fields=True):
+    """A journey or stay that a booking, e-ticket or itinerary confirms.
+
+    start and end are the first and last day (departure and return, or check-in
+    and check-out). origin is where it leaves from; destination is where it goes,
+    or the place stayed. carrier is the airline, rail, bus or ferry operator,
+    null for a stay. No reference numbers here: they belong in references.
+    """
+
+    start: date | None = None
+    end: date | None = None
+    origin: Place | None = None
+    destination: Place | None = None
+    carrier: Name | None = None
+
+
+# Not part of the core schema: a projected tier carries them only if its
+# policy names the ``facts`` column (see ``sanitize.project_facts``).
+class Facts(msgspec.Struct, forbid_unknown_fields=True):
+    """Typed facts for the few domains whose dates matter; null unless stated."""
+
+    travel: Travel | None = None
+
+
 class Enrichment(msgspec.Struct):
     """Per-message structured metadata.
 
@@ -253,6 +340,9 @@ class Enrichment(msgspec.Struct):
     appointments: Annotated[list[Appointment], _LIST] = msgspec.field(default_factory=list)
     monetary_amounts: Annotated[list[Money], _LIST] = msgspec.field(default_factory=list)
 
+    # --- typed facts (domain-specific; null unless the message states them) ---
+    facts: Facts = msgspec.field(default_factory=Facts)
+
     # --- sensitivity (level only; the area is `domain`; secrets are section B) ---
     sensitivity_level: SensitivityLevel = SensitivityLevel.none
 
@@ -265,7 +355,7 @@ class Enrichment(msgspec.Struct):
 #: enum, a boolean, a date, or a bounded amount and currency.
 FREE_TEXT_FIELDS = (
     "one_line", "abstract", "key_points", "action_summary", "people", "references",
-    "organizations", "topics", "projects", "locations", "appointments",
+    "organizations", "topics", "projects", "locations", "appointments", "facts",
 )
 
 
@@ -346,12 +436,15 @@ def upgrade(fields: dict) -> dict:
 
     A record written before roles were required has people with a null or
     missing ``role``; they take :data:`UNKNOWN_ROLE`. A record written before
-    ``references`` existed gets an empty list. The result is still a plain
+    ``references`` existed gets an empty list, and one written before ``facts``
+    existed gets no facts (``{"travel": null}``). The result is still a plain
     dict, so a reader of raw stored rows (``DocumentStore.iter_enriched``) sees
     the same shape as one that decodes them.
     """
     upgraded = {**fields}
     upgraded.setdefault("references", [])
+    if not isinstance(upgraded.get("facts"), dict):
+        upgraded["facts"] = {"travel": None}
     people = fields.get("people")
     if isinstance(people, list):
         upgraded["people"] = [
