@@ -94,7 +94,9 @@ fields (subject, sender, body, snippet) and anything a model wrote about them
 injection can repeat it. The sender's domain and the thread id come from mail
 headers, so they count too. Fields corpus computes or constrains to a closed
 vocabulary (ids, dates, counts, schema enums such as `importance` or `domain`,
-the data-class `label`) are trusted.
+the data-class `label`) are trusted, and so is the sanitized tier's `uri`, a
+provider web link that is projected only as an https URL (see
+[Tiers](tiers.md#the-message-link-uri)).
 
 The sanitized tier's untrusted columns are `sanitized_store.UNTRUSTED_COLS`,
 next to the projection itself; the full surface's row keys are

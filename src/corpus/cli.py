@@ -1,6 +1,6 @@
 """Command-line entrypoints for the corpus service.
 
-Subcommands: serve (sensitive | sanitized), ingest, scan, scan-gate, enrich, sync,
+Subcommands: serve <tier>, ingest, scan, scan-gate, enrich, sync,
 audit-secrets, export. ``mcp`` and ``index`` are deprecated aliases of ``serve``.
 """
 
@@ -19,34 +19,33 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 
 
-@main.group()
-def serve() -> None:
-    """Serve a storage tier's MCP tools over streamable HTTP."""
-
-
 def _serve(tier: str) -> None:
     from . import serving
+    from .tiers import tier as configured_tier
 
-    telemetry.configure(serving.tier_service(tier))
-    if tier == "sensitive":
+    try:
+        t = configured_tier(tier)
+        service = serving.tier_service(tier)
+    except ValueError as exc:  # a bad tiers file, or a tier it does not define
+        raise click.ClickException(str(exc)) from exc
+    telemetry.configure(service)
+    # The gauge counts the documents table, which only a source tier serves.
+    if t.projection is None:
         telemetry.register_corpus_size_gauge()
     serving.serve(tier)
 
 
-@serve.command(name="sensitive")
-def serve_sensitive() -> None:
-    """Serve the full surface (corpus): raw mail, for trusted local callers."""
-    _serve("sensitive")
+@main.command()
+@click.argument("tier")
+def serve(tier: str) -> None:
+    """Serve a storage tier's MCP tools over streamable HTTP.
 
-
-@serve.command(name="sanitized")
-def serve_sanitized() -> None:
-    """Serve the sanitized surface (corpus-index).
-
-    What a trust-downgraded consumer (Hermes) queries: summaries and priority
-    signal, never raw bodies.
+    TIER is any tier in the tiers file. By default: 'sensitive' (corpus), the
+    full surface with raw mail, for trusted local callers; and 'sanitized'
+    (corpus-index), what a trust-downgraded consumer (Hermes) queries: summaries
+    and priority signal, never raw bodies.
     """
-    _serve("sanitized")
+    _serve(tier)
 
 
 @main.command(deprecated=True)
@@ -127,23 +126,46 @@ def enrich(
 @main.command()
 @click.option("--source", default=None, help="filter by source id, e.g. gmail:personal")
 @click.option("--limit", default=0, type=int, help="sync at most N documents (0 = all)")
-@click.option("--force", is_flag=True, help="re-project documents already synced")
-def sync(source: str | None, limit: int, force: bool) -> None:
-    """Project enriched documents into the sanitized DB.
+@click.option(
+    "--reproject", "--force", "reproject", is_flag=True,
+    help="re-project every document, e.g. after the projection changed; re-embeds only "
+    "rows whose summary changed; --force is the old name",
+)
+@click.option(
+    "--tier", "tier_name", default="sanitized", show_default=True,
+    help="the projected tier to sync into (one with a projection in the tiers file)",
+)
+def sync(source: str | None, limit: int, reproject: bool, tier_name: str) -> None:
+    """Project enriched documents into a projected tier (default: sanitized).
 
-    The sanitized DB is the trust-downgraded tier a cloud consumer may query.
-    Drops raw content/subject/sender; gates summaries by sensitivity.
+    A projected tier is a trust-downgraded store a cloud consumer may query.
+    Its projection (source tier, columns, sensitivity gate) comes from the tiers
+    file. Drops raw content/subject/sender; gates summaries by sensitivity.
     """
+    from .tiers import tier
+
+    try:
+        dst = tier(tier_name)
+        if dst.projection is None:
+            raise ValueError(
+                f"tier {tier_name!r} is a source tier, with no projection to sync into"
+            )
+        src = tier(dst.projection.source)
+        dst_dsn, src_dsn = dst.store_dsn(), src.store_dsn()
+    except (ValueError, RuntimeError) as exc:
+        raise click.ClickException(str(exc)) from exc
     telemetry.configure("corpus-sync")
     from .sanitize import run_sync
     from .sanitized_store import SanitizedStore
     from .store import DocumentStore
-    from .tiers import tier
 
-    src, dst = tier("sensitive"), tier("sanitized")
     try:
-        with SanitizedStore(dst.dsn) as store, DocumentStore(src.dsn) as documents:
-            r = run_sync(store, documents=documents, source=source, limit=limit, force=force)
+        with SanitizedStore(dst_dsn, dst.schema) as store, \
+                DocumentStore(src_dsn, src.schema) as documents:
+            r = run_sync(
+                store, documents=documents, source=source, limit=limit, force=reproject,
+                gate=dst.projection.sensitivity_gate, fields=dst.projection.fields,
+            )
         click.echo(f"synced {r['synced']}, skipped {r['skipped']} of {r['scanned']} scanned")
     finally:
         telemetry.shutdown()

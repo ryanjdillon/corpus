@@ -62,10 +62,12 @@ timestamp directly would truncate the bound and drop its day.
 | `text`, `semantic` | yes | yes |
 | Most rows (or groups) per call | 100 | 100 |
 
-The policies are in-code defaults, `query.SANITIZED_POLICY` and
-`query.SENSITIVE_POLICY`. For now the caller passes the policy to the store
-with each query; the tier config (DIL-637, step 637a) will bind each tier to
-its policy, so a caller can no longer choose one. A spec that uses a filter, `group_by` dimension or order
+That is the default; each tier's policy is its `query` block in the tiers file
+(see [Tiers](tiers.md)), and without a file the defaults are
+`query.SANITIZED_POLICY` and `query.SENSITIVE_POLICY`. The server takes the
+policy from its tier and passes it to the store with each query, so a caller
+cannot choose one. A policy also sets `search_depth`, how deep a vector-ordered
+query pages (at most and by default 200). A spec that uses a filter, `group_by` dimension or order
 its policy does not allow is **refused** with a `ValueError` that names it, never
 quietly ignored. A caller that believes it filtered must never receive the
 unfiltered result. The same holds for a dimension the store has no expression
@@ -91,7 +93,7 @@ page to learn whether another page exists.
 | `oldest` | `sent_at` ascending, then `id` ascending; undated rows last | keyset on `(sent_at, id)` |
 | `priority` | importance, then time-sensitive, then `sent_at` descending, then `id` | offset |
 | `deadline` | `deadline` ascending (none last), then the priority order | offset |
-| (`semantic`) | vector distance, then `id` | offset, stopping after 200 rows (`query.SEMANTIC_DEPTH`) |
+| (`semantic`) | vector distance, then `id` | offset, stopping at the policy's `search_depth` (at most 200, `query.SEMANTIC_DEPTH`) |
 
 Every order ends in `id`, so it is total and a page boundary can neither skip
 nor repeat a row. Keyset pages cannot shift when new mail arrives. A position
@@ -125,8 +127,11 @@ none. `order` and `semantic` do not apply to a count and are refused with it.
 ## The MCP tools
 
 `serving.build_mcp(tier)` builds one MCP server per tier (`corpus serve
-sensitive`, `corpus serve sanitized`). The tier fixes the server name, the store
-and the policy; no tool takes a policy from its caller. Every tier serves four
+sensitive`, `corpus serve sanitized`). The tier (`tiers.tier(name)`) fixes the
+server name, the store and the policy; no tool takes a policy from its caller.
+What a tier serves follows from its kind: a source tier serves the documents
+table and the `corpus_*` presets, a projected tier its `messages` table and the
+`index_*` presets. Every tier serves four
 generic tools over this query model:
 
 | Tool | Arguments | Returns |
@@ -142,7 +147,9 @@ listed. A spec that uses anything else is still refused when called, before
 the store is opened. A field the tool does not take (`order` on `search`, a
 `cursor` on `aggregate`, a `semantic` vector anywhere) is refused too.
 
-Rows are the tier's projection: `sanitized_store.COLS` on the sanitized tier,
+Rows are the tier's projection: `sanitized_store.COLS` on the sanitized tier
+(including `uri`, an https link to the message, or null; see
+[Tiers](tiers.md#the-message-link-uri)),
 and `id`, `subject`, `from_addr`, `sent_at` and `label` on the sensitive tier
 (`get` there returns the full `content` and `meta`).
 
@@ -180,6 +187,7 @@ names, arguments and results as before:
   `since`, may be a duration before now; each is resolved on the first page
   and frozen in the cursor, as the generic tools' relative bounds are.
 
-The index reads through `CORPUS_INDEX_DATABASE_URL` as a read-only role. It opens
+The index reads through its tier's reader DSN (`CORPUS_INDEX_DATABASE_URL` by
+default) as a read-only role. It opens
 `SanitizedStore(..., read_only=True)`, which runs no DDL (even `CREATE ... IF NOT
 EXISTS` needs `CREATE` on the schema) and marks its transactions read-only.

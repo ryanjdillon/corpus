@@ -26,12 +26,15 @@ is unchanged.
 ## Serving
 
 `corpus serve <tier>` serves one storage tier's MCP tools over streamable HTTP,
-stateless (see [Query model](query.md#the-mcp-tools) for the tools):
+stateless (see [Query model](query.md#the-mcp-tools) for the tools). The server
+name, the store, the read-only reader and the query policy all come from the
+tier, defined in the tiers file (`CORPUS_TIERS_FILE`; see [Tiers](tiers.md)). By
+default:
 
 | Command | Serves as | Reads with |
 |---|---|---|
 | `corpus serve sensitive` | `corpus` | `CORPUS_DATABASE_URL` |
-| `corpus serve sanitized` | `CORPUS_INDEX_SERVER_NAME` (default `corpus-index`) | `CORPUS_INDEX_DATABASE_URL`, read-only |
+| `corpus serve sanitized` | `corpus-index` | `CORPUS_INDEX_DATABASE_URL`, read-only |
 
 | Variable | Purpose |
 |---|---|
@@ -163,20 +166,26 @@ image and audio parts pass through byte-identical.
 ## Sanitized tier
 
 `corpus sync` projects enriched documents into a separate, trust-downgraded
-database: summaries and the priority signal, never raw content, subject or
-sender. `corpus serve sanitized` serves that database to cloud-side consumers over
-MCP.
+database: summaries, the priority signal and an https message link, never raw
+content, subject or sender. `corpus serve sanitized` serves that database to
+cloud-side consumers over MCP. The sync's stores, source tier, columns and
+sensitivity gate come from the `sanitized` tier's `projection` (see
+[Tiers](tiers.md)); `corpus sync --reproject` re-projects every row after the
+projection changes, and `corpus sync --tier <name>` syncs into another projected
+tier the file defines.
 
 | Variable | Purpose |
 |---|---|
-| `CORPUS_SANITIZED_DATABASE_URL` | DSN the sync writes to |
-| `CORPUS_INDEX_DATABASE_URL` | DSN the index server reads with (a read-only role) |
-| `CORPUS_INDEX_SERVER_NAME` | the MCP server name the index serves under and reports in each result (default `corpus-index`) |
-| `CORPUS_SANITIZED_DB_SCHEMA` | schema of the sanitized `messages` table; empty means `CORPUS_DB_SCHEMA` |
-| `CORPUS_INDEX_SENSITIVITY_GATE` | sensitivity at which free-text summaries are withheld (default `high`) |
-| `CORPUS_TIER_ACCESS` | JSON map of tier name to the principals allowed to reach its MCP surface, e.g. `{"sanitized": ["orchestrator"]}`; a tier without an entry grants no one |
+| `CORPUS_TIERS_FILE` | path of the tiers file; unset means the built-in default tiers |
+| `CORPUS_SANITIZED_DATABASE_URL` | DSN the sync writes to (the default tiers' `dsn_env`) |
+| `CORPUS_INDEX_DATABASE_URL` | DSN the index server reads with, a read-only role (the default tiers' `reader_dsn_env`) |
 
-Set `CORPUS_SANITIZED_DB_SCHEMA` when several raw schemas feed one sanitized
-view. For example, one raw schema per mailbox (`mbx_kasserar`, `mbx_post`, …) can
+`CORPUS_INDEX_SERVER_NAME`, `CORPUS_SANITIZED_DB_SCHEMA`,
+`CORPUS_INDEX_SENSITIVITY_GATE` and `CORPUS_TIER_ACCESS` still work, as
+deprecated overrides of the tiers file, for one release; see
+[Tiers](tiers.md#environment-overrides-deprecated).
+
+Give the sanitized tier its own `store.schema` when several raw schemas feed one
+sanitized view. For example, one raw schema per mailbox (`mbx_kasserar`, `mbx_post`, …) can
 each run `corpus sync` into a shared `kbl` schema. Record ids include the source
 (`imap:<mailbox>::…`), so rows from different mailboxes never collide.

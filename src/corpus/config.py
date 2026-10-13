@@ -104,27 +104,22 @@ class Settings(BaseSettings):
     # 4 MiB default refuses a chat body carrying an inline image.
     scan_gate_grpc_max_message_bytes: int = 50 * 1024 * 1024
 
-    # corpus-index: the sanitized query surface. Connects as a restricted DB role
-    # (corpus_index_ro) that reads only the sanitized DB, never a raw body — the
-    # trust gate for cloud-model consumers. Empty => index disabled.
-    index_database_url: str = ""
-    # The name corpus-index serves under, and reports in every result envelope, so
-    # deployments of the same server (one per mailbox) can be told apart.
+    # The tiers file (YAML): each storage tier's store, server, access, query
+    # policy and projection, defined once (see ``tiers``). Empty => the built-in
+    # default tiers. DSNs are not in the file; each store names its DSN variable
+    # (CORPUS_DATABASE_URL, CORPUS_SANITIZED_DATABASE_URL, CORPUS_INDEX_DATABASE_URL
+    # by default).
+    tiers_file: str = ""
+
+    # Deprecated: overrides over the tiers file, kept for one release (see
+    # ``tiers.OVERRIDES``). Each applies only when set in the environment.
+    # The sanitized tier's server name (serve.server_name).
     index_server_name: str = "corpus-index"
-    # The sanitized DB the one-way sync WRITES to (corpus_app @ ai_sanitized). The
-    # projection drops raw content/subject/sender; only cloud-safe fields land here.
-    # Empty => sync disabled.
-    sanitized_database_url: str = ""
-    # Schema of the sanitized tier's ``messages`` table (sync writes it, the index
-    # reads it). Empty means ``db_schema``. Set it when several raw schemas (one
-    # per mailbox) project into one sanitized view.
+    # The sanitized tier's schema (store.schema); empty => not overridden.
     sanitized_db_schema: str = ""
-    # Who may reach each tier's MCP surface: tier name -> principal ids, as JSON,
-    # e.g. {"sanitized": ["orchestrator"]}. Deployment data, so empty by default
-    # (no tier grants anyone). See ``tiers.StorageTier.access``.
+    # Tier name -> principal ids, as JSON (serve.access of each tier named).
     tier_access: dict[str, list[str]] = {}
-    # sensitivity_level at/above which richer summary detail (abstract, key_points)
-    # is withheld from the sanitized surface. one_line + classification still shown.
+    # The sanitized tier's sensitivity gate (projection.sensitivity_gate).
     index_sensitivity_gate: str = "high"
 
 

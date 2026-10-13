@@ -30,6 +30,9 @@ class Record(BaseModel):
     labels: list[str] = Field(default_factory=list)
 
     headers: dict[str, str] = Field(default_factory=dict)
+    # Built by the fetcher from provider identifiers only (host, folder, message
+    # id), never from the message body or headers, so the sanitized tier can
+    # serve it as a trusted field (sanitize.web_link).
     uri: str | None = None
     body_text: str = ""
 

@@ -7,6 +7,7 @@ tests override the return value and assert on the parsed arguments.
 
 from __future__ import annotations
 
+import textwrap
 from unittest.mock import create_autospec
 
 import pytest
@@ -25,7 +26,9 @@ from corpus import (
     serving,
     store,
     telemetry,
+    tiers,
 )
+from corpus.config import settings
 from corpus.tiers import tier
 
 
@@ -207,17 +210,63 @@ def test_scan_gate_command(runner, configure, shutdown, scan_gate_serve):
     shutdown.assert_called_once()
 
 
+SANITIZED_DSN = "postgresql://sync-placeholder@db.example.com/ai_sanitized"
+
+
+@pytest.fixture
+def sanitized_dsn(monkeypatch):
+    """The sanitized tier's DSN variable, set to a placeholder."""
+    monkeypatch.setenv("CORPUS_SANITIZED_DATABASE_URL", SANITIZED_DSN)
+
+
 def test_sync_command(
-    runner, configure, shutdown, sanitized_store_cls, run_sync, document_store_cls
+    runner, configure, shutdown, sanitized_store_cls, run_sync, document_store_cls, sanitized_dsn
 ):
     run_sync.return_value = {"synced": 3, "skipped": 1, "scanned": 4}
     result = runner.invoke(cli.main, ["sync"])
     assert result.exit_code == 0, result.output
     assert configure.call_args.args == ("corpus-sync",)
     assert "synced 3" in result.output
-    assert run_sync.call_args.kwargs["source"] is None
-    # The sync reads the sensitive tier's documents.
-    assert document_store_cls.call_args.args == (tier("sensitive").dsn,)
+    # Everything comes from the sanitized tier: its store, its projection's
+    # source tier, gate and columns.
+    dst = tier("sanitized")
+    src = tier(dst.projection.source)
+    assert sanitized_store_cls.call_args.args == (SANITIZED_DSN, dst.schema)
+    assert document_store_cls.call_args.args == (src.dsn, src.schema)
+    kwargs = run_sync.call_args.kwargs
+    assert (kwargs["source"], kwargs["force"]) == (None, False)
+    assert (kwargs["gate"], kwargs["fields"]) == ("high", dst.projection.fields)
+
+
+@pytest.mark.parametrize("flag", ["--reproject", "--force"])
+def test_sync_reproject_re_projects_every_row(
+    runner, configure, shutdown, sanitized_store_cls, run_sync, document_store_cls, sanitized_dsn,
+    flag,
+):
+    result = runner.invoke(cli.main, ["sync", flag])
+    assert result.exit_code == 0, result.output
+    assert run_sync.call_args.kwargs["force"] is True
+
+
+def test_sync_without_the_sanitized_dsn_fails_naming_it(
+    runner, configure, sanitized_store_cls, run_sync, monkeypatch
+):
+    monkeypatch.delenv("CORPUS_SANITIZED_DATABASE_URL", raising=False)
+    result = runner.invoke(cli.main, ["sync"])
+    assert result.exit_code != 0
+    assert "CORPUS_SANITIZED_DATABASE_URL not set" in result.output
+    run_sync.assert_not_called()
+
+
+def test_serve_with_a_bad_tiers_file_fails_clearly(runner, configure, serve, monkeypatch):
+    def bad(name):
+        raise ValueError("tiers file /etc/corpus/tiers.yaml: Object missing required field `query`")
+
+    monkeypatch.setattr(serving, "tier_service", create_autospec(serving.tier_service, side_effect=bad))
+    result = runner.invoke(cli.main, ["serve", "sanitized"])
+    assert result.exit_code != 0
+    assert "missing required field `query`" in result.output
+    serve.assert_not_called()
 
 
 def test_ingest_command(runner, configure, shutdown, ingest_fn):
@@ -324,3 +373,79 @@ def test_export_command(runner, configure, shutdown, export_archive, document_st
     assert configure.call_args.args == ("corpus-export",)
     assert export_archive.call_args.kwargs["limit"] == 5
     shutdown.assert_called_once()
+
+
+PARTNER_DSN = "postgresql://partner-placeholder@db.example.com/ai_partner"
+#: The default tiers plus a third, projected one, defined only in the file.
+THREE_TIERS = """
+tiers:
+  - name: sensitive
+    store: {dsn_env: CORPUS_DATABASE_URL}
+    serve: {server_name: corpus}
+    query: {max_limit: 100, filterable: [label], aggregatable: [label], orders: [newest], text: true, semantic: true}
+  - name: sanitized
+    store: {dsn_env: CORPUS_SANITIZED_DATABASE_URL}
+    projection: {from: sensitive}
+    serve: {server_name: corpus-index}
+    query: {max_limit: 100, filterable: [domain], aggregatable: [domain], orders: [priority], text: true, semantic: true}
+  - name: partner
+    store: {dsn_env: PARTNER_DATABASE_URL, schema: partner}
+    projection: {from: sensitive, fields: [domain, one_line], sensitivity_gate: low}
+    serve: {server_name: corpus-partner}
+    query: {max_limit: 20, filterable: [domain], aggregatable: [domain], orders: [priority], text: true, semantic: true}
+"""
+
+
+@pytest.fixture
+def three_tiers(monkeypatch, tmp_path):
+    """The process's tiers loaded from a file defining a third tier, ``partner``."""
+    path = tmp_path / "tiers.yaml"
+    path.write_text(textwrap.dedent(THREE_TIERS))
+    monkeypatch.setattr(settings, "tiers_file", str(path))
+    monkeypatch.setenv("PARTNER_DATABASE_URL", PARTNER_DSN)
+    tiers.registry.cache_clear()
+    yield
+    tiers.registry.cache_clear()
+
+
+def test_sync_into_a_tier_defined_only_in_the_file(
+    runner, configure, shutdown, sanitized_store_cls, run_sync, document_store_cls, three_tiers
+):
+    result = runner.invoke(cli.main, ["sync", "--tier", "partner"])
+    assert result.exit_code == 0, result.output
+    src = tier("sensitive")
+    assert sanitized_store_cls.call_args.args == (PARTNER_DSN, "partner")
+    assert document_store_cls.call_args.args == (src.dsn, src.schema)
+    kwargs = run_sync.call_args.kwargs
+    assert (kwargs["gate"], kwargs["fields"]) == ("low", ("domain", "one_line"))
+
+
+@pytest.mark.parametrize(
+    ("name", "message"),
+    [("sensitive", "source tier"), ("raw", "no tier named 'raw'")],
+)
+def test_sync_refuses_a_tier_without_a_projection(
+    runner, configure, sanitized_store_cls, run_sync, three_tiers, name, message
+):
+    result = runner.invoke(cli.main, ["sync", "--tier", name])
+    assert result.exit_code != 0
+    assert message in result.output
+    run_sync.assert_not_called()
+
+
+def test_serve_a_tier_defined_only_in_the_file(
+    runner, configure, register_gauge, serve, three_tiers
+):
+    result = runner.invoke(cli.main, ["serve", "partner"])
+    assert result.exit_code == 0, result.output
+    # A projected tier serves the sanitized surface, under its own name.
+    assert configure.call_args.args == ("corpus-index",)
+    assert not register_gauge.called
+    serve.assert_called_once_with("partner")
+
+
+def test_serve_refuses_a_tier_the_file_does_not_define(runner, serve, three_tiers):
+    result = runner.invoke(cli.main, ["serve", "raw"])
+    assert result.exit_code != 0
+    assert "no tier named 'raw'" in result.output
+    serve.assert_not_called()
