@@ -10,7 +10,10 @@ from __future__ import annotations
 import hashlib
 import json
 import socket
+import sys
+import threading
 import time
+import traceback
 from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -51,6 +54,18 @@ def pytest_sessionfinish(session, exitstatus):
     """Write Docker-skip count so coverage_gate.py can detect partial runs."""
     if _docker_skip_count > 0:
         DOCKER_SKIP_FILE.write_text(str(_docker_skip_count))
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_unconfigure(config):
+    """Name any thread a test left running, so a crash at exit has a lead."""
+    frames = sys._current_frames()
+    for thread in threading.enumerate():
+        if thread is threading.main_thread():
+            continue
+        frame = frames.get(thread.ident)
+        where = "".join(traceback.format_stack(frame)[-2:]) if frame else ""
+        print(f"leftover thread {thread.name!r} (daemon={thread.daemon})\n{where}", file=sys.stderr)
 
 PG_IMAGE = "pgvector/pgvector:pg17"
 GREENMAIL_IMAGE = "greenmail/standalone:2.1.3"

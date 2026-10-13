@@ -35,6 +35,10 @@ downloaded. Unit tests are the default; the integration tier is opt-in.
 Coverage is ratcheted against `.github/coverage-baseline.txt`: it may not drop,
 and any increase must raise the baseline in the same change.
 
+At exit the test session prints any thread a test left running, with where it
+is, as a lead if the interpreter crashes after the tests pass. The CI test step
+sets `PYTHONFAULTHANDLER`, so such a crash prints the Python stack it hit.
+
 Locally, `just cov` (part of `just check`) does not enforce the baseline when the
 Docker-backed tests were skipped, because the unit tier alone covers less than the
 baseline; it prints an advisory line instead. CI always has Docker and always
