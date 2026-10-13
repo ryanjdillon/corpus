@@ -1,4 +1,4 @@
-"""Declarative trust tiers: each tier is defined once, in the tiers file.
+"""Declarative trust tiers: each tier is defined once, in the config file.
 
 A tier is a storage backend plus the policy around it: the MCP server that
 exposes it, the principals that may reach that server, the query policy the
@@ -6,12 +6,15 @@ server enforces, and, for a downgraded tier, the projection that derives its row
 from a source tier. Isolation lives in the backing store (a separate database per
 tier); the access boundary lives in the gateway in front of each server.
 
-The file (``CORPUS_TIERS_FILE``, YAML) is validated at startup into typed structs:
-an unknown key, a missing query policy or a projection from an unknown tier is an
-error, never ignored. Without a file the built-in :data:`DEFAULT` applies, which
-is the configuration corpus had before the file existed. The file never holds a
-DSN: each store names the environment variable that does, so secrets keep their
-injection path.
+The config file (``CORPUS_CONFIG_FILE``, YAML; ``CORPUS_TIERS_FILE`` is its
+deprecated name) holds the layer's configuration: ``tiers:`` here and
+``sources:`` (see :mod:`corpus.sources`). This module reads it, since it held the
+tiers first. It is validated at startup into typed structs: an unknown key, a
+missing query policy or a projection from an unknown tier is an error, never
+ignored. Without a file, or a file without ``tiers:``, the built-in
+:data:`DEFAULT` applies, which is the configuration corpus had before the file
+existed. The file never holds a DSN: each store names the environment variable
+that does, so secrets keep their injection path.
 
 ``serve`` and ``sync`` need nothing but :func:`tier`. A few older environment
 variables still override the file for one release (see :data:`OVERRIDES`).
@@ -33,6 +36,8 @@ from .config import Settings, settings
 from .enrichment import SensitivityLevel
 from .query import SANITIZED_POLICY, SENSITIVE_POLICY, QueryPolicy
 from .sanitized_store import COLS
+from .sources import Registry as SourceRegistry
+from .sources import SourceEntry
 
 log = logging.getLogger("corpus.tiers")
 
@@ -97,7 +102,7 @@ class ServeConfig(_Strict):
 
 
 class TierConfig(_Strict):
-    """One tier as written in the tiers file. ``query`` is required: no default policy."""
+    """One tier as written in the config file. ``query`` is required: no default policy."""
 
     name: _Name
     store: StoreConfig
@@ -106,14 +111,21 @@ class TierConfig(_Strict):
     projection: ProjectionConfig | None = None
 
 
-class TiersFile(_Strict):
-    """The tiers file: its tiers, most sensitive first."""
+class ConfigFile(_Strict):
+    """The config file.
 
-    tiers: list[TierConfig]
+    Attributes:
+        tiers: The tiers, most sensitive first; unset means :data:`DEFAULT`'s.
+        sources: The sources (see :mod:`corpus.sources`); unset means the
+            deprecated pre-file convention, and an empty list means none.
+    """
+
+    tiers: list[TierConfig] | None = None
+    sources: list[SourceEntry] | None = None
 
 
 #: The tiers without a file: exactly the configuration before the file existed.
-DEFAULT = TiersFile(tiers=[
+DEFAULT = ConfigFile(tiers=[
     TierConfig(
         name="sensitive",
         store=StoreConfig(dsn_env=SOURCE_DSN_ENV),
@@ -141,8 +153,12 @@ OVERRIDES = {
 }
 
 
-class TierConfigError(ValueError):
-    """The tiers file (or an override) is invalid."""
+class ConfigError(ValueError):
+    """The config file cannot be read or does not match its schema."""
+
+
+class TierConfigError(ConfigError):
+    """The tiers (in the file, or an override) do not fit together."""
 
 
 @dataclass(frozen=True)
@@ -200,24 +216,51 @@ class Tier:
         return self.reader_dsn
 
 
-def _decode(path: str) -> TiersFile:
+@functools.cache
+def _deprecated(message: str) -> None:
+    log.warning(message)
+
+
+def config_path(conf: Settings = settings) -> str | None:
+    """The config file's path: ``CORPUS_CONFIG_FILE``, else ``CORPUS_TIERS_FILE``.
+
+    Raises:
+        ConfigError: Both are set, to different files.
+    """
+    new, old = conf.config_file, conf.tiers_file
+    if new and old and new != old:
+        raise ConfigError(
+            f"CORPUS_CONFIG_FILE ({new}) and the deprecated CORPUS_TIERS_FILE ({old}) name "
+            "different files; set only CORPUS_CONFIG_FILE"
+        )
+    if old and not new:
+        _deprecated("CORPUS_TIERS_FILE is deprecated; set CORPUS_CONFIG_FILE to the same path")
+    return new or old or None
+
+
+def read(path: str) -> ConfigFile:
+    """Decode the config file at *path* against its schema (each part's own checks aside).
+
+    Raises:
+        ConfigError: The file cannot be read, is not YAML, or does not match.
+    """
     try:
         raw = Path(path).read_bytes()
     except OSError as exc:
-        raise TierConfigError(f"tiers file {path}: {exc.strerror or exc}") from None
+        raise ConfigError(f"config file {path}: {exc.strerror or exc}") from None
     try:
-        return msgspec.yaml.decode(raw, type=TiersFile)
+        return msgspec.yaml.decode(raw, type=ConfigFile)
     except msgspec.ValidationError as exc:
-        raise TierConfigError(f"tiers file {path}: {exc}") from None
+        raise ConfigError(f"config file {path}: {exc}") from None
     except msgspec.DecodeError as exc:
-        raise TierConfigError(f"tiers file {path}: not valid YAML: {exc}") from None
+        raise ConfigError(f"config file {path}: not valid YAML: {exc}") from None
 
 
-def _override(cfg: TiersFile, conf: Settings) -> TiersFile:
+def _override(cfg: ConfigFile, conf: Settings) -> ConfigFile:
     """*cfg* with each deprecated override that is set in *conf* applied."""
     set_ = conf.model_fields_set
     out = []
-    for t in cfg.tiers:
+    for t in cfg.tiers or ():
         if t.name == "sanitized":
             if "index_server_name" in set_:
                 t = msgspec.structs.replace(
@@ -245,16 +288,16 @@ def _override(cfg: TiersFile, conf: Settings) -> TiersFile:
     used = sorted(f"CORPUS_{name.upper()}" for name in OVERRIDES if name in set_)
     if used:
         log.warning(
-            "deprecated tier overrides set: %s; define them in the tiers file (CORPUS_TIERS_FILE)",
+            "deprecated tier overrides set: %s; define them in the config file (CORPUS_CONFIG_FILE)",
             ", ".join(used),
         )
-    return TiersFile(tiers=out)
+    return msgspec.structs.replace(cfg, tiers=out)
 
 
-def _validate(cfg: TiersFile, conf: Settings) -> None:
+def _validate(cfg: ConfigFile, conf: Settings) -> None:
     """Refuse a configuration whose tiers do not fit together."""
     if not cfg.tiers:
-        raise TierConfigError("tiers file defines no tiers")
+        raise TierConfigError("config file defines no tiers")
     by_name: dict[str, TierConfig] = {}
     servers: set[str] = set()
     for t in cfg.tiers:
@@ -295,15 +338,26 @@ def _validate(cfg: TiersFile, conf: Settings) -> None:
             )
 
 
-def load(path: str | None, conf: Settings = settings) -> TiersFile:
-    """Load and validate the tiers at *path* (``None``: :data:`DEFAULT`), overrides applied.
+def load(path: str | None, conf: Settings = settings) -> ConfigFile:
+    """Load and validate the file at *path* (``None``: :data:`DEFAULT`), overrides applied.
+
+    The whole file is validated, its sources included, so a command that reads
+    only the tiers (``serve``, ``sync``) still refuses a file whose sources do
+    not fit together. The result's ``tiers`` is always set: a file without
+    ``tiers:`` gets the default's.
 
     Raises:
-        TierConfigError: The file cannot be read, does not match the schema, or
-            its tiers do not fit together.
+        ConfigError: The file cannot be read or does not match the schema.
+        TierConfigError: Its tiers do not fit together.
+        SourceConfigError: Its sources do not fit together.
     """
-    cfg = _override(_decode(path) if path else DEFAULT, conf)
+    cfg = read(path) if path else DEFAULT
+    if cfg.tiers is None:
+        cfg = msgspec.structs.replace(cfg, tiers=DEFAULT.tiers)
+    cfg = _override(cfg, conf)
     _validate(cfg, conf)
+    if cfg.sources is not None:
+        SourceRegistry(cfg.sources)  # raises on what the schema cannot check
     return cfg
 
 
@@ -316,11 +370,11 @@ class Registry:
 
     def __init__(
         self,
-        cfg: TiersFile,
+        cfg: ConfigFile,
         conf: Settings = settings,
         environ: Mapping[str, str] = os.environ,
     ) -> None:
-        self._cfg = {t.name: t for t in cfg.tiers}
+        self._cfg = {t.name: t for t in cfg.tiers or ()}
         self._conf = conf
         self._environ = environ
 
@@ -378,8 +432,8 @@ class Registry:
 
 @functools.cache
 def registry() -> Registry:
-    """The process's tiers: ``CORPUS_TIERS_FILE``, or :data:`DEFAULT`, loaded once."""
-    return Registry(load(settings.tiers_file or None))
+    """The process's tiers: the config file's, or :data:`DEFAULT`, loaded once."""
+    return Registry(load(config_path()))
 
 
 def tier(name: str) -> Tier:

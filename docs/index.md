@@ -31,9 +31,9 @@ sanitized tier.
 
 - [Architecture](architecture.html) — the rendered module diagram of the pipeline.
 - [Configuration](configuration.md) — every `CORPUS_` setting.
-- [Tiers](tiers.md) — each trust tier defined once in the tiers file: store, server, access, query policy and projection.
+- [Tiers](tiers.md) — each trust tier defined once in the config file: store, server, access, query policy and projection.
 - [Pipeline](pipeline.md) — `corpus pipeline <source>`: ingest, enrich and sync one source in one resumable run.
-- [Sources](fetchers/index.md) — the fetcher protocol, plus [IMAP](fetchers/imap.md) and [Gmail](fetchers/gmail.md).
+- [Sources](fetchers/index.md) — the fetcher protocol, each source as one [config entry](fetchers/config.md), plus [IMAP](fetchers/imap.md) and [Gmail](fetchers/gmail.md).
 - [Database](database.md) — the pgvector store and sync state.
 - [Query model](query.md) — the structured query spec, each tier's query policy, and paging.
 - [MCP results](mcp-results.md) — the result envelope every MCP tool returns, and which fields to trust.

@@ -121,14 +121,15 @@ class Settings(BaseSettings):
     # 4 MiB default refuses a chat body carrying an inline image.
     scan_gate_grpc_max_message_bytes: int = 50 * 1024 * 1024
 
-    # The tiers file (YAML): each storage tier's store, server, access, query
-    # policy and projection, defined once (see ``tiers``). Empty => the built-in
-    # default tiers. DSNs are not in the file; each store names its DSN variable
-    # (CORPUS_DATABASE_URL, CORPUS_SANITIZED_DATABASE_URL, CORPUS_INDEX_DATABASE_URL
-    # by default).
+    # The config file (YAML): the storage tiers (``tiers:``, see ``tiers``) and
+    # the sources (``sources:``, see ``sources``), each defined once. Empty => the
+    # built-in default tiers and the pre-file source convention. No secret is in
+    # the file: a tier's store and a source's credentials name their variables.
+    config_file: str = ""
+    # Deprecated name of ``config_file``, from when it held only tiers.
     tiers_file: str = ""
 
-    # Deprecated: overrides over the tiers file, kept for one release (see
+    # Deprecated: overrides over the config file's tiers, kept for one release (see
     # ``tiers.OVERRIDES``). Each applies only when set in the environment.
     # The sanitized tier's server name (serve.server_name).
     index_server_name: str = "corpus-index"

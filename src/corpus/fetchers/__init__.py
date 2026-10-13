@@ -1,32 +1,31 @@
-"""Source fetchers: each yields normalized Records for ingestion."""
+"""Source fetchers: each yields normalized Records for ingestion.
+
+Which fetcher a source gets, and with what configuration, is decided by its
+entry in the config file: see :mod:`corpus.sources`.
+"""
 
 from __future__ import annotations
 
-from ..models import MAILBOX_NAME
+import warnings
+
 from .base import Fetcher
 
 __all__ = ["Fetcher", "build_fetcher"]
 
 
 def build_fetcher(source: str) -> Fetcher:
-    """Construct a fetcher from a source id like "imap:<name>".
+    """Deprecated: ``sources.build_fetcher(sources.source(source))``. Kept for one release.
 
-    The name becomes the ``mailbox`` of every message reference the source
-    produces (see docs/message-ids.md), so a name outside that grammar is refused
-    here rather than producing ids no consumer can parse.
+    Construct the fetcher for a source id like ``"imap:<name>"``, resolved through
+    the configured sources.
     """
+    from .. import sources
+
+    warnings.warn(
+        "corpus.fetchers.build_fetcher(id) is deprecated; use "
+        "corpus.sources.build_fetcher(corpus.sources.source(id))",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     kind, _, name = source.partition(":")
-    name = name or "default"
-    if kind in ("imap", "gmail") and not MAILBOX_NAME.fullmatch(name):
-        raise ValueError(
-            f"invalid source name {name!r}: use 1-32 of a-z, 0-9, '_' and '-'"
-        )
-    if kind == "imap":
-        from .imap import ImapFetcher
-
-        return ImapFetcher(name)
-    if kind == "gmail":
-        from .gmail import GmailFetcher
-
-        return GmailFetcher(name)
-    raise ValueError(f"unknown fetcher source: {source!r}")
+    return sources.build_fetcher(sources.source(f"{kind}:{name or 'default'}"))

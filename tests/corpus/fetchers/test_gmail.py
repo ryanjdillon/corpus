@@ -5,7 +5,8 @@ import base64
 import httpx
 import pytest
 
-from corpus.fetchers import build_fetcher
+from corpus.sources import GmailOptions, GmailSource, build_fetcher
+from corpus.sources import rfc822 as rfc822_mod
 
 LABELS = [{"id": "INBOX", "name": "INBOX"}, {"id": "Label_1", "name": "Receipts"}]
 
@@ -53,11 +54,17 @@ def _handler(request: httpx.Request) -> httpx.Response:
     return httpx.Response(404, json={})
 
 
-@pytest.fixture
-def gmail_env(monkeypatch):
-    monkeypatch.setenv("CORPUS_GMAIL_TEST_CLIENT_ID", "cid")
-    monkeypatch.setenv("CORPUS_GMAIL_TEST_CLIENT_SECRET", "csecret")
-    monkeypatch.setenv("CORPUS_GMAIL_TEST_REFRESH_TOKEN", "rtok")
+#: The credentials under the default prefix of "gmail:test" (placeholders).
+ENV = {
+    "CORPUS_GMAIL_TEST_CLIENT_ID": "cid",
+    "CORPUS_GMAIL_TEST_CLIENT_SECRET": "csecret",
+    "CORPUS_GMAIL_TEST_REFRESH_TOKEN": "rtok",
+}
+
+
+def _fetcher(environ=ENV, **options):
+    source = GmailSource(name="test", enrich=True, options=GmailOptions(**options))
+    return build_fetcher(source, environ=environ)
 
 
 @pytest.fixture
@@ -77,14 +84,21 @@ def mock_httpx(monkeypatch):
     monkeypatch.setattr(httpx, "post", post)
 
 
-def test_missing_creds_raises(monkeypatch):
-    monkeypatch.delenv("CORPUS_GMAIL_TEST_CLIENT_ID", raising=False)
-    with pytest.raises(ValueError):
-        build_fetcher("gmail:test")
+def test_missing_creds_raises_naming_the_variables():
+    environ = {k: v for k, v in ENV.items() if not k.endswith("_CLIENT_ID")}
+    with pytest.raises(ValueError, match="CORPUS_GMAIL_TEST_CLIENT_ID"):
+        _fetcher(environ)
 
 
-def test_backfill_yields_records_with_labels(gmail_env, mock_httpx):
-    fetcher = build_fetcher("gmail:test")
+def test_an_explicit_prefix_reads_its_own_variables(mock_httpx):
+    environ = {k.replace("CORPUS_GMAIL_TEST", "MAIL_HOME"): v for k, v in ENV.items()}
+    source = GmailSource(name="test", enrich=True, credentials_env_prefix="MAIL_HOME")
+    fetcher = build_fetcher(source, environ=environ)
+    assert [r.source_uid for r in fetcher.fetch(None)] == ["m1", "m2"]
+
+
+def test_backfill_yields_records_with_labels(mock_httpx):
+    fetcher = _fetcher()
     records = list(fetcher.fetch(None))
     assert [r.source_uid for r in records] == ["m1", "m2"]
     r = records[0]
@@ -98,21 +112,26 @@ def test_backfill_yields_records_with_labels(gmail_env, mock_httpx):
     assert fetcher.next_cursor() == "1000"  # mailbox historyId recorded
 
 
-def test_fetch_passes_known_ids_to_the_backfill(gmail_env, mock_httpx):
-    fetcher = build_fetcher("gmail:test")
+def test_fetch_passes_known_ids_to_the_backfill(mock_httpx):
+    fetcher = _fetcher()
     records = list(fetcher.fetch(None, known={"gmail:test::m1"}))
     assert [r.source_uid for r in records] == ["m2"]
 
 
-def test_label_filter_restricts_backfill(gmail_env, mock_httpx, monkeypatch):
-    monkeypatch.setenv("CORPUS_GMAIL_TEST_LABELS", "Receipts")
-    fetcher = build_fetcher("gmail:test")
+def test_label_filter_restricts_backfill(mock_httpx):
+    fetcher = _fetcher({**ENV, "CORPUS_GMAIL_TEST_LABELS": "Receipts"})
     records = list(fetcher.fetch(None))
     assert [r.source_uid for r in records] == ["m1"]  # label filter applied
 
 
-def test_incremental_uses_history(gmail_env, mock_httpx):
-    fetcher = build_fetcher("gmail:test")
+def test_the_labels_option_wins_over_the_variable(mock_httpx):
+    fetcher = _fetcher({**ENV, "CORPUS_GMAIL_TEST_LABELS": "Nope"}, labels=["Receipts"])
+    assert fetcher.labels == ["Receipts"]
+    assert [r.source_uid for r in fetcher.fetch(None)] == ["m1"]
+
+
+def test_incremental_uses_history(mock_httpx):
+    fetcher = _fetcher()
     records = list(fetcher.fetch("1000"))
     assert [r.source_uid for r in records] == ["m3"]
     assert fetcher.next_cursor() == "1005"
@@ -152,8 +171,8 @@ def paginated_httpx(monkeypatch):
     )
 
 
-def test_backfill_checkpoints_page_token(gmail_env, paginated_httpx):
-    fetcher = build_fetcher("gmail:test")
+def test_backfill_checkpoints_page_token(paginated_httpx):
+    fetcher = _fetcher()
     gen = fetcher.fetch(None)
     assert [next(gen).source_uid for _ in range(3)] == ["m1", "m2", "m3"]
     # Crossing the page boundary checkpoints the next page token mid-backfill.
@@ -164,27 +183,25 @@ def test_backfill_checkpoints_page_token(gmail_env, paginated_httpx):
     assert fetcher.next_cursor() == "1000"  # completed backfill -> historyId
 
 
-def test_backfill_resumes_from_page_token(gmail_env, paginated_httpx):
-    fetcher = build_fetcher("gmail:test")
+def test_backfill_resumes_from_page_token(paginated_httpx):
+    fetcher = _fetcher()
     # Resuming skips page 1 entirely — only page 2's messages are fetched.
     records = list(fetcher.fetch("backfill:p2"))
     assert [r.source_uid for r in records] == ["m3", "m4"]
     assert fetcher.next_cursor() == "1000"
 
 
-def test_unparseable_message_is_skipped_not_fatal(gmail_env, mock_httpx, monkeypatch):
+def test_unparseable_message_is_skipped_not_fatal(mock_httpx, monkeypatch):
     # A message that fails to parse must be skipped, not abort the whole backfill.
-    from corpus.fetchers import gmail as gmail_mod
-
     def boom(_raw_bytes):
         raise ValueError("bad message")
 
-    monkeypatch.setattr(gmail_mod.mailparser, "parse_from_bytes", boom)
-    fetcher = build_fetcher("gmail:test")
+    monkeypatch.setattr(rfc822_mod.mailparser, "parse_from_bytes", boom)
+    fetcher = _fetcher()
     assert list(fetcher.fetch(None)) == []  # both messages skipped, no exception
 
 
-def test_message_with_bad_body_is_skipped(gmail_env, mock_httpx, monkeypatch):
+def test_message_with_bad_body_is_skipped(mock_httpx, monkeypatch):
     # A message whose body can't be decoded (not just parsed) is also skipped.
     from corpus.fetchers import gmail as gmail_mod
 
@@ -192,5 +209,5 @@ def test_message_with_bad_body_is_skipped(gmail_env, mock_httpx, monkeypatch):
         raise ValueError("bad base64")
 
     monkeypatch.setattr(gmail_mod.base64, "urlsafe_b64decode", boom)
-    fetcher = build_fetcher("gmail:test")
+    fetcher = _fetcher()
     assert list(fetcher.fetch(None)) == []

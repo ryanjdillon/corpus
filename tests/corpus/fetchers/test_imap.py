@@ -4,20 +4,27 @@ import time
 
 import pytest
 
-from corpus.fetchers import build_fetcher
+from corpus.sources import ImapSource, build_fetcher
+from corpus.sources import rfc822 as rfc822_mod
 
 pytestmark = pytest.mark.integration
 
 USER = "user@example.org"
 
 
-def _configure(monkeypatch, imap_port: int, folders: str = "INBOX") -> None:
-    monkeypatch.setenv("CORPUS_IMAP_TEST_HOST", "127.0.0.1")
-    monkeypatch.setenv("CORPUS_IMAP_TEST_PORT", str(imap_port))
-    monkeypatch.setenv("CORPUS_IMAP_TEST_USER", USER)
-    monkeypatch.setenv("CORPUS_IMAP_TEST_PASSWORD", "test")
-    monkeypatch.setenv("CORPUS_IMAP_TEST_SSL", "false")
-    monkeypatch.setenv("CORPUS_IMAP_TEST_FOLDERS", folders)
+SOURCE = ImapSource(name="test", enrich=True)
+
+
+def _configure(imap_port: int, folders: str = "INBOX") -> dict[str, str]:
+    """The variables of "imap:test" under its default prefix, for the GreenMail server."""
+    return {
+        "CORPUS_IMAP_TEST_HOST": "127.0.0.1",
+        "CORPUS_IMAP_TEST_PORT": str(imap_port),
+        "CORPUS_IMAP_TEST_USER": USER,
+        "CORPUS_IMAP_TEST_PASSWORD": "test",
+        "CORPUS_IMAP_TEST_SSL": "false",
+        "CORPUS_IMAP_TEST_FOLDERS": folders,
+    }
 
 
 def _fetch_with_retry(fetcher, cursor, expected, timeout=15.0):
@@ -30,8 +37,8 @@ def _fetch_with_retry(fetcher, cursor, expected, timeout=15.0):
     return list(fetcher.fetch(cursor))
 
 
-def test_fetch_parses_messages(greenmail, monkeypatch):
-    _configure(monkeypatch, greenmail["imap_port"])
+def test_fetch_parses_messages(greenmail):
+    env = _configure(greenmail["imap_port"])
     greenmail["send"](USER, "Kayak trip", "Let's paddle Saturday.")
     greenmail["send"](
         USER,
@@ -41,7 +48,7 @@ def test_fetch_parses_messages(greenmail, monkeypatch):
         extra_headers={"List-Unsubscribe": "<mailto:unsub@x>"},
     )
 
-    fetcher = build_fetcher("imap:test")
+    fetcher = build_fetcher(SOURCE, environ=env)
     records = _fetch_with_retry(fetcher, None, expected=2)
 
     assert len(records) == 2
@@ -59,31 +66,29 @@ def test_fetch_parses_messages(greenmail, monkeypatch):
     assert any(k.lower() == "list-unsubscribe" for k in promo.headers)
 
 
-def test_incremental_cursor(greenmail, monkeypatch):
-    _configure(monkeypatch, greenmail["imap_port"])
+def test_incremental_cursor(greenmail):
+    env = _configure(greenmail["imap_port"])
     greenmail["send"](USER, "First", "one")
     greenmail["send"](USER, "Second", "two")
 
-    fetcher = build_fetcher("imap:test")
+    fetcher = build_fetcher(SOURCE, environ=env)
     first = _fetch_with_retry(fetcher, None, expected=2)
     assert len(first) == 2
     cursor = fetcher.next_cursor()
     assert cursor and ":" in cursor
 
     greenmail["send"](USER, "Third", "three")
-    fetcher2 = build_fetcher("imap:test")
+    fetcher2 = build_fetcher(SOURCE, environ=env)
     later = _fetch_with_retry(fetcher2, cursor, expected=1)
     assert [r.subject for r in later] == ["Third"]
 
 
 def test_unparseable_message_is_skipped(greenmail, monkeypatch):
     # A message that fails to parse must be skipped, not abort the fetch.
-    _configure(monkeypatch, greenmail["imap_port"])
+    env = _configure(greenmail["imap_port"])
     greenmail["send"](USER, "Boom", "body")
 
     from imapclient import IMAPClient
-
-    from corpus.fetchers import imap as imap_mod
 
     deadline = time.time() + 15
     while time.time() < deadline:  # wait until the message is in the mailbox
@@ -97,16 +102,16 @@ def test_unparseable_message_is_skipped(greenmail, monkeypatch):
     def boom(_raw):
         raise ValueError("bad message")
 
-    monkeypatch.setattr(imap_mod.mailparser, "parse_from_bytes", boom)
-    fetcher = build_fetcher("imap:test")
+    monkeypatch.setattr(rfc822_mod.mailparser, "parse_from_bytes", boom)
+    fetcher = build_fetcher(SOURCE, environ=env)
     assert list(fetcher.fetch(None)) == []  # skipped, no exception
     cursor = fetcher.next_cursor()
     assert cursor and ":" in cursor  # cursor still advances past the bad message
 
 
-def test_catalogs_all_folders(greenmail, monkeypatch):
+def test_catalogs_all_folders(greenmail):
     # Unset folder selection => discover and catalog every folder.
-    _configure(monkeypatch, greenmail["imap_port"], folders="all")
+    env = _configure(greenmail["imap_port"], folders="all")
     greenmail["send"](USER, "Inbox item", "in the inbox")
 
     from imapclient import IMAPClient
@@ -119,7 +124,7 @@ def test_catalogs_all_folders(greenmail, monkeypatch):
             b"From: sender@example.org\r\nSubject: Archived item\r\n\r\narchived body\r\n",
         )
 
-    fetcher = build_fetcher("imap:test")
+    fetcher = build_fetcher(SOURCE, environ=env)
     records = _fetch_with_retry(fetcher, None, expected=2)
 
     by_folder = {r.folder: r for r in records}

@@ -14,6 +14,7 @@ import httpx
 import pytest
 
 from corpus.fetchers.gmail import MAX_CONSECUTIVE_REFUSALS, GmailFetcher
+from corpus.sources import GmailSource
 
 RAW = base64.urlsafe_b64encode(
     b"From: a@example.org\r\nTo: b@example.org\r\nSubject: hi\r\n"
@@ -32,10 +33,12 @@ def refusal(status: int, reason: str) -> httpx.Response:
 
 
 @pytest.fixture
-def fetcher(monkeypatch):
-    for key, value in {"CLIENT_ID": "cid", "CLIENT_SECRET": "cs", "REFRESH_TOKEN": "rt"}.items():
-        monkeypatch.setenv(f"CORPUS_GMAIL_UNIT_{key}", value)
-    return GmailFetcher("unit")
+def fetcher():
+    environ = {
+        f"CORPUS_GMAIL_UNIT_{key}": value
+        for key, value in {"CLIENT_ID": "cid", "CLIENT_SECRET": "cs", "REFRESH_TOKEN": "rt"}.items()
+    }
+    return GmailFetcher(GmailSource(name="unit", enrich=True), environ=environ)
 
 
 @pytest.fixture

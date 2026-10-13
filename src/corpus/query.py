@@ -217,7 +217,7 @@ def parse_spec(data: Mapping[str, Any]) -> QuerySpec:
 class QueryPolicy(msgspec.Struct, forbid_unknown_fields=True, frozen=True, kw_only=True):
     """What one tier's query surface allows.
 
-    A tier's ``query`` block in the tiers file decodes straight into this struct,
+    A tier's ``query`` block in the config file decodes straight into this struct,
     so an unknown key, filter, dimension or order there is refused at startup.
 
     Attributes:

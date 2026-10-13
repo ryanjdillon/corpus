@@ -1,12 +1,15 @@
 """Gmail API fetcher (OAuth), used instead of IMAP so message labels are available.
 
-Credentials come from the environment, namespaced by fetcher name. For
+Credentials come from the environment, under the source's credential prefix
+(``sources.Source.env_prefix``; by default ``CORPUS_GMAIL_<NAME>``). For
 "gmail:personal":
 
     CORPUS_GMAIL_PERSONAL_CLIENT_ID=...
     CORPUS_GMAIL_PERSONAL_CLIENT_SECRET=...
     CORPUS_GMAIL_PERSONAL_REFRESH_TOKEN=...          # from scripts/gmail_oauth.py
     CORPUS_GMAIL_PERSONAL_LABELS=INBOX,Receipts      # optional; empty = all mail
+
+The source's ``options.labels``, when set, is used instead of ``LABELS``.
 
 Only a refresh token is stored; access tokens are minted per run. Incremental
 sync uses Gmail's historyId: a full backfill on the first run records the
@@ -20,14 +23,13 @@ import base64
 import logging
 import os
 import time
-from collections.abc import Callable, Container, Iterator
-from datetime import UTC, datetime
+from collections.abc import Callable, Container, Iterator, Mapping
 
 import httpx
-import mailparser
 
 from ..models import Record
-from .base import as_text
+from ..sources import GmailSource
+from ..sources.rfc822 import record_from_rfc822
 
 log = logging.getLogger("corpus.fetchers.gmail")
 
@@ -38,10 +40,6 @@ _API = "https://gmail.googleapis.com/gmail/v1/users/me"
 # messages.list page token to resume from. A plain (numeric) cursor is a
 # completed backfill's historyId, used for incremental sync.
 _BACKFILL_PREFIX = "backfill:"
-
-
-def _env(name: str, key: str, default: str = "") -> str:
-    return os.environ.get(f"CORPUS_GMAIL_{name.upper()}_{key}", default)
 
 
 # Gmail signals short-term quota exhaustion with 403 (or 429) and one of these
@@ -91,17 +89,27 @@ def _retry_delay(resp: httpx.Response, attempt: int) -> float:
 class GmailFetcher:
     """Catalog a Gmail account over the API, using historyId for incremental sync."""
 
-    def __init__(self, name: str) -> None:
+    def __init__(self, source: GmailSource, *, environ: Mapping[str, str] = os.environ) -> None:
         self._refused_in_a_row = 0
-        self.name = name
-        self.source = f"gmail:{name}"
-        self.client_id = _env(name, "CLIENT_ID")
-        self.client_secret = _env(name, "CLIENT_SECRET")
-        self.refresh_token = _env(name, "REFRESH_TOKEN")
-        labels = _env(name, "LABELS", "")
-        self.labels = [x.strip() for x in labels.split(",") if x.strip()] or None
+        self.name = source.name
+        self.source = source.id
+
+        def env(key: str) -> str:
+            return environ.get(source.env_name(key), "")
+
+        self.client_id = env("CLIENT_ID")
+        self.client_secret = env("CLIENT_SECRET")
+        self.refresh_token = env("REFRESH_TOKEN")
+        if source.options.labels is not None:
+            self.labels: list[str] | None = list(source.options.labels)
+        else:
+            self.labels = [x.strip() for x in env("LABELS").split(",") if x.strip()] or None
         if not (self.client_id and self.client_secret and self.refresh_token):
-            raise ValueError(f"Gmail fetcher {name!r} missing client id/secret/refresh token")
+            raise ValueError(
+                f"Gmail source {source.id!r} missing client id/secret/refresh token: set "
+                f"{source.env_name('CLIENT_ID')}, {source.env_name('CLIENT_SECRET')} and "
+                f"{source.env_name('REFRESH_TOKEN')}"
+            )
         self._next_cursor: str | None = None
         self._label_names: dict[str, str] = {}
         self._account: str | None = None
@@ -310,26 +318,12 @@ class GmailFetcher:
             return None
 
     def _to_record(self, mid: str, thread_id: str | None, raw: bytes, labels: list[str]) -> Record:
-        parsed = mailparser.parse_from_bytes(raw)
-        headers = {k: str(v) for k, v in (parsed.headers or {}).items()}
-        sent_at: datetime | None = parsed.date
-        if sent_at and sent_at.tzinfo is None:
-            sent_at = sent_at.replace(tzinfo=UTC)
-        from_addr = parsed.from_[0][1] if parsed.from_ else None
-        to_addrs = [addr for _, addr in (parsed.to or [])]
-        body = parsed.text_plain[0] if parsed.text_plain else (parsed.body or "")
-        return Record(
-            source=self.source,
-            source_uid=mid,  # Gmail message id is unique per account
-            kind="email",
+        return record_from_rfc822(
+            self.source,
+            mid,  # Gmail message id is unique per account
+            raw,
             account=self._account,
             thread_id=thread_id,
-            from_addr=from_addr,
-            to_addrs=to_addrs,
-            subject=as_text(parsed.subject),
-            sent_at=sent_at,
             labels=labels,
-            headers=headers,
             uri=f"https://mail.google.com/mail/u/0/#all/{mid}",
-            body_text=body or "",
         )

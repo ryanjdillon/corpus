@@ -751,7 +751,7 @@ def build_mcp(
     embed: Embed = embed_query,
     now: Clock = now_utc,
 ) -> FastMCP:
-    """Build the MCP server for *tier*, a name in the tiers file.
+    """Build the MCP server for *tier*, a name in the config file.
 
     Args:
         tier: The storage tier to serve; it fixes the server name, the policy and

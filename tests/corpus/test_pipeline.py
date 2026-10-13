@@ -13,14 +13,22 @@ from unittest.mock import create_autospec
 
 import pytest
 
-from corpus import tiers
+from corpus import sources, tiers
 from corpus.config import settings
 from corpus.enricher import Enricher, EnrichUnavailableError
 from corpus.enrichment import Category, Enrichment
 from corpus.fetchers import Fetcher
 from corpus.models import Record
-from corpus.pipeline import DEFAULT_STAGES, Options, StageFailedError, run, select
+from corpus.pipeline import (
+    DEFAULT_STAGES,
+    INGEST_BATCH_SIZE,
+    Options,
+    StageFailedError,
+    run,
+    select,
+)
 from corpus.sanitized_store import SanitizedStore
+from corpus.sources import ImapSource, PipelineOptions
 from corpus.store import get_cursor
 
 SOURCE = "imap:test"
@@ -65,11 +73,14 @@ def enricher() -> Enricher:
 
 @pytest.fixture
 def default_tiers(monkeypatch):
-    """The built-in tiers, whatever the environment's tiers file."""
+    """The built-in tiers and the pre-file sources, whatever the environment's config file."""
+    monkeypatch.setattr(settings, "config_file", "")
     monkeypatch.setattr(settings, "tiers_file", "")
     tiers.registry.cache_clear()
+    sources.registry.cache_clear()
     yield
     tiers.registry.cache_clear()
+    sources.registry.cache_clear()
 
 
 @pytest.fixture
@@ -112,8 +123,38 @@ def test_a_bad_selection_is_refused(names, message):
 
 
 def test_a_source_that_may_not_be_enriched_is_refused_before_ingest(fetcher, enricher):
-    with pytest.raises(ValueError, match="not declared enrichable"):
-        run("youtube:@chan", fetcher=fetcher, enricher=enricher)
+    with pytest.raises(ValueError, match="'imap:test' is not declared enrichable"):
+        run(ImapSource(name="test", enrich=False), fetcher=fetcher, enricher=enricher)
+    fetcher.fetch.assert_not_called()
+
+
+def test_an_unconfigured_source_is_refused_before_ingest(fetcher, default_tiers):
+    with pytest.raises(ValueError, match="unknown fetcher source: 'youtube:@chan'"):
+        run("youtube:@chan", fetcher=fetcher)
+    fetcher.fetch.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("overrides", "resolved"),
+    [
+        (Options(), PipelineOptions(batch_size=20, limit=400, tier="partner")),
+        (Options(limit=0), PipelineOptions(batch_size=20, limit=0, tier="partner")),
+        (Options(tier="sanitized", batch_size=5), PipelineOptions(batch_size=5, limit=400)),
+    ],
+)
+def test_options_override_the_sources_one_by_one(overrides, resolved):
+    entry = PipelineOptions(batch_size=20, limit=400, tier="partner")
+    assert overrides.over(entry) == resolved
+
+
+def test_with_neither_a_flag_nor_an_entry_value_ingest_batches_by_the_shared_default():
+    assert Options().over(PipelineOptions()).batch_size == INGEST_BATCH_SIZE
+
+
+def test_the_sources_tier_is_checked_before_ingest(fetcher, default_tiers):
+    source = ImapSource(name="test", enrich=True, pipeline=PipelineOptions(tier="nope"))
+    with pytest.raises(ValueError, match="no tier named 'nope'"):
+        run(source, ("ingest", "sync"), fetcher=fetcher)
     fetcher.fetch.assert_not_called()
 
 
@@ -168,6 +209,35 @@ def test_ingest_takes_the_whole_fetch_in_one_default_batch(stores, fetcher):
     run(SOURCE, ("ingest",), fetcher=fetcher)
 
     assert fetcher.next_cursor.call_count == 1 + 1
+
+
+@pytest.mark.integration
+def test_the_source_entry_sets_the_runs_options(stores, fetcher, enricher):
+    source = ImapSource(name="test", enrich=True, pipeline=PipelineOptions(limit=1, batch_size=1))
+
+    counts = run(source, fetcher=fetcher, enricher=enricher)
+
+    assert counts["ingest"] == {"ingested": 3}
+    assert fetcher.next_cursor.call_count == 3 + 1  # one batch per record
+    assert (counts["enrich"]["enriched"], counts["sync"]["synced"]) == (1, 1)
+
+
+@pytest.mark.integration
+def test_a_source_that_may_not_be_enriched_still_ingests_and_syncs(stores, fetcher):
+    # Only the enrich stage asks whether the source may be enriched.
+    counts = run(ImapSource(name="test", enrich=False), ("ingest", "sync"), fetcher=fetcher)
+
+    assert counts["ingest"] == {"ingested": 3}
+    assert counts["sync"]["synced"] == 0  # nothing enriched, so nothing to project
+
+
+@pytest.mark.integration
+def test_an_option_overrides_the_source_entry(stores, fetcher, enricher):
+    source = ImapSource(name="test", enrich=True, pipeline=PipelineOptions(limit=1))
+
+    counts = run(source, options=Options(limit=2), fetcher=fetcher, enricher=enricher)
+
+    assert (counts["enrich"]["enriched"], counts["sync"]["synced"]) == (2, 2)
 
 
 @pytest.mark.integration

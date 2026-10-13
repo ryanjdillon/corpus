@@ -62,7 +62,7 @@ timestamp directly would truncate the bound and drop its day.
 | `text`, `semantic` | yes | yes |
 | Most rows (or groups) per call | 100 | 100 |
 
-That is the default; each tier's policy is its `query` block in the tiers file
+That is the default; each tier's policy is its `query` block in the config file
 (see [Tiers](tiers.md)), and without a file the defaults are
 `query.SANITIZED_POLICY` and `query.SENSITIVE_POLICY`. The server takes the
 policy from its tier and passes it to the store with each query, so a caller

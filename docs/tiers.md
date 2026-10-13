@@ -3,13 +3,18 @@
 A storage tier is a store plus the policy around it: the MCP server that exposes
 it, the principals the gateway lets reach that server, the query policy the
 server enforces and, for a downgraded tier, the projection that derives its rows
-from a source tier. Each tier is defined once, in the **tiers file**, and
+from a source tier. Each tier is defined once, under `tiers:` in the **config
+file**, and
 `corpus serve <tier>`, `corpus sync [--tier <tier>]` and the sync stage of
 `corpus pipeline [--tier <tier>]` take everything from it (`tiers.tier(name)`).
 
-Set `CORPUS_TIERS_FILE` to the file's path. Without it, the [built-in
-default](#the-default) applies, which is the configuration corpus had before the
-file existed, so a deployment that sets no file is unchanged.
+Set `CORPUS_CONFIG_FILE` to the file's path. Without it, or in a file without
+`tiers:`, the [built-in default](#the-default) applies, which is the
+configuration corpus had before the file existed, so a deployment that sets no
+file is unchanged. The same file holds the sources, under `sources:` (see
+[Source configuration](fetchers/config.md)). `CORPUS_TIERS_FILE`, the file's name
+from when it held only tiers, still works and logs a deprecation warning;
+setting it and `CORPUS_CONFIG_FILE` to different paths is an error.
 
 ## The file
 
@@ -76,8 +81,9 @@ the variable.
 
 ### Validation
 
-The file is checked when `serve` or `sync` starts, and an invalid file stops the
-command with an error that names the problem. Nothing is ignored:
+The file is checked when `serve` or `sync` starts (its `sources:` against their
+schema too), and an invalid file stops the command with an error that names the
+problem. Nothing is ignored:
 
 - an unknown key, at any level, is an error;
 - every tier needs a complete `query` policy, since a tier without one would
@@ -105,7 +111,7 @@ Without a file, the tiers are:
 | Query policy | `query.SENSITIVE_POLICY` | `query.SANITIZED_POLICY` |
 | Projection | (source tier) | from `sensitive`, every column, gate `high` |
 
-`tiers.DEFAULT` is itself a valid tiers file. To start a file from it, encode it
+`tiers.DEFAULT` is itself a valid config file. To start a file from it, encode it
 as YAML: `python -c "import msgspec, corpus.tiers as t;
 print(msgspec.yaml.encode(t.DEFAULT).decode())"`.
 

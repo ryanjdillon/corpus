@@ -1,7 +1,8 @@
 """Generic IMAP fetcher.
 
-Credentials come from the environment, namespaced by the fetcher name so several
-mailboxes can be configured independently, e.g. for name "example":
+Credentials come from the environment, under the source's credential prefix
+(``sources.Source.env_prefix``; by default ``CORPUS_IMAP_<NAME>``), so several
+mailboxes can be configured independently, e.g. for "imap:example":
 
     CORPUS_IMAP_EXAMPLE_HOST=imap.example.com
     CORPUS_IMAP_EXAMPLE_PORT=993
@@ -12,6 +13,7 @@ mailboxes can be configured independently, e.g. for name "example":
 
 FOLDERS selects which mailboxes to catalog: a comma-separated list, or unset
 (or "all"/"*") to discover and catalog every selectable folder on the account.
+The source's ``options.folders``, when set, is used instead.
 
 Incremental sync is tracked per folder: the cursor is a JSON object mapping each
 folder to "<uidvalidity>:<uid>" (its highest seen UID). A UIDVALIDITY change for
@@ -26,46 +28,59 @@ from __future__ import annotations
 import json
 import logging
 import os
-from collections.abc import Callable, Container, Iterator
-from datetime import UTC, datetime
+from collections.abc import Callable, Container, Iterator, Mapping
 from urllib.parse import quote
 
-import mailparser
 from imapclient import IMAPClient
 
 from ..models import Record
-from .base import as_text
+from ..sources import ImapSource
+from ..sources.rfc822 import MESSAGE_ID, record_from_rfc822
 
 log = logging.getLogger("corpus.fetchers.imap")
 
 _ALL = {"", "all", "*"}
 
 
-def _env(name: str, key: str, default: str = "") -> str:
-    return os.environ.get(f"CORPUS_IMAP_{name.upper()}_{key}", default)
-
-
 class ImapFetcher:
     """Catalog an IMAP account, tracking incremental sync per folder by UID."""
 
-    def __init__(self, name: str, *, connect: Callable[..., IMAPClient] = IMAPClient) -> None:
-        self.name = name
+    def __init__(
+        self,
+        source: ImapSource,
+        *,
+        environ: Mapping[str, str] = os.environ,
+        connect: Callable[..., IMAPClient] = IMAPClient,
+    ) -> None:
+        self.name = source.name
         self._connect = connect
-        self.source = f"imap:{name}"
-        self.host = _env(name, "HOST")
-        self.port = int(_env(name, "PORT", "993"))
-        self.user = _env(name, "USER")
-        self.password = _env(name, "PASSWORD")
-        folders = _env(name, "FOLDERS", "")
+        self.source = source.id
+
+        def env(key: str, default: str = "") -> str:
+            return environ.get(source.env_name(key), default)
+
+        self.host = env("HOST")
+        self.port = int(env("PORT", "993"))
+        self.user = env("USER")
+        self.password = env("PASSWORD")
         # None => discover all selectable folders at fetch time.
-        self.folders: list[str] | None = (
-            None
-            if folders.strip().lower() in _ALL
-            else [f.strip() for f in folders.split(",") if f.strip()]
-        )
-        self.ssl = _env(name, "SSL", "true").lower() not in {"false", "0", "no"}
+        self.folders: list[str] | None
+        if source.options.folders is not None:
+            self.folders = list(source.options.folders)
+        else:
+            folders = env("FOLDERS")
+            self.folders = (
+                None
+                if folders.strip().lower() in _ALL
+                else [f.strip() for f in folders.split(",") if f.strip()]
+            )
+        self.ssl = env("SSL", "true").lower() not in {"false", "0", "no"}
         if not (self.host and self.user and self.password):
-            raise ValueError(f"IMAP fetcher {name!r} missing host/user/password env")
+            raise ValueError(
+                f"IMAP source {source.id!r} missing host/user/password env: set "
+                f"{source.env_name('HOST')}, {source.env_name('USER')} and "
+                f"{source.env_name('PASSWORD')}"
+            )
         self._next_cursor: str | None = None
 
     def fetch(self, cursor: str | None, known: Container[str] = frozenset()) -> Iterator[Record]:
@@ -128,30 +143,17 @@ class ImapFetcher:
         return discovered
 
     def _to_record(self, folder: str, validity: int, uid: int, raw: bytes) -> Record:
-        parsed = mailparser.parse_from_bytes(raw)
-        headers = {k: str(v) for k, v in (parsed.headers or {}).items()}
-        sent_at: datetime | None = parsed.date
-        if sent_at and sent_at.tzinfo is None:
-            sent_at = sent_at.replace(tzinfo=UTC)
-        from_addr = parsed.from_[0][1] if parsed.from_ else None
-        to_addrs = [addr for _, addr in (parsed.to or [])]
-        body = parsed.text_plain[0] if parsed.text_plain else (parsed.body or "")
-        return Record(
-            source=self.source,
+        return record_from_rfc822(
+            self.source,
             # A UID is unique only within one folder and one UIDVALIDITY epoch.
-            source_uid=f"{folder}:{validity}:{uid}",
-            kind="email",
+            f"{folder}:{validity}:{uid}",
+            raw,
             account=self.user,
             folder=folder,
-            thread_id=headers.get("Message-ID"),
-            from_addr=from_addr,
-            to_addrs=to_addrs,
-            subject=as_text(parsed.subject),
-            sent_at=sent_at,
-            headers=headers,
             # RFC 5092 IMAP URL.
             uri=f"imap://{self.host}/{quote(folder)};UIDVALIDITY={validity}/;UID={uid}",
-            body_text=body or "",
+            # IMAP has no thread id of its own; the Message-ID stands in for one.
+            thread_id=MESSAGE_ID,
         )
 
     @staticmethod

@@ -9,8 +9,10 @@ import time
 from .classify import classify
 from .config import settings
 from .embeddings import Embedder, EmbedUnavailableError
-from .fetchers import Fetcher, build_fetcher
+from .fetchers import Fetcher
 from .models import Record
+from .sources import build_fetcher
+from .sources import source as configured_source
 from .store import DocumentStore, get_cursor, set_cursor, to_document
 from .telemetry import documents_counter, embed_batch_size, embed_duration
 
@@ -59,7 +61,7 @@ def _embed_text(record: Record) -> str:
 
 def ingest(
     source: str,
-    batch_size: int = 50,
+    batch_size: int | None = None,
     *,
     fetcher: Fetcher | None = None,
     documents: DocumentStore | None = None,
@@ -67,11 +69,15 @@ def ingest(
     """Ingest one source: fetch, classify, embed, and upsert its records.
 
     Returns the number of documents written. `fetcher` defaults to the fetcher
-    built for `source`; inject one to drive ingestion from an alternate source.
-    `documents` is the store written to; a caller that passes one owns it, and
-    otherwise the run opens and closes its own.
+    built for the configured `source`; inject one to drive ingestion from an
+    alternate source. `batch_size` defaults to the source's
+    ``pipeline.batch_size``. `documents` is the store written to; a caller that
+    passes one owns it, and otherwise the run opens and closes its own.
     """
-    fetcher = build_fetcher(source) if fetcher is None else fetcher
+    if fetcher is None or batch_size is None:
+        entry = configured_source(source)
+        fetcher = build_fetcher(entry) if fetcher is None else fetcher
+        batch_size = entry.pipeline.override(batch_size=batch_size).batch_size
     if documents is None:
         with DocumentStore() as own:
             return ingest(source, batch_size, fetcher=fetcher, documents=own)
