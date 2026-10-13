@@ -324,6 +324,15 @@ def test_semantic_paging_stops_at_the_ranking_depth():
         build_query(spec, SANITIZED_POLICY, SANITIZED, SEMANTIC_DEPTH)
 
 
+def test_only_a_semantic_query_is_limited_to_rows_its_vectors_rank():
+    ranked = replace(SANITIZED, ranked="vector_current")
+    semantic = build_query(_spec(semantic=[0.1], filters={"domain": "travel"}),
+                           SANITIZED_POLICY, ranked)
+    assert " AND vector_current ORDER BY summary_embedding <=> %s::vector" in semantic.sql
+    for spec in (_spec(order="newest"), _spec(order="priority", text="ferry")):
+        assert "vector_current" not in build_query(spec, SANITIZED_POLICY, ranked).sql
+
+
 def test_semantic_paging_stops_at_the_policys_search_depth():
     shallow = msgspec.structs.replace(SANITIZED_POLICY, search_depth=40)
     spec = QuerySpec(semantic=[0.5, 0.25], limit=100)

@@ -138,20 +138,30 @@ def enrich(
 @click.option("--limit", default=0, type=int, help="sync at most N documents (0 = all)")
 @click.option(
     "--reproject", "--force", "reproject", is_flag=True,
-    help="re-project every document, even those projected under the current policy; "
-    "re-embeds only rows whose summary changed; --force is the old name",
+    help="re-project the text of every document now, even those projected under the "
+    "current policy; a changed summary is re-embedded by the capped embedding phase; "
+    "--force is the old name",
+)
+@click.option(
+    "--reembed-limit", default=None, type=click.IntRange(min=0),
+    help="re-embed at most N rows whose summary a re-projection changed (0 = all, e.g. "
+    "while a GPU embedder is available)  [default: CORPUS_SYNC_REEMBED_LIMIT, else 500]",
 )
 @click.option(
     "--tier", "tier_name", default="sanitized", show_default=True,
     help="the projected tier to sync into (one with a projection in the config file)",
 )
-def sync(source: str | None, limit: int, reproject: bool, tier_name: str) -> None:
+def sync(
+    source: str | None, limit: int, reproject: bool, reembed_limit: int | None, tier_name: str
+) -> None:
     """Project enriched documents into a projected tier (default: sanitized).
 
     A projected tier is a trust-downgraded store a cloud consumer may query.
     Its projection (source tier, columns, gate, redaction) comes from the tiers
     file. Drops raw content/subject/sender; redacts names, ids and contact
-    details in the summaries. A changed projection re-projects on the next sync.
+    details in the summaries. A changed projection re-projects every row's text
+    on the next sync; the summaries it changed are re-embedded over this and
+    later syncs, at most --reembed-limit a run.
     """
     from .tiers import projected
 
@@ -166,19 +176,28 @@ def sync(source: str | None, limit: int, reproject: bool, tier_name: str) -> Non
     from .sanitized_store import SanitizedStore
     from .store import DocumentStore
 
+    if reembed_limit is None:
+        reembed_limit = settings.sync_reembed_limit
     try:
         with SanitizedStore(dst_dsn, dst.schema) as store, \
                 DocumentStore(src_dsn, src.schema) as documents:
             r = run_sync(
                 store, documents=documents, source=source, limit=limit, force=reproject,
-                policy=dst.projection.policy,
-                reproject_limit=0 if reproject else settings.sync_reproject_limit,
+                policy=dst.projection.policy, reembed_limit=reembed_limit,
             )
-        click.echo(f"synced {r['synced']}, skipped {r['skipped']} of {r['scanned']} scanned")
-        if r["deferred"]:
+        click.echo(
+            f"synced {r['synced']}, skipped {r['skipped']} of {r['scanned']} scanned; "
+            f"re-projected {r['reprojected']}, embedded {r['embedded']}"
+        )
+        if r["pending"]:
             click.echo(
-                f"{r['deferred']} rows still projected under an older policy; the next syncs "
-                "continue (or run with --reproject)"
+                f"{r['pending']} rows still projected under an older policy, served as "
+                "placeholders; the next sync re-projects them"
+            )
+        if r["embed_stale"]:
+            click.echo(
+                f"{r['embed_stale']} rows await a new embedding; each sync re-embeds up to "
+                f"{reembed_limit or 'all'} (--reembed-limit 0 does all now)"
             )
     finally:
         telemetry.shutdown()

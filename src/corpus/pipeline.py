@@ -161,9 +161,12 @@ def _sync(ctx: Context) -> Counts:
     assert dst.projection is not None  # projected() refuses a source tier
     with SanitizedStore(dst.store_dsn(), dst.schema) as store, \
             DocumentStore(src.store_dsn(), src.schema) as documents:
+        # The embedding phase takes the tier's embed-stale rows whatever their
+        # source: a policy change makes every source's rows stale at once, and
+        # the cap bounds the embedder's load per run either way.
         return run_sync(
             store, documents=documents, source=ctx.source.id, limit=ctx.options.limit,
-            policy=dst.projection.policy, reproject_limit=settings.sync_reproject_limit,
+            policy=dst.projection.policy, reembed_limit=settings.sync_reembed_limit,
         )
 
 

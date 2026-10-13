@@ -367,12 +367,78 @@ current policy. Each row stores `policy_hash`, a digest of the effective policy
 changes when the redaction's output changes for the same policy). Changing any
 of them in the tiers file re-projects every row on the next sync, with no flag.
 Rows synced before the column existed have no digest, so the first sync after
-an upgrade re-projects them all. The column is not a projected column: no
+an upgrade re-projects them all.
+
+The digest covers the policy, not the code that applies it. A fix to the
+redaction code that changes its output (a new pattern, a corrected match) must
+bump `REDACTION_VERSION` in the same change: that is the only way it reaches
+rows already projected, as nothing else in the digest moves. The column is not a projected column: no
 result returns it.
 
 `--reproject` projects every document again even under an unchanged policy:
 for a change the digest does not cover, such as a new column like `uri`.
 (`--force` is its old name.)
+
+### Text now, embeddings later
+
+A sync runs in two phases.
+
+1. **The text phase** projects each new, re-enriched or stale row and writes
+   its columns with the current `policy_hash`. A new or re-enriched row whose
+   `one_line` changed is embedded here, as it always was. A row re-projected
+   only because of the policy (or `--reproject`) is never embedded here: its
+   columns are rewritten and its stored vector kept.
+2. **The embedding phase** then re-embeds the rows the text phase left
+   *embed-stale*, newest first, at most `CORPUS_SYNC_REEMBED_LIMIT` (default
+   500) a run, or `--reembed-limit N` (0: all).
+
+Each row also stores `embedded_policy_hash`: the policy its vector was computed
+under. A row is embed-stale when that differs from its `policy_hash`, that is,
+when its text was re-projected since its vector was computed and the
+`one_line` changed. The text phase sets it as follows:
+
+- `one_line` unchanged and the vector current: the vector still holds, so it
+  becomes the new digest and the row is not stale. A re-projection that adds
+  `uri`, or a policy change that leaves a summary as it was, costs no
+  embedding.
+- `one_line` changed: it keeps the policy the vector was computed under, so the
+  row is stale. Should the policy later be reverted to that one, the
+  projection writes the same text again and the row is current, with no
+  re-embedding. A forced re-projection that changes the text under an
+  unchanged policy clears it instead, since a value equal to `policy_hash`
+  would read as current.
+- A new or re-enriched row is embedded under the current policy, so a row's
+  `embedded_policy_hash` always names a policy applied to its current
+  enrichment. A re-enriched row that was embed-stale is embedded even if its
+  text did not change, as its vector came from an older text.
+
+The embedding phase works only on rows projected under the current policy (a
+row still pending would be re-projected, and its new vector thrown away), and
+stores a vector only while the row still holds the text it was computed from.
+It takes the tier's embed-stale rows whatever `--source` says: a policy change
+makes every source's rows stale at once, and the cap bounds the embedder's
+load per run either way.
+
+The text phase is cheap. Projecting a row is the `pii` scan and the entity
+matching on three short enrichment fields, about half a millisecond, so an
+archive of 50,000 rows is re-projected in well under a minute of CPU plus one
+`UPDATE` a row. That is why it has no cap: every placeholder a policy change
+creates is replaced on the next sync. Embedding is the expensive part (about
+200 ms a text on a CPU embedder, hours for the whole archive), and is the part
+the cap spreads over runs.
+
+`--limit` still caps the rows the text phase projects; new and re-enriched rows
+are projected before rows stale only by policy, so a capped run keeps the tier
+current first.
+
+Each run reports its counts: `scanned`, `synced` (rows written), `skipped`,
+`reprojected` (rows rewritten only because of the policy or `--reproject`),
+`embedded` (vectors stored, in either phase), and what is left after it:
+`pending` (rows still projected under an older policy, served as
+placeholders; non-zero only after a run cut short by `--limit`) and
+`embed_stale` (rows awaiting a new vector). `corpus sync` prints them;
+`corpus pipeline` prints its sync stage's. `SanitizedStore.backlog(digest)`
+returns the last two, for a gauge.
 
 ### Serving a row not yet re-projected
 
@@ -389,48 +455,79 @@ The store reads `messages` through a subquery that applies this
 (`sanitized_store._served`), so every read path sees only the degraded
 columns: `query`, `search`, `aggregate`, `get` and the `index_*` presets, and
 with them every filter, keyword match and group. A keyword or an
-`organization` filter cannot reveal what a stale row's stored text says. The
-stored embedding still ranks the row in `search`, so it can be found by
-meaning; it was computed from the old `one_line`, which leaks only as far as a
-ranking can. A reader on a table without the `policy_hash` column serves every
+`organization` filter cannot reveal what a stale row's stored text says. Nor
+can `search`: a placeholder row is never ranked by its stored embedding, which
+was computed from the text the placeholder hides (see below). A reader on a table without the `policy_hash` column serves every
 row degraded. The sync, which serves nothing, opens the store without a
 policy and reads the table as it is.
+
+The text gate is on `policy_hash` alone: an embed-stale row is served with its
+current, redacted text. Its vector, though, was computed from an earlier
+`one_line`, which may hold what the policy now redacts (a name, say). Ranked
+by it, a semantic query for that name would surface the row and link the name
+to its date, domain, organizations and sender domain. The same holds for a
+placeholder row, whose vector is of its pre-policy text. So a serving store's
+semantic query ranks only fully current rows: `policy_hash` is the serving
+policy's digest **and** `embedded_policy_hash IS NOT DISTINCT FROM
+policy_hash`. Any other row (embed-stale, projected under another policy, or
+with no hash at all) is left out of `search` until the sync brings it current,
+while every filter, keyword match, `get` and aggregate still returns it, with
+its current text or its placeholder. No row ranks by a vector of text the
+serving policy would not show, whether before the first text phase after an
+upgrade or after a later policy change; since the text phase takes seconds,
+the cost is mostly the embedding backlog. On a table without
+`embedded_policy_hash`, the second half reads true: its vectors were all
+stored by a sync that embedded every row it wrote. The sync's own store, which
+has no projection policy and serves nothing, applies only the second half.
+
+The exclusion is a `WHERE` on the semantic query, not a NULLed embedding
+column. An expression around `summary_embedding` hides it from the planner, so
+an HNSW index on the column could no longer order the scan; with the filter it
+still does (an `Index Scan … Order By` with the predicate as its `Filter`,
+which `test_a_served_semantic_query_is_ordered_by_the_vector_index` checks).
+As with any filtered HNSW scan, the index ranks `hnsw.ef_search` candidates
+before the filter, so a large embed-stale backlog thins semantic pages until
+it drains.
 
 ### Rolling out a policy change
 
 A policy change makes every row stale at once, and most stale rows need a new
-embedding (replacing names changes most `one_line`s). On a CPU embedder that is
-hours of work, too much for a daily sync. So one sync re-projects at most
-`CORPUS_SYNC_REPROJECT_LIMIT` rows (default 500; 0 means no cap) that are stale
-only by policy:
+embedding (replacing names changes most `one_line`s). To roll one out, or to
+upgrade from a release before `policy_hash`:
 
-- **New and re-enriched rows come first and are never capped**, so the tier
-  stays current while the change rolls out.
-- The stale rows then fill the cap, in the reader's stable order (newest mail
-  first), so each run takes the next ones and the change spreads over days.
-- The rest are left for later runs. The sync reports them (`N rows still
-  projected under an older policy`), and they are served degraded until
-  reached (see [above](#serving-a-row-not-yet-re-projected)), never with the
-  free text of the old policy.
+1. **Roll the image** with the new tiers file. Until the next sync, every row
+   is served as a placeholder, never with the free text of the old policy,
+   and `search` returns nothing.
+2. **Run `corpus sync --reproject`** (or wait for the scheduled sync, which
+   re-projects every stale row too). The text phase replaces every placeholder
+   in one run, in minutes, with no embedding calls.
+3. **Let the embeddings catch up.** Each sync, and each `corpus pipeline` sync
+   stage, re-embeds up to `CORPUS_SYNC_REEMBED_LIMIT` rows; at 500 a run, the
+   rows of a 50,000-row archive whose summaries changed take up to 100 syncs.
+   Until a row is reached, it is served with its current text but left out of
+   `search` (it stays reachable by keyword and filter), so drain the backlog
+   promptly: run `corpus sync --reembed-limit 0` in a window when a GPU
+   embedder is available, rather than letting the capped runs spread it over
+   days.
 
-Rows synced before the digest existed count as stale too, so after that
-upgrade every row is re-projected this way: at 500 a run, an archive of 50,000
-rows takes about 100 daily syncs, and until its turn each row is served
-degraded, with no summary. To apply a change at once, run
-`corpus sync --reproject` in a window when a GPU embedder is available: it
-projects every row, with no cap.
+A table from before `embedded_policy_hash` gains the column the first time a
+sync opens it, set to each row's `policy_hash`: every vector the earlier code
+stored was computed from the row's stored `one_line`. A row with no
+`policy_hash` therefore gets none either, and the copy skips it (it already
+reads NULL), so on a table never hashed the migration rewrites no row while
+it holds the `ALTER`'s exclusive lock; the text phase then marks it current
+if its `one_line` comes out the same, and embed-stale if it changes. The copy
+runs once, when the column is added, under a lock that serializes two syncs
+opening the store at the same moment.
 
-Either way, a projected row is embedded only when its `one_line`, the text the embedding is
-computed from, differs from the stored one. Otherwise the sync rewrites only the
-projected columns and keeps the stored embedding, and only when they differ: the
-update's `WHERE` compares the stored columns with the new ones. A re-projection
-that adds `uri` therefore costs no embedding calls, and one that changes
-summaries (a stricter gate, a different `person_name`) embeds only the rows
-whose summary changed. The rest have only their columns and digest rewritten.
+### Resuming
 
-That comparison, with the digest, is also what makes a re-projection
-resumable. Each batch commits as it goes; run again after an interruption, the
-rows already done carry the new digest, so they are neither embedded nor
-written, and are counted as skipped. `--limit`
-counts those rows too, so a resumed run with a limit spends it on rows already
-done: resume without one, or split the work by `--source`.
+Rows whose written columns are unchanged are not rewritten: the update's
+`WHERE` compares the stored columns with the new ones. With the digest, that is
+what makes a re-projection resumable. Each batch commits as it goes; run again
+after an interruption, the rows already done carry the new digest, so they are
+neither written nor embedded, and are counted as skipped. `--limit` counts
+those rows too, so a resumed run with a limit spends it on rows already done:
+resume without one, or split the work by `--source`. The embedding phase
+resumes the same way: a stored vector clears the row's staleness, so the next
+run takes the rows after it.

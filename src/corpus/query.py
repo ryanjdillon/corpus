@@ -309,6 +309,11 @@ class Layout:
             key must parse as one before it reaches the database.
         orders: Offset-paged order -> its ORDER BY, ending in ``id``.
         embedding: The vector expression, or ``None`` if the table has none.
+        ranked: A predicate a row must meet to be ranked by ``embedding``, or
+            ``None``: a semantic query matches no other row, which every other
+            order and the aggregates still reach. A filter rather than an
+            expression wrapped around ``embedding``, so an index on the vector
+            column still serves the ordering.
     """
 
     table: str
@@ -327,6 +332,7 @@ class Layout:
     orders: Mapping[str, str] = field(default_factory=dict)
     joins: Mapping[str, str] = field(default_factory=dict)
     embedding: str | None = None
+    ranked: str | None = None
 
 
 def rank_case(column: str) -> str:
@@ -494,6 +500,8 @@ def build_query(
     if order is None:
         if layout.embedding is None:
             raise ValueError("semantic ordering is not available on this tier")
+        if layout.ranked is not None:
+            where = _and(where, layout.ranked)
         by = f"{layout.embedding} <=> %s::vector, id"
         params.append(_vector(spec.semantic or ()))
         size = min(size, depth - offset)
