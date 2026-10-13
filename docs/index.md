@@ -40,5 +40,6 @@ sanitized tier.
 - [Message ids](message-ids.md) — the `corpus.id/v1` message reference other services share, with test vectors.
 - [Enrichment](enrichment.md) — structured per-document metadata and the secret audit.
 - [Enrichment evaluation](evaluation.md) — compare enrichment models on a labelled synthetic set.
+- [Detectors](detect.md) — `corpus-detect`, the PII and credential detectors and redaction, packaged alone.
 - [Observability](observability.md) — OpenTelemetry traces and metrics.
 - [Development](development.md) — tests, the pre-PR gate, and builds.

@@ -43,15 +43,17 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      # The same pins the image installs, so CI tests what ships.
+      # The same pins the image installs, so CI tests what ships. corpus-detect is
+      # named in the same install so pip takes it from the repo, never an index.
       - name: Install
-        run: pip install -c deploy/constraints.txt -e '.[test]'
+        run: pip install -c deploy/constraints.txt -e ./packages/detect -e '.[test]'
 
       # ubuntu-latest runners ship a running Docker daemon, so the Docker-SDK
       # fixtures (pgvector, GreenMail) run here. Clearing addopts includes the
       # integration tier alongside the unit tests in one coverage run.
       - name: Tests with coverage (unit + integration)
-        run: coverage run --source=corpus -m pytest -o addopts= tests
+        # Measures corpus and corpus_detect ([tool.coverage.run] source).
+        run: coverage run -m pytest -o addopts= tests packages/detect/tests
         # A native crash prints its C-level Python stack instead of a bare exit 139.
         env:
           PYTHONFAULTHANDLER: "1"

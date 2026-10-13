@@ -39,7 +39,7 @@ from presidio_analyzer.predefined_recognizers import (
     UsSsnRecognizer,
 )
 
-from .redact import Span
+from .span import Span
 
 # Presidio entity type -> our short, stable secret name.
 _ENTITY_NAMES = {
@@ -82,7 +82,7 @@ _RECOGNIZERS = [
 
 # Redaction-only: email is high-precision on format but far too common to flag in
 # the archive audit, so it is scanned solely for the egress redactor. Kept out of
-# _RECOGNIZERS/_ENTITY_NAMES so the audit counts (and SCAN_VERSION) are unchanged.
+# _RECOGNIZERS/_ENTITY_NAMES so the audit counts (and the detector fingerprint) are unchanged.
 _EMAIL_RECOGNIZER = EmailRecognizer()
 _EMAIL_ENTITY = "email"
 
@@ -141,6 +141,17 @@ _PHONE_CONTEXT_WINDOW = 32
 _NATIONAL_DIGITS = 8
 _MAX_PHONE_DIGITS = 15
 _PHONE_ENTITY = "phone"
+
+#: Every type name a span or count from this module can carry.
+ENTITY_TYPES = frozenset(
+    {
+        *_ENTITY_NAMES.values(),
+        _NO_NATIONAL_ID_ENTITY,
+        _NO_BANK_ACCOUNT_ENTITY,
+        _EMAIL_ENTITY,
+        _PHONE_ENTITY,
+    }
+)
 
 
 @dataclass(frozen=True)

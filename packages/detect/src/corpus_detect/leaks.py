@@ -6,10 +6,10 @@ Two layers, both returning secret *types* and counts — never the values:
    (private-key blocks, provider-prefixed API keys/tokens, JWTs). These have
    distinctive prefixes/structure, so they barely false-positive on prose and run
    everywhere — no external dependency, no model.
-2. Optionally, Betterleaks (a maintained gitleaks fork) when ``settings.leaks_bin``
-   points at the binary: its full curated ruleset is unioned in for rule types the
-   local regexes don't cover. Only the rule id is read from its report, never the
-   matched secret.
+2. Optionally, Betterleaks (a maintained gitleaks fork) when
+   :attr:`LeaksSettings.bin` (``CORPUS_LEAKS_BIN``) names the binary: its full
+   curated ruleset is unioned in for rule types the local regexes don't cover.
+   Only the rule id is read from its report, never the matched secret.
 
 This complements ``pii`` (identity/financial numbers): a leaked API key is a
 different, higher-severity class than an SSN, and detectable with far better
@@ -26,12 +26,13 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 
-from .config import settings
-from .redact import Span
+from .span import Span
 
 log = logging.getLogger(__name__)
 
@@ -62,6 +63,10 @@ _PRIVATE_KEY_BLOCK = re.compile(
     re.DOTALL,
 )
 
+#: Every type name a local rule can carry. Betterleaks maps onto these where it
+#: can and reports any other rule as ``leak_<ruleid>``, so counts are open-ended.
+ENTITY_TYPES = frozenset(name for name, _ in _RULES)
+
 # Betterleaks/gitleaks rule id -> our stable name (best-effort; unmapped rule ids
 # are kept verbatim as ``leak_<ruleid>`` so nothing is silently dropped).
 _RULE_MAP = {
@@ -77,8 +82,42 @@ _RULE_MAP = {
 }
 
 
+@dataclass(frozen=True)
+class LeaksSettings:
+    """Where the external scanner is, and how long it may take.
+
+    Read from the environment rather than from a host application's config, so
+    the detectors install alone. The names carry the ``CORPUS_`` prefix because
+    the corpus service and anything deployed beside it share them.
+
+    Attributes:
+        bin: The Betterleaks binary name or path; empty runs the local regexes only.
+        timeout: Seconds one Betterleaks run may take.
+    """
+
+    bin: str = ""
+    timeout: float = 30.0
+
+    @classmethod
+    def from_env(cls, environ: Mapping[str, str] = os.environ) -> LeaksSettings:
+        """Build the settings from ``CORPUS_LEAKS_BIN`` and ``CORPUS_LEAKS_TIMEOUT``."""
+        timeout = environ.get("CORPUS_LEAKS_TIMEOUT", "")
+        try:
+            seconds = float(timeout) if timeout else cls.timeout
+        except ValueError:
+            raise ValueError(
+                f"CORPUS_LEAKS_TIMEOUT must be a number of seconds, got {timeout!r}"
+            ) from None
+        return cls(bin=environ.get("CORPUS_LEAKS_BIN", ""), timeout=seconds)
+
+
+#: The process's settings, read once at import like the rest of its configuration.
+settings = LeaksSettings.from_env()
+
+
 def _run_betterleaks(
     text: str,
+    config: LeaksSettings,
     *,
     run: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
 ) -> dict[str, int]:
@@ -91,7 +130,7 @@ def _run_betterleaks(
     try:
         proc = run(
             [
-                settings.leaks_bin,
+                config.bin,
                 "stdin",
                 "--report-format",
                 "json",
@@ -103,7 +142,7 @@ def _run_betterleaks(
             ],
             input=text.encode(),
             capture_output=True,
-            timeout=settings.leaks_timeout,
+            timeout=config.timeout,
             check=False,
         )
     except (FileNotFoundError, OSError, subprocess.SubprocessError) as exc:
@@ -125,9 +164,15 @@ def _run_betterleaks(
 def scan(
     text: str | None,
     *,
+    config: LeaksSettings | None = None,
     run: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
 ) -> dict[str, int]:
-    """Detect leaked credentials in ``text`` — {secret_name: count}, no values."""
+    """Detect leaked credentials in ``text`` — {secret_name: count}, no values.
+
+    ``config`` defaults to the environment's :data:`settings`.
+    """
+    if config is None:
+        config = settings
     if not text:
         return {}
     counts: dict[str, int] = {}
@@ -135,8 +180,8 @@ def scan(
         n = len(pattern.findall(text))
         if n:
             counts[name] = counts.get(name, 0) + n
-    if settings.leaks_bin:
-        for name, n in _run_betterleaks(text, run=run).items():
+    if config.bin:
+        for name, n in _run_betterleaks(text, config, run=run).items():
             # Local regexes take precedence; the external scanner only adds rule
             # types the local layer doesn't already cover (avoids double counting).
             counts.setdefault(name, n)

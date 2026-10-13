@@ -20,6 +20,7 @@ in `src/corpus/config.py`; the common ones:
 | `CORPUS_MODEL_OPTIONS` | per-model request options as JSON (see [Enrichment](enrichment.md#models)) |
 | `CORPUS_ENRICH_RETRIES` | attempts per enrichment request (default `10`) |
 | `CORPUS_ENRICH_RETRY_MAX_WAIT` | cap on the backoff between them, seconds (default `60`) |
+| `CORPUS_LEAKS_BIN`, `CORPUS_LEAKS_TIMEOUT` | the Betterleaks credential scanner and its timeout, read by `corpus_detect` (see [Detectors](detect.md#settings)) |
 
 The embedding endpoint is any OpenAI-compatible API. Point it at a local model
 and nothing leaves your network; point it at a hosted provider and the pipeline
@@ -170,7 +171,8 @@ able to reach a cloud backend. Do not list a model if any route sends that name
 off the network, and keep path-routed cloud endpoints off the skip path. The client id is the caller's `x-client-id` request header, which the
 gateway sets after authenticating the API key.
 
-What is redacted, each replaced by a `[REDACTED:<type>]` placeholder:
+What is redacted, each replaced by a `[REDACTED:<type>]` placeholder by the
+[detectors](detect.md):
 
 - credentials (`leaks`): private keys, API keys and tokens; a private key is
   blocked by default (`BLOCK_TYPES`) rather than redacted;

@@ -7,7 +7,7 @@
     "quality_profile": "showcase",
     "repository": {
       "url": "https://github.com/ryanjdillon/corpus",
-      "revision": "93b2ba304ba1030dddc0e8b49f85e568ea46113b"
+      "revision": "aea7eb13d235b32c84ef1fcc4f407a7d785fd6a9"
     },
     "viewBox": [
       1320,
@@ -236,7 +236,7 @@
       "id": "scanning",
       "type": "backend",
       "label": "secret scan",
-      "sublabel": "scan · pii · leaks",
+      "sublabel": "scan · corpus-detect (pii · leaks)",
       "pos": [
         990,
         470
@@ -248,13 +248,21 @@
       "sources": [
         {
           "path": "src/corpus/scan.py",
-          "label": "detect / detect_spans / audit_candidates"
+          "label": "archive scan / audit_candidates / SCAN_VERSION"
         },
         {
-          "path": "src/corpus/pii.py"
+          "path": "packages/detect/src/corpus_detect/detectors.py",
+          "label": "corpus-detect: detect / detect_spans / fingerprint_parts"
         },
         {
-          "path": "src/corpus/leaks.py"
+          "path": "packages/detect/src/corpus_detect/pii.py"
+        },
+        {
+          "path": "packages/detect/src/corpus_detect/leaks.py"
+        },
+        {
+          "path": "packages/detect/src/corpus_detect/span.py",
+          "label": "Span / resolve_overlaps"
         }
       ]
     },
@@ -278,15 +286,15 @@
         },
         {
           "path": "src/corpus/egress/policy.py",
-          "label": "inspect → pass / redact / refuse"
+          "label": "inspect → pass / mask / refuse"
         },
         {
           "path": "src/corpus/egress/envoy.py",
           "label": "Envoy ext_proc adapter"
         },
         {
-          "path": "src/corpus/redact.py",
-          "label": "detect_spans → masked text"
+          "path": "packages/detect/src/corpus_detect/redaction.py",
+          "label": "corpus-detect: detect_spans → masked text"
         }
       ]
     },
@@ -459,7 +467,7 @@
       "id": "gate-detectors",
       "from": "egress-gate",
       "to": "scanning",
-      "label": "reuses detect_spans / redact",
+      "label": "reuses corpus-detect redaction",
       "variant": "dashed",
       "labelDy": -46
     },
@@ -508,7 +516,7 @@
       "title": "Derived branches",
       "items": [
         "enrichment reads documents, calls the model (guided JSON), upserts a derived enrichments table in the same store",
-        "secret scan = deterministic pii + leaks (Betterleaks); enrich_batch has the model confirm flagged candidates",
+        "secret scan = deterministic pii + leaks (Betterleaks), packaged alone as corpus-detect (packages/detect); enrich_batch has the model confirm flagged candidates",
         "scan-gate applies a gateway-neutral egress policy (the same pii + leaks detectors) behind a gateway adapter (Envoy ext_proc today), redacting or refusing request bodies before they reach a model provider; local models pass unscanned"
       ]
     },

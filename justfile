@@ -3,6 +3,7 @@ import 'agents.just'
 # corpus dev tasks. Enter the dev shell first: `nix develop`.
 
 # Create the uv venv (from the dev shell's Python) and install test + dev deps.
+# corpus-detect (packages/detect) installs editable with it, as a uv workspace member.
 setup:
     uv venv --python python3.12
     uv pip install -e '.[test,dev]'
@@ -10,8 +11,9 @@ setup:
 # Re-pin the runtime and test dependencies the image and CI install
 # (deploy/constraints.txt; the image ignores the test pins).
 # Run after changing dependencies in pyproject.toml, or to take upstream updates.
+# corpus-detect is left out: it is built from this repo, not installed from an index.
 lock:
-    uv pip compile pyproject.toml --extra test --python-version 3.12 --python-platform x86_64-unknown-linux-gnu --upgrade --custom-compile-command "just lock" -o deploy/constraints.txt
+    uv pip compile pyproject.toml --extra test --python-version 3.12 --python-platform x86_64-unknown-linux-gnu --upgrade --no-emit-package corpus-detect --custom-compile-command "just lock" -o deploy/constraints.txt
 
 # Fast unit tests.
 test:
@@ -25,9 +27,10 @@ test-int:
 lint:
     uv run ruff check .
 
-# Full coverage (unit + integration) with the ratchet gate.
+# Full coverage (unit + integration) with the ratchet gate. Measures corpus and
+# corpus_detect ([tool.coverage.run] source).
 cov:
-    uv run coverage run --source=corpus -m pytest -o addopts= tests
+    uv run coverage run -m pytest -o addopts= tests packages/detect/tests
     uv run coverage report --precision=2
     uv run python scripts/coverage_gate.py "$(uv run coverage report --format=total --precision=2)" .github/coverage-baseline.txt .docker-skip-count
 

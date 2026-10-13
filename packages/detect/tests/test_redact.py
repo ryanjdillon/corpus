@@ -1,4 +1,4 @@
-"""Span-level redaction over free text, built on the existing detectors.
+"""Span-level redaction over free text, built on the detectors.
 
 All vectors are non-secret by construction: the canonical AWS docs example key, a
 structurally-valid but meaningless PEM block, and reserved-range identity numbers.
@@ -6,7 +6,7 @@ structurally-valid but meaningless PEM block, and reserved-range identity number
 
 from __future__ import annotations
 
-from corpus.redact import Span, redact, resolve_overlaps
+from corpus_detect import Span, redact, resolve_overlaps
 
 # A structurally-valid but meaningless private key block (fake body).
 _FAKE_PRIVATE_KEY = (

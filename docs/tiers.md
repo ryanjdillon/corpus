@@ -276,13 +276,13 @@ projection, so none applies there. The projection before this policy existed is
   never a line break, a letter or a digit, so a value is not assembled across
   a line or a word. A value with fewer than three letters and digits is not
   matched.
-- **Credentials** are found first, by `leaks.scan_spans`; a match of any class
+- **Credentials** are found first, by `corpus_detect.leaks.scan_spans`; a match of any class
   that overlaps one is discarded.
 - **Overlaps: the stricter action wins.** `drop` beats `mask` and the
   replacements (`initial`, `role`), which beat `keep`. A dropped match that
   overlaps a masked or replaced one takes the whole of both, so no part of
   either is left in the text. Matches of the same strictness are resolved by
-  `redact.resolve_overlaps`: the leftmost, then the longest, wins, so a full
+  `corpus_detect.resolve_overlaps`: the leftmost, then the longest, wins, so a full
   name beats its first name. A kept match claims nothing: with
   `email_address: keep`, a name or reference inside an address is still
   redacted ("kari.nordmann@example.org" becomes "K..N.@example.org" under

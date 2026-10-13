@@ -30,8 +30,9 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
+from corpus_detect import Span, redact
+
 from ..config import Settings, settings
-from ..redact import Span, redact
 
 log = logging.getLogger(__name__)
 

@@ -63,5 +63,6 @@ nav:
   - Message ids: message-ids.md
   - Enrichment: enrichment.md
   - Enrichment evaluation: evaluation.md
+  - Detectors: detect.md
   - Observability: observability.md
   - Development: development.md

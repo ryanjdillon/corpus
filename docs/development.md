@@ -10,6 +10,10 @@ nix develop
 just setup      # create the uv venv and install test + dev deps
 ```
 
+The repository is a uv workspace: `packages/detect` (the `corpus-detect`
+distribution) installs editable alongside corpus, and its tests
+(`packages/detect/tests`) run and count toward coverage with corpus's.
+
 ## The pre-PR gate
 
 Run `just check` before pushing a branch or opening a PR. It runs the same lint
@@ -52,8 +56,9 @@ enforced against `@commitlint/config-conventional` both in CI and locally by
 
 ## Build
 
-`deploy/Dockerfile` builds a wheel and installs it against
-`deploy/constraints.txt`, which pins every runtime dependency. `pyproject.toml`
+`deploy/Dockerfile` builds two wheels, corpus and
+[corpus-detect](detect.md) (`packages/detect`), and installs them together
+against `deploy/constraints.txt`, which pins every runtime dependency. `pyproject.toml`
 states only ranges, so without the pins a rebuild of the same release could pull
 a different presidio, spaCy or grpcio. CI installs with the same constraints, so
 the tests run against what ships. Run `just lock` after changing dependencies, or

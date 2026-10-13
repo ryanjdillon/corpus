@@ -3,10 +3,14 @@ WORKDIR /src
 RUN pip install --no-cache-dir hatchling build
 COPY pyproject.toml README.md ./
 COPY src ./src
-RUN python -m build --wheel --outdir /dist
+COPY packages/detect ./packages/detect
+# Two wheels: corpus and the corpus-detect it depends on. Installed together below,
+# so the dependency resolves to this build's wheel, never to an index.
+RUN python -m build --wheel --outdir /dist packages/detect \
+ && python -m build --wheel --outdir /dist
 
 # Betterleaks (maintained gitleaks fork): the external credential scanner. Fetched
-# here so the runtime image stays slim; the corpus `leaks` module shells out to it.
+# here so the runtime image stays slim; corpus_detect's `leaks` module shells out to it.
 FROM debian:12-slim AS leaks
 ARG BETTERLEAKS_VERSION=1.8.1
 RUN apt-get update \
@@ -19,7 +23,7 @@ RUN apt-get update \
 
 FROM python:3.12-slim
 ENV PYTHONUNBUFFERED=1
-# Enable the external credential scanner; the leaks module falls back to its local
+# Enable the external credential scanner; corpus_detect.leaks falls back to its local
 # regexes if the binary is ever absent.
 ENV CORPUS_LEAKS_BIN=betterleaks
 RUN useradd --create-home --uid 1000 corpus

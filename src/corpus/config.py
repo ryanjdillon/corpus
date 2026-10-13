@@ -82,10 +82,8 @@ class Settings(BaseSettings):
     # A model with no entry is called exactly as before.
     model_options: dict[str, dict] = {}
 
-    # External credential scanner (Betterleaks). Empty => local regexes only; set to
-    # the binary name/path to union in its full ruleset (the image sets this).
-    leaks_bin: str = ""
-    leaks_timeout: float = 30.0
+    # The external credential scanner (CORPUS_LEAKS_BIN, CORPUS_LEAKS_TIMEOUT) is
+    # read by corpus_detect.leaks.LeaksSettings, not here.
 
     # Chunking for long bodies.
     chunk_tokens: int = 512
