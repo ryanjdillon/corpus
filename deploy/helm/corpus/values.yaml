@@ -89,6 +89,11 @@ defaults:
         drop: [ALL]
     serviceAccountName: ""
     automountServiceAccountToken: false
+    # The container command, the image's ENTRYPOINT. Rendered on every
+    # container, never left out: Helm adopting an existing object keeps any
+    # field the chart does not render, so an old `command: [sh, -c]` would
+    # otherwise survive and wrap the chart's args.
+    command: [corpus]
 
   # Every served tier's Deployment and Service.
   serve:

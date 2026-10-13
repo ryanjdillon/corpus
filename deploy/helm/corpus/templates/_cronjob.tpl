@@ -60,10 +60,8 @@ spec:
               {{- with $root.Values.image.pullPolicy }}
               imagePullPolicy: {{ . }}
               {{- end }}
-              {{- with $w.command }}
               command:
-                {{- toYaml . | nindent 16 }}
-              {{- end }}
+                {{- include "corpus.command" (dict "name" .name "w" $w) | nindent 16 }}
               args:
                 {{- toYaml $w.args | nindent 16 }}
               envFrom:

@@ -44,6 +44,8 @@ spec:
           {{- with $root.Values.image.pullPolicy }}
           imagePullPolicy: {{ . }}
           {{- end }}
+          command:
+            {{- include "corpus.command" (dict "name" $name "w" $w) | nindent 12 }}
           args: [serve, {{ .name | quote }}]
           ports:
             - name: {{ $w.servicePortName }}

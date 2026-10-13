@@ -1,0 +1,8 @@
+# Must fail: an empty-string command item, which is never a valid executable or argument.
+defaults:
+  pipeline:
+    command: [""]
+sources:
+  - name: inbox-a
+    kind: imap
+    enrich: true

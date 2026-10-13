@@ -1,0 +1,9 @@
+# Must fail: an init container without `command`, which an adopting upgrade
+# would leave to whatever the live object carries.
+jobs:
+  corpus-backfill:
+    schedule: "0 4 * * *"
+    args: [pipeline, "imap:inbox-a"]
+    initContainers:
+      - name: prepare
+        args: [scan]

@@ -24,6 +24,7 @@
             pkgs.ruff
             pkgs.commitlint
             pkgs.kubernetes-helm
+            pkgs.yq-go
           ];
           shellHook = ''
             # manylinux wheels (numpy, psycopg, …) dynamically link libstdc++ etc.,

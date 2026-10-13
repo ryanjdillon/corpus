@@ -172,6 +172,14 @@
                 "boolean",
                 "null"
               ]
+            },
+            "command": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 1
             }
           }
         },
@@ -230,6 +238,14 @@
             "containerName": {
               "type": "string",
               "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+            },
+            "command": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 1
             },
             "resources": {
               "type": [
@@ -390,6 +406,14 @@
             "containerName": {
               "type": "string",
               "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+            },
+            "command": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 1
             },
             "resources": {
               "type": [
@@ -771,6 +795,14 @@
                 "type": "string",
                 "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
               },
+              "command": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "minItems": 1
+              },
               "resources": {
                 "type": [
                   "object",
@@ -1010,6 +1042,14 @@
               "containerName": {
                 "type": "string",
                 "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+              },
+              "command": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "minItems": 1
               },
               "resources": {
                 "type": [
@@ -1407,8 +1447,10 @@
           "command": {
             "type": "array",
             "items": {
-              "type": "string"
-            }
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 1
           },
           "args": {
             "type": "array",
@@ -1420,8 +1462,19 @@
             "type": "array",
             "items": {
               "type": "object",
+              "properties": {
+                "command": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "minItems": 1
+                }
+              },
               "required": [
-                "name"
+                "name",
+                "command"
               ]
             }
           },
