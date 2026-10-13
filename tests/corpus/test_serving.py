@@ -9,21 +9,25 @@ now. Every row is synthetic.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import functools
 from datetime import UTC, datetime, timedelta
 from unittest.mock import create_autospec
 
 import httpx
+import msgspec
 import pytest
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
-from corpus import serving
+from corpus import serving, tiers
+from corpus.config import Settings
 from corpus.embeddings import EmbedUnavailableError, embed_query
 from corpus.enrichment import Domain
 from corpus.envelope import KIND, encode_cursor
 from corpus.query import (
     SANITIZED_POLICY,
+    SEMANTIC_DEPTH,
     SENSITIVE_POLICY,
     Aggregate,
     Filters,
@@ -36,6 +40,17 @@ from corpus.store import GET_KEYS, QUERY_KEYS, SEARCH_KEYS, DocumentStore
 
 NOW = datetime(2026, 10, 11, 7, 0, tzinfo=UTC)
 VECTOR = [0.25, 0.5]
+TIERS = tiers.Registry(tiers.DEFAULT, Settings(), {}).names()
+
+
+def _registry(environ=None, **overrides) -> tiers.Registry:
+    """The default tiers resolved against *environ*, with deprecated *overrides* set."""
+    return tiers.Registry(tiers.load(None, Settings(**overrides)), Settings(**overrides), environ or {})
+
+
+def _open_index_spec() -> SanitizedStore:
+    """The signature of an index opener: no arguments, an open store."""
+    raise NotImplementedError
 
 
 def call(server: FastMCP, tool: str, **args) -> dict:
@@ -87,7 +102,7 @@ def index_store():
 @pytest.fixture
 def open_index(index_store):
     """A spec-bound index opener handing back ``index_store``."""
-    return create_autospec(serving.open_index_store, return_value=index_store)
+    return create_autospec(_open_index_spec, return_value=index_store)
 
 
 @pytest.fixture
@@ -127,24 +142,66 @@ def test_each_tier_serves_the_generic_tools_and_its_presets(tier, name, presets)
     assert set(_tools(server)) == GENERIC | presets
 
 
-def test_the_index_serves_under_its_configured_name(monkeypatch):
-    monkeypatch.setattr(serving.settings, "index_server_name", "corpus-index-kbl")
+def test_the_index_serves_under_its_overridden_name(open_index):
+    # The deprecated CORPUS_INDEX_SERVER_NAME still renames the sanitized server.
+    config = _registry(index_server_name="corpus-index-kbl").tier("sanitized")
+    server = serving.build_mcp("sanitized", config=config, open_store=open_index)
 
-    assert serving.build_mcp("sanitized").name == "corpus-index-kbl"
+    assert server.name == "corpus-index-kbl"
+    assert call(server, "index_stats")["server"] == "corpus-index-kbl"
+
+
+def test_a_projected_tier_from_a_file_serves_the_sanitized_surface(open_index, index_store):
+    # The surface follows the tier's kind; the name, policy and envelope are its own.
+    partner = dataclasses.replace(
+        _registry().tier("sanitized"), name="partner", server_name="corpus-partner",
+        policy=SANITIZED_POLICY,
+    )
+    server = serving.build_mcp("partner", config=partner, open_store=open_index)
+
+    assert server.name == "corpus-partner"
+    assert {"index_action_items", "query"} <= set(_tools(server))
+    envelope = call(server, "query", spec={"filters": {"domain": "work"}})
+    assert (envelope["server"], envelope["tier"]) == ("corpus-partner", "partner")
+    index_store.query.assert_called_once()
 
 
 def test_an_unknown_tier_is_refused():
-    with pytest.raises(ValueError, match="no served tier 'raw'"):
+    with pytest.raises(ValueError, match="no tier named 'raw'"):
         serving.build_mcp("raw")
 
 
-@pytest.mark.parametrize("tier", serving.TIERS)
+@pytest.mark.parametrize(("tier", "env"), [
+    ("sensitive", "CORPUS_SANITIZED_DATABASE_URL"), ("sanitized", "CORPUS_DATABASE_URL"),
+])
+def test_a_server_builds_with_only_its_own_tiers_dsn(tier, env):
+    # Each server's pod holds only its own tier's DSN: resolving the registry,
+    # and building either tier's server, must not need the other's.
+    registry = tiers.Registry(tiers.DEFAULT, Settings(database_url=""), {env: "postgresql://u@db/x"})
+
+    assert {t.name for t in registry.tiers()} == {"sensitive", "sanitized"}
+    assert serving.build_mcp(tier, config=registry.tier(tier)).name
+
+
+@pytest.mark.parametrize(("opener", "env"), [
+    (serving.open_documents, "CORPUS_DATABASE_URL"),
+    (serving.open_index_store, "CORPUS_INDEX_DATABASE_URL"),
+])
+def test_a_store_without_its_dsn_fails_naming_the_variable(opener, env):
+    registry = tiers.Registry(tiers.DEFAULT, Settings(database_url=""), {})
+    name = "sensitive" if opener is serving.open_documents else "sanitized"
+
+    with pytest.raises(RuntimeError, match=env):
+        opener(registry.tier(name))
+
+
+@pytest.mark.parametrize("tier", TIERS)
 def test_serves_stateless_http(tier):
     # Idle sessions must not expire under long-lived clients (they would get 404).
     assert serving.build_mcp(tier).settings.stateless_http is True
 
 
-@pytest.mark.parametrize("tier", serving.TIERS)
+@pytest.mark.parametrize("tier", TIERS)
 def test_every_tool_declares_structured_output(tier):
     # A bare ``dict`` return annotation makes FastMCP drop the output schema and
     # structuredContent; ``dict[str, Any]`` keeps the envelope structured.
@@ -168,11 +225,17 @@ def test_the_default_clock_is_zone_aware_utc():
     assert serving.now_utc().utcoffset() == timedelta(0)
 
 
-def test_the_index_refuses_to_open_without_its_url(monkeypatch):
-    monkeypatch.setattr(serving.settings, "index_database_url", "")
+def test_a_tier_serves_its_own_policy(open_index, embed, clock):
+    # The policy comes from the tier, so a narrower one narrows what is served.
+    narrow = msgspec.structs.replace(SANITIZED_POLICY, filterable=frozenset({"domain"}))
+    config = dataclasses.replace(_registry().tier("sanitized"), policy=narrow)
+    server = serving.build_mcp("sanitized", config=config, open_store=open_index, embed=embed,
+                               now=clock)
 
-    with pytest.raises(RuntimeError, match="CORPUS_INDEX_DATABASE_URL"):
-        serving.open_index_store()
+    spec = _tools(server)["query"].inputSchema["properties"]["spec"]
+    assert set(spec["properties"]["filters"]["properties"]) == {"domain"}
+    with pytest.raises(ValueError, match="filter 'importance' is not allowed"):
+        call(server, "query", spec={"filters": {"importance": "high"}})
 
 
 # --- the generic tools ------------------------------------------------------------
@@ -601,7 +664,7 @@ def test_search_pages_by_offset_over_the_ranking(corpus, documents, embed):
 
 
 def test_search_stops_paging_at_the_ranked_depth(corpus, documents):
-    depth = serving.SEMANTIC_DEPTH
+    depth = SEMANTIC_DEPTH
     documents.nearest.return_value = [{"id": f"d{i}"} for i in range(depth)]
     cursor = encode_cursor("corpus_search", {"query": "kayak"}, depth - 30)
 
@@ -776,6 +839,8 @@ def test_every_projected_column_is_classified():
         "id", "source", "account", "sent_at", "domain", "category", "transactional_type",
         "importance", "requires_action", "action_type", "deadline", "waiting_on",
         "time_sensitive", "suggested_disposition", "sensitivity_level", "enriched_at",
+        # an https provider link only (sanitize.web_link), derived by corpus
+        "uri",
     }
 
     assert set(COLS) - set(UNTRUSTED_COLS) == trusted

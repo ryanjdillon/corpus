@@ -36,7 +36,7 @@ def conn(cursor):
 @pytest.fixture
 def store(monkeypatch, conn):
     monkeypatch.setattr(store_base.psycopg, "connect", lambda *a, **k: conn)
-    return sanitized_store.SanitizedStore(dsn=DSN)
+    return sanitized_store.SanitizedStore(dsn=DSN, schema="corpus")
 
 
 def test_creates_table_and_builds_upsert(store, cursor):
@@ -58,14 +58,13 @@ def test_save_message_formats_vector_literal(store, cursor):
 
 
 def test_synced_versions_maps_id_to_enriched_at(store, cursor):
-    cursor.fetchall.return_value = [("d1", "v1"), ("d2", "v2")]
+    cursor.fetchall.return_value = [("d1", "v1", "a"), ("d2", "v2", None)]
     assert store.synced_versions() == {"d1": "v1", "d2": "v2"}
 
 
-def test_requires_dsn(monkeypatch):
-    monkeypatch.setattr(sanitized_store.settings, "sanitized_database_url", "")
-    with pytest.raises(RuntimeError, match="CORPUS_SANITIZED_DATABASE_URL"):
-        sanitized_store.SanitizedStore()
+def test_synced_state_carries_the_embedded_text(store, cursor):
+    cursor.fetchall.return_value = [("d1", "v1", "Invoice due"), ("d2", "v2", None)]
+    assert store.synced_state() == {"d1": ("v1", "Invoice due"), "d2": ("v2", None)}
 
 
 def test_context_manager_closes(store, conn):
@@ -82,7 +81,14 @@ def test_schema_parameter_names_the_table(monkeypatch, conn, cursor):
     assert any("kbl.messages" in c.args[0] for c in cursor.execute.call_args_list)
 
 
-def test_sanitized_schema_defaults_to_the_raw_schema():
-    settings = sanitized_store.settings
-    expected = settings.sanitized_db_schema or settings.db_schema
-    assert sanitized_store.sanitized_schema() == expected
+def test_ddl_adds_the_uri_column_to_an_existing_table(store, cursor):
+    # A table created before ``uri`` existed gains it; CREATE ... IF NOT EXISTS alone would not.
+    ddl = " ".join(c.args[0] for c in cursor.execute.call_args_list)
+    assert "ADD COLUMN IF NOT EXISTS uri text" in ddl
+    assert "uri" in store._sql
+
+
+def test_a_read_only_store_runs_no_ddl(monkeypatch, conn, cursor):
+    monkeypatch.setattr(store_base.psycopg, "connect", lambda *a, **k: conn)
+    sanitized_store.SanitizedStore(dsn=DSN, schema="corpus", read_only=True)
+    assert not any("ALTER TABLE" in c.args[0] for c in cursor.execute.call_args_list)

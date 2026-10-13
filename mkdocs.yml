@@ -49,6 +49,7 @@ nav:
   - Home: index.md
   - Architecture: architecture.html
   - Configuration: configuration.md
+  - Tiers: tiers.md
   - Sources:
       - Overview: fetchers/index.md
       - IMAP: fetchers/imap.md

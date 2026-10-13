@@ -16,8 +16,12 @@ call is audited, both here at registration rather than in each tool, so a tool
 cannot ship without either. A tool returns a :class:`Result`; its untrusted
 fields are declared when it is registered, from the tier's projection.
 
-The tier also fixes the policy: no tool takes one from its caller, and the
-store factory and the query embedder are the only collaborators injected.
+Everything about a tier comes from its :class:`~corpus.tiers.Tier`: the server
+name, the policy, the store and its DSN. No tool takes a policy from its caller.
+What a tier serves follows from its kind: a source tier serves the documents
+table and the ``corpus_*`` presets, a projected tier its ``messages`` table and
+the ``index_*`` presets. The tier, the store factory, the query embedder and the
+clock are the collaborators injected.
 """
 
 import copy
@@ -39,9 +43,6 @@ from .embeddings import embed_query
 from .enricher import inline_refs
 from .envelope import CURSOR_HELP, clamp, decode_cursor, encode_cursor, offset_of, wrap
 from .query import (
-    SANITIZED_POLICY,
-    SEMANTIC_DEPTH,
-    SENSITIVE_POLICY,
     Filters,
     Page,
     Position,
@@ -55,7 +56,8 @@ from .query import (
 from .sanitized_store import UNTRUSTED_COLS, SanitizedStore
 from .store import DocumentStore
 from .telemetry import audited
-from .tiers import tier as storage_tier
+from .tiers import Tier
+from .tiers import tier as configured_tier
 
 Store = Any
 OpenStore = Callable[[], AbstractContextManager[Store]]
@@ -110,11 +112,14 @@ class Result:
     truncated: bool | None = None
 
 
-def open_index_store() -> SanitizedStore:
-    """Open the sanitized store as the restricted index role, read-only."""
-    if not settings.index_database_url:
-        raise RuntimeError("CORPUS_INDEX_DATABASE_URL not set (corpus-index disabled)")
-    return SanitizedStore(settings.index_database_url, read_only=True)
+def open_documents(t: Tier) -> DocumentStore:
+    """Open a source tier's documents table."""
+    return DocumentStore(t.serving_dsn(), t.schema)
+
+
+def open_index_store(t: Tier) -> SanitizedStore:
+    """Open a projected tier's store read-only, as its reader role if it has one."""
+    return SanitizedStore(t.serving_dsn(), t.schema, read_only=True)
 
 
 def now_utc() -> datetime:
@@ -123,14 +128,11 @@ def now_utc() -> datetime:
 
 
 @dataclass(frozen=True)
-class _Tier:
-    """How one storage tier is served: its policy, store and row classification."""
+class _Surface:
+    """How one kind of tier is served: its store, row classification and presets."""
 
-    name: str
-    server_name: Callable[[], str]
     service: str
-    policy: QueryPolicy
-    open_store: OpenStore
+    open_store: Callable[[Tier], Store]
     page: Callable[[Store, QuerySpec, QueryPolicy, Position | None], Page]
     rows_untrusted: tuple[str, ...]
     get_untrusted: tuple[str, ...]
@@ -291,9 +293,13 @@ def _resumable(nxt: Position | None, offset_ceiling: int) -> Position | None:
 # --- the generic tools -----------------------------------------------------------
 
 
-def _generic(t: _Tier, open_store: OpenStore, embed: Embed, now: Clock) -> list:
-    """The four tools every tier serves, within *t*'s policy."""
-    policy = t.policy
+def _generic(
+    t: _Surface, tier: str, policy: QueryPolicy, open_store: OpenStore, embed: Embed, now: Clock
+) -> list:
+    """The four tools every tier serves, within *policy*.
+
+    Cursors are bound to *tier*'s name, so one cannot be replayed on another tier.
+    """
     query_input = Annotated[
         dict[str, Any] | None,
         WithJsonSchema(_spec_schema(policy, ("filters", "text", "order", "limit", "cursor"))),
@@ -321,7 +327,7 @@ def _generic(t: _Tier, open_store: OpenStore, embed: Embed, now: Clock) -> list:
         A filter, order or field this tier does not allow is refused, never ignored.
         """
         parsed = _spec(spec, policy, refuse=("semantic", "group_by"))
-        args = {"tier": t.name, "spec": _bound(parsed)}
+        args = {"tier": tier, "spec": _bound(parsed)}
         position = decode_cursor(parsed.cursor, "query", args)
         frozen_spec, bounds, at = _resume(parsed, position, now, MAX_OFFSET, keyset=True)
         n = clamp(parsed.limit, policy.max_limit)
@@ -343,12 +349,14 @@ def _generic(t: _Tier, open_store: OpenStore, embed: Embed, now: Clock) -> list:
         """Rows ranked by meaning: *text* is embedded and compared with the tier's vectors.
 
         ``spec`` narrows the candidates with filters and pages with ``cursor``.
-        Ranking stops after 200 rows, the most one vector search ranks.
+        Ranking stops at the tier's search depth (at most 200 rows).
         """
         parsed = _spec(spec, policy, refuse=("semantic", "order", "group_by"))
-        args = {"tier": t.name, "text": text, "spec": _bound(parsed)}
+        args = {"tier": tier, "text": text, "spec": _bound(parsed)}
         position = decode_cursor(parsed.cursor, "search", args)
-        frozen_spec, bounds, at = _resume(parsed, position, now, SEMANTIC_DEPTH, keyset=False)
+        frozen_spec, bounds, at = _resume(
+            parsed, position, now, policy.search_depth, keyset=False
+        )
         n = clamp(parsed.limit, SEARCH_MAX_LIMIT)
         ranked = msgspec.structs.replace(frozen_spec, semantic=embed(text), limit=n, cursor=None)
         with open_store() as store:
@@ -553,12 +561,13 @@ def _corpus_presets(policy: QueryPolicy, open_store: OpenStore, embed: Embed, no
             A ``corpus.result/v1`` envelope whose ``rows`` are ranked matches, each
             with subject, from_addr, sent_at, label, and a 300-character snippet.
         """
-        offset = offset_of(decode_cursor(cursor, "corpus_search", {"query": query}), SEMANTIC_DEPTH)
+        depth = policy.search_depth
+        offset = offset_of(decode_cursor(cursor, "corpus_search", {"query": query}), depth)
         n = clamp(top_k, SEARCH_MAX_LIMIT)
         # One beyond the page shows whether more exist, up to the depth search ranks.
         with open_store() as documents:
             ranked = semantic.semantic_search(
-                documents, query, min(offset + n + 1, SEMANTIC_DEPTH), embed=embed
+                documents, query, min(offset + n + 1, depth), embed=embed
             )
         ranked = ranked[offset:]
         next_cursor = (
@@ -665,65 +674,50 @@ def _corpus_presets(policy: QueryPolicy, open_store: OpenStore, embed: Embed, no
 
 # --- the tiers ----------------------------------------------------------------------
 
-_TIERS = {
-    t.name: t
-    for t in (
-        _Tier(
-            name=storage_tier("sensitive").name,
-            server_name=lambda: "corpus",
-            service="corpus-mcp",
-            policy=SENSITIVE_POLICY,
-            open_store=DocumentStore,
-            page=lambda store, spec, policy, at: store.query_spec(spec, policy, at),
-            rows_untrusted=QUERY_UNTRUSTED,
-            get_untrusted=GET_UNTRUSTED,
-            group_untrusted=(),
-            instructions=(
-                "corpus indexes the user's own email and documents. For ANY question about "
-                "their mail or documents — recent messages, who wrote, what arrived, finding "
-                "or summarizing a message — use these tools instead of saying you lack "
-                "access: corpus_query (structured / time-ranged; the last day is since='1d'), "
-                "corpus_search (semantic 'find X'), corpus_get (full body by id), "
-                "corpus_stats (totals). query, search, aggregate and get take a structured "
-                "spec, for filters and counts the presets do not cover."
-            ),
-            presets=_corpus_presets,
-        ),
-        _Tier(
-            name=storage_tier("sanitized").name,
-            server_name=lambda: settings.index_server_name,
-            service="corpus-index",
-            policy=SANITIZED_POLICY,
-            open_store=open_index_store,
-            page=lambda store, spec, policy, at: store.query(spec, policy, at),
-            rows_untrusted=UNTRUSTED_COLS,
-            get_untrusted=UNTRUSTED_COLS,
-            group_untrusted=GROUP_UNTRUSTED,
-            instructions=(
-                "Sanitized priority signal over the owner's private corpus. You receive "
-                "secret-free summaries and classification only — never raw message bodies. "
-                "Use it to build a prioritized plan: what needs action, what's due, what's "
-                "awaiting a reply. query, search, aggregate and get take a structured spec "
-                "for anything the index_* presets do not cover, such as counts per month."
-            ),
-            presets=_index_presets,
-        ),
-    )
-}
-#: The tiers ``build_mcp`` serves.
-TIERS = tuple(_TIERS)
+_SOURCE = _Surface(
+    service="corpus-mcp",
+    open_store=open_documents,
+    page=lambda store, spec, policy, at: store.query_spec(spec, policy, at),
+    rows_untrusted=QUERY_UNTRUSTED,
+    get_untrusted=GET_UNTRUSTED,
+    group_untrusted=(),
+    instructions=(
+        "corpus indexes the user's own email and documents. For ANY question about "
+        "their mail or documents — recent messages, who wrote, what arrived, finding "
+        "or summarizing a message — use these tools instead of saying you lack "
+        "access: corpus_query (structured / time-ranged; the last day is since='1d'), "
+        "corpus_search (semantic 'find X'), corpus_get (full body by id), "
+        "corpus_stats (totals). query, search, aggregate and get take a structured "
+        "spec, for filters and counts the presets do not cover."
+    ),
+    presets=_corpus_presets,
+)
+_PROJECTED = _Surface(
+    service="corpus-index",
+    open_store=open_index_store,
+    page=lambda store, spec, policy, at: store.query(spec, policy, at),
+    rows_untrusted=UNTRUSTED_COLS,
+    get_untrusted=UNTRUSTED_COLS,
+    group_untrusted=GROUP_UNTRUSTED,
+    instructions=(
+        "Sanitized priority signal over the owner's private corpus. You receive "
+        "secret-free summaries and classification only — never raw message bodies. "
+        "Use it to build a prioritized plan: what needs action, what's due, what's "
+        "awaiting a reply. Rows carry a uri, when one exists, that opens the message "
+        "for the owner. query, search, aggregate and get take a structured spec "
+        "for anything the index_* presets do not cover, such as counts per month."
+    ),
+    presets=_index_presets,
+)
+
+
+def _surface(t: Tier) -> _Surface:
+    return _SOURCE if t.projection is None else _PROJECTED
 
 
 def tier_service(tier: str) -> str:
     """The telemetry service name a tier's server reports as (by default)."""
-    return _tier(tier).service
-
-
-def _tier(name: str) -> _Tier:
-    try:
-        return _TIERS[name]
-    except KeyError:
-        raise ValueError(f"no served tier {name!r}; choose one of {', '.join(TIERS)}") from None
+    return _surface(configured_tier(tier)).service
 
 
 def _registrar(mcp: FastMCP, tier: str) -> Callable[[Callable[..., Result], tuple[str, ...]], None]:
@@ -752,34 +746,41 @@ def _registrar(mcp: FastMCP, tier: str) -> Callable[[Callable[..., Result], tupl
 def build_mcp(
     tier: str,
     *,
+    config: Tier | None = None,
     open_store: OpenStore | None = None,
     embed: Embed = embed_query,
     now: Clock = now_utc,
 ) -> FastMCP:
-    """Build the MCP server for *tier* (``sensitive`` or ``sanitized``).
+    """Build the MCP server for *tier*, a name in the tiers file.
 
     Args:
         tier: The storage tier to serve; it fixes the server name, the policy and
             the store.
+        config: The tier itself (default: the configured tier named *tier*).
         open_store: Opens the tier's store as a context manager (default: the
-            tier's real store; read-only as the index role on ``sanitized``).
+            tier's real store; read-only, as its reader, on a projected tier).
         embed: Embeds search text, with the model the tier's vectors came from.
         now: The clock relative bounds resolve against.
     """
-    t = _tier(tier)
+    t = config or configured_tier(tier)
+    surface = _surface(t)
     mcp = FastMCP(
-        t.server_name(),
+        t.server_name,
         host=settings.host,
         port=settings.mcp_port,
         # Every tool is a self-contained query, so no session state is needed. A
         # stateful server expires idle sessions, and a long-lived client (a gateway
         # MCP proxy, an agent polling once a day) then gets 404 on its next call.
         stateless_http=True,
-        instructions=t.instructions,
+        instructions=surface.instructions,
     )
     register = _registrar(mcp, t.name)
-    opener = open_store or t.open_store
-    for fn, untrusted in (*_generic(t, opener, embed, now), *t.presets(t.policy, opener, embed, now)):
+    opener = open_store or functools.partial(surface.open_store, t)
+    tools = (
+        *_generic(surface, t.name, t.policy, opener, embed, now),
+        *surface.presets(t.policy, opener, embed, now),
+    )
+    for fn, untrusted in tools:
         register(fn, untrusted)
     return mcp
 

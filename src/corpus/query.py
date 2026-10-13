@@ -214,11 +214,16 @@ def parse_spec(data: Mapping[str, Any]) -> QuerySpec:
     return msgspec.convert(data, type=QuerySpec)
 
 
-class QueryPolicy(msgspec.Struct, frozen=True, kw_only=True):
+class QueryPolicy(msgspec.Struct, forbid_unknown_fields=True, frozen=True, kw_only=True):
     """What one tier's query surface allows.
+
+    A tier's ``query`` block in the tiers file decodes straight into this struct,
+    so an unknown key, filter, dimension or order there is refused at startup.
 
     Attributes:
         max_limit: The most rows (or groups) one call returns.
+        search_depth: The deepest a vector-ordered query pages. At most
+            :data:`SEMANTIC_DEPTH`, the most one HNSW scan is set to rank.
         filterable: Filter names a spec may set.
         aggregatable: Dimensions a spec may group by.
         orders: Orders a spec may name.
@@ -226,12 +231,18 @@ class QueryPolicy(msgspec.Struct, frozen=True, kw_only=True):
         semantic: Whether vector ordering is allowed.
     """
 
-    max_limit: int
+    max_limit: Annotated[int, msgspec.Meta(ge=1)]
     filterable: frozenset[str]
-    aggregatable: frozenset[str]
-    orders: frozenset[str]
+    aggregatable: frozenset[GroupBy]
+    orders: frozenset[Order]
     text: bool
     semantic: bool
+    search_depth: Annotated[int, msgspec.Meta(ge=1, le=SEMANTIC_DEPTH)] = SEMANTIC_DEPTH
+
+    def __post_init__(self) -> None:
+        unknown = sorted(self.filterable - set(Filters.__struct_fields__))
+        if unknown:
+            raise ValueError(f"unknown filter(s) {', '.join(map(repr, unknown))}")
 
 
 SANITIZED_POLICY = QueryPolicy(
@@ -441,7 +452,7 @@ def build_query(
 
     ``newest``/``oldest`` page by keyset on ``(sent_at, id)``, so new mail cannot
     shift a page; the others page by offset with ``id`` as the last sort key, and
-    a semantic query no deeper than :data:`SEMANTIC_DEPTH`. One row beyond the
+    a semantic query no deeper than the policy's ``search_depth``. One row beyond the
     page is fetched to learn whether another page exists.
     """
     check(spec, policy)
@@ -471,7 +482,7 @@ def build_query(
             f"ORDER BY {key} {way}, id {way} LIMIT %s"
         )
         return RowQuery(sql, params + [size + 1], size, None)
-    depth = SEMANTIC_DEPTH if order is None else None
+    depth = policy.search_depth if order is None else None
     if position is None:
         offset = 0
     elif isinstance(position, bool) or not isinstance(position, int) or position < 0 or (

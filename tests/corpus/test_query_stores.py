@@ -9,7 +9,7 @@ from datetime import UTC, date, datetime, timedelta, timezone
 import psycopg
 import pytest
 
-from corpus import serving
+from corpus import serving, tiers
 from corpus.config import settings
 from corpus.models import Classification, Record
 from corpus.query import (
@@ -135,6 +135,28 @@ def test_the_index_reads_as_a_read_only_role_without_ddl(reader):
     assert _query(reader, filters={"domain": "work"}, order="priority") == ["w1", "w2"]
     with pytest.raises(psycopg.errors.ReadOnlySqlTransaction):
         reader.save_message({"id": "x"}, _vec(1.0))
+
+
+def test_a_reader_reads_a_column_its_table_lacks_as_null(pg, reader_dsn):
+    # A table from before ``uri`` existed, and the index restarted on the new
+    # version before any sync (the only thing that runs the DDL) has added it.
+    link = "https://mail.google.com/mail/u/0/#all/t1"
+    with psycopg.connect(pg, autocommit=True) as conn:
+        conn.execute(f"ALTER TABLE {SCHEMA}.messages DROP COLUMN uri")
+    with SanitizedStore(dsn=reader_dsn, schema=SCHEMA, read_only=True) as reader:
+        for rows in (
+            reader.query(parse_spec({"filters": {"domain": "travel"}}), SANITIZED_POLICY).rows,
+            reader.query(QuerySpec(semantic=_vec(1.0), limit=3), SANITIZED_POLICY).rows,
+            [reader.get("t1")],
+        ):
+            assert rows and all(set(r) == set(COLS) and r["uri"] is None for r in rows)
+        assert reader.get("t1")["one_line"] == "Flight to Tromsø booked"
+
+        # A writer adds the column; the open reader serves it without a restart.
+        with SanitizedStore(dsn=pg, schema=SCHEMA) as writer:
+            writer._write(f"UPDATE {SCHEMA}.messages SET uri = %s WHERE id = 't1'", (link,))
+        assert reader.get("t1")["uri"] == link
+        assert _query(reader, filters={"domain": "travel"}, order="oldest")[0] == "t5"
 
 
 def test_any_of_lists_and_single_values(reader):
@@ -302,10 +324,10 @@ def test_get_returns_the_projection_or_none(reader):
     assert reader.get("missing") is None
 
 
-def test_the_presets_run_on_the_reader(reader_dsn, monkeypatch):
-    monkeypatch.setattr(settings, "index_database_url", reader_dsn)
-    monkeypatch.setattr(settings, "sanitized_db_schema", SCHEMA)
-    index = serving.build_mcp("sanitized")  # the default store: the index role, read-only
+def test_the_presets_run_on_the_reader(reader_dsn):
+    # The default store: the tier's reader DSN, read-only, as the index role.
+    registry = tiers.Registry(tiers.DEFAULT, settings, {"CORPUS_INDEX_DATABASE_URL": reader_dsn})
+    index = serving.build_mcp("sanitized", config=registry.tier("sanitized"))
 
     def call(tool: str, **args) -> dict:
         return asyncio.run(index.call_tool(tool, args))[1]

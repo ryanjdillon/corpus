@@ -7,6 +7,7 @@ set that request context the way the server does. Arguments are synthetic.
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 from unittest.mock import create_autospec
@@ -17,7 +18,7 @@ from mcp.shared.context import RequestContext
 from starlette.requests import Request
 from starlette.testclient import TestClient
 
-from corpus import serving
+from corpus import serving, tiers
 from corpus.query import Page
 from corpus.sanitized_store import SanitizedStore
 from corpus.telemetry import audited, filter_summary
@@ -221,7 +222,8 @@ def index_store():
 @pytest.fixture
 def index(index_store):
     """The sanitized tier's server, reading ``index_store``."""
-    open_store = create_autospec(serving.open_index_store, return_value=index_store)
+    opener = create_autospec(serving.open_index_store, return_value=index_store)
+    open_store = functools.partial(opener, tiers.tier("sanitized"))
     return serving.build_mcp("sanitized", open_store=open_store)
 
 

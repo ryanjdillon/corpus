@@ -324,6 +324,22 @@ def test_semantic_paging_stops_at_the_ranking_depth():
         build_query(spec, SANITIZED_POLICY, SANITIZED, SEMANTIC_DEPTH)
 
 
+def test_semantic_paging_stops_at_the_policys_search_depth():
+    shallow = msgspec.structs.replace(SANITIZED_POLICY, search_depth=40)
+    spec = QuerySpec(semantic=[0.5, 0.25], limit=100)
+
+    assert build_query(spec, shallow, SANITIZED, 30).size == 10
+    with pytest.raises(ValueError, match="invalid cursor position"):
+        build_query(spec, shallow, SANITIZED, 40)
+
+
+@pytest.mark.parametrize("depth", [0, SEMANTIC_DEPTH + 1])
+def test_a_policy_cannot_search_past_one_hnsw_scan(depth):
+    data = msgspec.to_builtins(SANITIZED_POLICY) | {"search_depth": depth}
+    with pytest.raises(msgspec.ValidationError, match="search_depth"):
+        msgspec.convert(data, QueryPolicy)
+
+
 def test_page_reports_the_next_position():
     offset = build_query(QuerySpec(limit=2, order="priority"), SANITIZED_POLICY, SANITIZED, 4)
     page = offset.page([("a",), ("b",), ("c",)], ("id",))
