@@ -6,7 +6,7 @@ description: >-
   network policies around them.
 type: application
 version: 0.1.1
-appVersion: "0.6.2"
+appVersion: "0.6.3"
 home: https://github.com/ryanjdillon/corpus
 sources:
   - https://github.com/ryanjdillon/corpus
