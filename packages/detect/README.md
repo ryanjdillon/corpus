@@ -2,8 +2,8 @@
 
 Deterministic PII and credential detection, and redaction built on it. The
 detectors behind corpus's secret audit and tier projection, and behind the
-scan-gate egress redactor, packaged alone so a consumer gets them without the
-rest of corpus.
+[scan-gate](https://github.com/ryanjdillon/scan-gate) egress redactor, packaged alone
+so a consumer gets them without the rest of corpus.
 
 ```python
 from corpus_detect import detect, detect_spans, redact

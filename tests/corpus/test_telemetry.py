@@ -98,6 +98,26 @@ def test_configure_sets_providers_and_is_idempotent(monkeypatch):
 # --- sync backlog --------------------------------------------------------------
 
 
+def test_register_gauge_reports_stored_documents_by_label(monkeypatch, documents):
+    from opentelemetry.sdk.metrics import MeterProvider
+    from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
+    stats = documents.return_value.__enter__.return_value.stats
+    stats.return_value = {"total": 3, "by_label": {"personal": 2, "bulk": 1}}
+    gauge_reader = InMemoryMetricReader()
+    meter = MeterProvider(metric_readers=[gauge_reader]).get_meter("test")
+
+    telemetry.register_corpus_size_gauge(meter=meter, documents=documents)
+
+    gauge = _collect(gauge_reader)["corpus.documents.count"]
+    assert {p.attributes["label"]: p.value for p in gauge.data_points} == {
+        "personal": 2,
+        "bulk": 1,
+    }
+    documents.return_value.__exit__.assert_called_once()  # the store is closed per export
+
+
 @pytest.fixture
 def reader():
     """An in-memory reader on a provider of its own, so no global provider is set."""

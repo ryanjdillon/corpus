@@ -7,6 +7,8 @@ tests override the return value and assert on the parsed arguments.
 
 from __future__ import annotations
 
+import runpy
+import sys
 import textwrap
 from unittest.mock import create_autospec
 
@@ -23,7 +25,6 @@ from corpus import (
     sanitize,
     sanitized_store,
     scan,
-    scan_gate,
     serving,
     store,
     telemetry,
@@ -68,14 +69,6 @@ def serve(monkeypatch):
     """Autospec ``serving.serve`` so no MCP server binds a port."""
     mock = create_autospec(serving.serve)
     monkeypatch.setattr(serving, "serve", mock)
-    return mock
-
-
-@pytest.fixture
-def scan_gate_serve(monkeypatch):
-    """Autospec the scan-gate ``serve`` so no gRPC server binds a port."""
-    mock = create_autospec(scan_gate.serve)
-    monkeypatch.setattr(scan_gate, "serve", mock)
     return mock
 
 
@@ -210,18 +203,19 @@ def test_the_old_server_commands_are_deprecated(runner, configure, register_gaug
     assert "deprecated" in result.output.lower()
 
 
+@pytest.mark.filterwarnings("ignore:'corpus.cli' found in sys.modules:RuntimeWarning")
+def test_the_module_runs_as_a_script(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["corpus", "--help"])
+    with pytest.raises(SystemExit) as exit_info:
+        runpy.run_module("corpus.cli", run_name="__main__")
+    assert exit_info.value.code == 0
+    assert "serve" in capsys.readouterr().out
+
+
 def test_serve_refuses_an_unknown_tier(runner, serve):
     result = runner.invoke(cli.main, ["serve", "raw"])
     assert result.exit_code != 0
     serve.assert_not_called()
-
-
-def test_scan_gate_command(runner, configure, shutdown, scan_gate_serve):
-    result = runner.invoke(cli.main, ["scan-gate"])
-    assert result.exit_code == 0, result.output
-    assert configure.call_args.args == ("corpus-scan-gate",)
-    scan_gate_serve.assert_called_once()
-    shutdown.assert_called_once()
 
 
 SANITIZED_DSN = "postgresql://sync-placeholder@db.example.com/ai_sanitized"

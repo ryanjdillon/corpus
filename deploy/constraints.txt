@@ -70,9 +70,7 @@ filetype==1.2.0
 googleapis-common-protos==1.75.5
     # via opentelemetry-exporter-otlp-proto-grpc
 grpcio==1.84.0
-    # via
-    #   corpus (pyproject.toml)
-    #   opentelemetry-exporter-otlp-proto-grpc
+    # via opentelemetry-exporter-otlp-proto-grpc
 h11==0.16.0
     # via
     #   httpcore
@@ -213,7 +211,6 @@ presidio-analyzer==2.2.364
     # via corpus-detect
 protobuf==7.36.2
     # via
-    #   corpus (pyproject.toml)
     #   googleapis-common-protos
     #   opentelemetry-proto
 psycopg==3.3.6

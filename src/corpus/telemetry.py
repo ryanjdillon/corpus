@@ -116,17 +116,20 @@ def _corpus_size_observations(_options, *, documents: Callable[[], Any] | None =
     return [Observation(count, {"label": label}) for label, count in by_label.items()]
 
 
-def register_corpus_size_gauge() -> None:
+def register_corpus_size_gauge(
+    *, meter: Meter | None = None, documents: Callable[[], Any] | None = None
+) -> None:
     """Register an observable gauge of stored documents by data-class.
 
     Intended for a long-running process; the callback reads the store on each
-    export.
+    export. *meter* defaults to the module's meter and *documents* to
+    ``store.DocumentStore``.
     """
     if not enabled():
         return
-    _meter.create_observable_gauge(
+    (meter or _meter).create_observable_gauge(
         "corpus.documents.count",
-        callbacks=[_corpus_size_observations],
+        callbacks=[functools.partial(_corpus_size_observations, documents=documents)],
         unit="{document}",
         description="Stored documents by data-class label.",
     )
