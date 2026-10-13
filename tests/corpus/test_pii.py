@@ -33,7 +33,7 @@ def test_credit_card_requires_adjacent_context():
 @pytest.mark.parametrize(("text", "kind"), [
     ("Betalt med kort 4111 1111 1111 1111 i går.", "credit_card"),
     ("Kortnummer: 4111111111111111", "credit_card"),
-    ("Overfør til kontonummer 12345678903.", "us_bank_number"),
+    ("Overfør til kontonummer 123456789.", "us_bank_number"),
 ])
 def test_norwegian_context_words_count(text, kind):
     assert [s.entity_type for s in pii.scan_spans(text)] == [kind]
@@ -237,3 +237,139 @@ def test_redaction_replaces_a_phone_and_a_national_id():
 
     assert "[REDACTED:phone]" in out and "[REDACTED:no_national_id]" in out
     assert "012 34 568" not in out and fnr not in out
+
+
+def _account(ten: str) -> str | None:
+    """Append the mod-11 check digit to *ten* digits (an independent oracle), or
+    None where the check would be 10 and no account number exists."""
+    k = 11 - sum(int(d) * w for d, w in zip(ten, (5, 4, 3, 2, 7, 6, 5, 4, 3, 2), strict=True)) % 11
+    return None if k == 10 else f"{ten}{0 if k == 11 else k}"
+
+
+def _grouped(number: str, sep: str) -> str:
+    return f"{number[:4]}{sep}{number[4:6]}{sep}{number[6:]}"
+
+
+# Synthetic: bank code 0100 with a made-up account part. It does not start with
+# "00", so the phone pattern cannot read the bank code as an international
+# prefix, and day 01 of month 00 is no birth date, so none of these is also a
+# national id.
+ACCOUNT = next(n for i in range(10_000) if (n := _account(f"010012{i:04d}")))
+NO_CHECK_DIGIT = next(f"010012{i:04d}" for i in range(10_000) if not _account(f"010012{i:04d}"))
+NBSP, NARROW_NBSP = "\u00a0", "\u202f"
+
+
+def test_the_synthetic_account_is_not_a_national_id():
+    assert not pii._is_no_national_id(ACCOUNT)
+
+
+@pytest.mark.parametrize("written", [
+    f"Overfør til {_grouped(ACCOUNT, '.')} innen fredag.",
+    f"Overfør til {_grouped(ACCOUNT, ' ')} innen fredag.",
+    f"Overfør til {_grouped(ACCOUNT, NBSP)} innen fredag.",
+    f"Overfør til {_grouped(ACCOUNT, NARROW_NBSP)} innen fredag.",
+    f"Overfør til {ACCOUNT[:4]}{NBSP}{ACCOUNT[4:6]} {ACCOUNT[6:]} innen fredag.",
+    f"Overfør til kontonummer {ACCOUNT} innen fredag.",
+    f"Overfør til kontonr. {ACCOUNT} innen fredag.",
+    f"Pay into bank account {ACCOUNT} by Friday.",
+])
+def test_a_norwegian_account_number_is_found_in_each_written_form(written):
+    spans = pii.scan_spans(written)
+
+    assert [s.entity_type for s in spans] == ["no_bank_account"]
+    assert [c for c in written[spans[0].start:spans[0].end] if c.isdigit()] == list(ACCOUNT)
+    assert pii.scan(written).secret_counts == {"no_bank_account": 1}
+
+
+@pytest.mark.parametrize("written", [
+    f"Betal {_grouped(ACCOUNT, '.')} 500 kr",
+    f"Betal {_grouped(ACCOUNT, '.')} kr 500,-",
+    f"Betal {_grouped(ACCOUNT, ' ')} 500 kr",
+    f"Betal {_grouped(ACCOUNT, NBSP)}{NBSP}500,00 kr",
+    f"Betal til kontonummer {ACCOUNT} 500 kr",
+])
+def test_an_amount_after_an_account_number_does_not_hide_it(written):
+    spans = pii.scan_spans(written)
+
+    # The bare form would otherwise fall to the US bank recognizer, which an
+    # account word beside any digit run satisfies.
+    assert [s.entity_type for s in spans] == ["no_bank_account"]
+    assert [c for c in written[spans[0].start:spans[0].end] if c.isdigit()] == list(ACCOUNT)
+    assert pii.scan(written).secret_counts == {"no_bank_account": 1}
+
+
+@pytest.mark.parametrize("word", [
+    "kontoen", "kontonummeret", "bankkontoen", "bankkontoer",
+])
+def test_the_definite_and_plural_account_words_count(word):
+    text = f"Pengene står på {word} {ACCOUNT}."
+
+    assert [s.entity_type for s in pii.scan_spans(text)] == ["no_bank_account"]
+
+
+@pytest.mark.parametrize(("sep", "kinds"), [
+    (".", []),
+    (" ", []),
+    # A bare run beside an account word is still a US bank number: the
+    # Norwegian check failing does not make it safe to egress.
+    ("", ["us_bank_number"]),
+])
+def test_an_account_number_with_a_wrong_check_digit_is_not_one(sep, kinds):
+    wrong = ACCOUNT[:-1] + str((int(ACCOUNT[-1]) + 1) % 10)
+    for number in (wrong, NO_CHECK_DIGIT + "0", NO_CHECK_DIGIT + "1"):
+        text = f"kontonummer {_grouped(number, sep)}"
+        assert [s.entity_type for s in pii.scan_spans(text)] == kinds
+
+
+@pytest.mark.parametrize("text", [
+    f"Sak {ACCOUNT} er avsluttet.",
+    f"Kontoret ringte om sak {ACCOUNT}.",
+])
+def test_a_bare_account_number_needs_an_account_word_beside_it(text):
+    assert pii.scan_spans(text) == []
+
+
+@pytest.mark.parametrize("text", [
+    f"Ref {_grouped(ACCOUNT, '.')}.7",
+    f"Ref 9.{_grouped(ACCOUNT, '.')}",
+    f"Ref 9{_grouped(ACCOUNT, '.')}",
+    f"Ref 1 {_grouped(ACCOUNT, ' ')}",
+    f"Ref {_grouped(ACCOUNT, ' ')} 23 45678",
+    f"Ref {_grouped(ACCOUNT, NBSP)}{NBSP}23{NBSP}45678",
+    f"Ref {_grouped(ACCOUNT, ' ')}.7",
+    f"Ref {ACCOUNT[:4]}.{ACCOUNT[4:6]} {ACCOUNT[6:]}",
+])
+def test_an_account_number_inside_a_longer_grouping_or_with_mixed_separators_is_not_one(text):
+    # No context word, so nothing else claims the digits either.
+    assert pii.scan_spans(text) == []
+
+
+@pytest.mark.parametrize("text", [
+    f"kontonummer 9{ACCOUNT}",
+    f"kontonummer {ACCOUNT}.5",
+])
+def test_a_bare_account_number_inside_a_longer_run_is_only_a_us_bank_number(text):
+    assert [s.entity_type for s in pii.scan_spans(text)] == ["us_bank_number"]
+
+
+@pytest.mark.parametrize("text", [
+    f"kontonummer {FNR}",
+    f"Fødselsnummer og konto: {FNR}",
+    f"fnr {FNR}",
+])
+def test_a_bare_national_id_is_labelled_a_national_id_even_beside_an_account_word(text):
+    # Every national id also passes the account check (its last digit is the
+    # same mod-11), so the stricter national id check decides the label.
+    assert [s.entity_type for s in pii.scan_spans(text)] == ["no_national_id"]
+    assert pii.scan(text).secret_counts == {"no_national_id": 1}
+
+
+@pytest.mark.parametrize("text", [
+    "Tlf: 012 34 568",
+    "Mobil +47 0000 12 34567",
+    "Møte 2026.10.12 kl 10.00",
+    "Sendt 12.10.2026, svar innen 2026-10-19",
+    "Versjon 2026.10.12345",
+])
+def test_phone_numbers_and_dates_are_not_account_numbers(text):
+    assert not [s for s in pii.scan_spans(text) if s.entity_type == "no_bank_account"]

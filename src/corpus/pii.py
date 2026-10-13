@@ -61,9 +61,13 @@ _CONTEXT_WINDOW = 48
 # Presidio's context words are English only. Norwegian mail names a card or an
 # account in Norwegian, so these count as context too. A US SSN has no
 # Norwegian name; it is found only beside "ssn" or "social security".
+_ACCOUNT_WORDS = (
+    "konto", "kontoen", "kontonummer", "kontonummeret", "kontonr",
+    "bankkonto", "bankkontoen", "bankkontoer",
+)
 _EXTRA_CONTEXT = {
     "credit_card": ("kort", "kortet", "kortnummer", "bankkort", "kredittkort", "betalingskort"),
-    "us_bank_number": ("konto", "kontoen", "kontonummer", "kontonr", "bankkonto"),
+    "us_bank_number": _ACCOUNT_WORDS,
 }
 
 # Pattern recognizers used standalone (no AnalyzerEngine / spaCy model). Driver's
@@ -90,6 +94,31 @@ _NO_NATIONAL_ID = re.compile(r"(?<!\d)(\d{6})[ ]?(\d{5})(?!\d)")
 _NO_NATIONAL_ID_ENTITY = "no_national_id"
 _K1_WEIGHTS = (3, 7, 6, 1, 8, 9, 4, 5, 2)
 _K2_WEIGHTS = (5, 4, 3, 2, 7, 6, 5, 4, 3, 2)
+
+# Norwegian bank account number (kontonummer): 11 digits, written "NNNN.NN.NNNNN",
+# "NNNN NN NNNNN" or bare, the last a mod-11 check digit over the first ten
+# (_K2_WEIGHTS: the same check a national id ends with). The grouped forms are
+# specific to account numbers and count on format alone; a bare 11-digit run is
+# any reference number with a 1-in-11 chance of passing, so it needs an account
+# word beside it, like the US bank recognizer. A bare run that is a valid national
+# id is labelled a national id: its check is the account's plus a birth date and
+# a second check digit, so it is the more specific reading.
+#
+# Each form is refused only where the digits continue its own grouping, so an
+# amount after the number ("0100.12.00018 500 kr") does not hide it: the dotted
+# form by another ".digit", the spaced form by two more spaced groups, the bare
+# form by a decimal part. Mail spaces the groups with a no-break space (U+00A0)
+# or a narrow one (U+202F) as often as with a plain space.
+_NO_BANK_ACCOUNT = re.compile(
+    r"(?<![\w+])(?:"
+    r"(?<!\d\.)(?P<dotted>\d{4}\.\d{2}\.\d{5})(?!\.\d)"
+    r"|(?<!\d[., \u00a0\u202f])(?P<spaced>\d{4}[ \u00a0\u202f]\d{2}[ \u00a0\u202f]\d{5})"
+    r"(?![.,]\d)(?![ \u00a0\u202f]\d+[ \u00a0\u202f]\d)"
+    r"|(?<!\d[.,])(?P<bare>\d{11})(?![.,]\d)"
+    r")(?!\w)"
+)
+_NO_BANK_ACCOUNT_ENTITY = "no_bank_account"
+_NO_BANK_ACCOUNT_CONTEXT = (*_ACCOUNT_WORDS, "account", "acct", "bank")
 
 # Redaction-only, like email: phone numbers are everywhere in signatures, so they
 # are not secrets for the audit, but they must not egress to an untrusted model.
@@ -182,6 +211,19 @@ def _no_national_id_spans(text: str) -> Iterator[Span]:
             yield Span(m.start(), m.end(), _NO_NATIONAL_ID_ENTITY, "pii")
 
 
+def _no_bank_account_spans(text: str) -> Iterator[Span]:
+    for m in _NO_BANK_ACCOUNT.finditer(text):
+        digits = re.sub(r"\D", "", m.group())
+        if _check_digit(digits[:10], _K2_WEIGHTS) != int(digits[10]):
+            continue
+        if m.group("bare") and (
+            _is_no_national_id(digits)
+            or not _context_near(text, m.start(), m.end(), list(_NO_BANK_ACCOUNT_CONTEXT))
+        ):
+            continue
+        yield Span(m.start(), m.end(), _NO_BANK_ACCOUNT_ENTITY, "pii")
+
+
 def _phone_end(m: re.Match[str]) -> int | None:
     """Where the phone number in a digit-group run ends, or None if it holds none.
 
@@ -221,13 +263,21 @@ def _iter_spans(text: str, *, for_egress: bool) -> Iterator[Span]:
     Applies the same precision gates as before: ``_CONTEXT_REQUIRED`` types need a
     context word beside the match, the rest need ``_MIN_SCORE``. Email and phone
     numbers are yielded only ``for_egress`` (the redaction path); the
-    national id number is yielded on both paths.
+    national id and bank account numbers are yielded on both paths. The US bank
+    recognizer matches any digit run beside an account word, so it yields nothing
+    over a Norwegian number: the Norwegian checksum names it more precisely.
     """
+    norwegian = [*_no_national_id_spans(text), *_no_bank_account_spans(text)]
+    yield from norwegian
     for rec in _RECOGNIZERS:
         ctx_words = getattr(rec, "context", None) or []
         for res in rec.analyze(text=text, entities=rec.supported_entities, nlp_artifacts=None):
             name = _ENTITY_NAMES.get(res.entity_type)
             if not name:
+                continue
+            if name == "us_bank_number" and any(
+                n.start < res.end and res.start < n.end for n in norwegian
+            ):
                 continue
             if name in _CONTEXT_REQUIRED:
                 # A plausible match AND a context word right beside it — this is what
@@ -237,7 +287,6 @@ def _iter_spans(text: str, *, for_egress: bool) -> Iterator[Span]:
                     yield Span(res.start, res.end, name, "pii")
             elif res.score >= _MIN_SCORE:
                 yield Span(res.start, res.end, name, "pii")
-    yield from _no_national_id_spans(text)
     if for_egress:
         yield from _phone_spans(text)
         for res in _EMAIL_RECOGNIZER.analyze(

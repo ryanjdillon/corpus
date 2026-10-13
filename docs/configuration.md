@@ -183,6 +183,11 @@ What is redacted, each replaced by a `[REDACTED:<type>]` placeholder:
 - Norwegian national id numbers (fødselsnummer, D-nummer, H-nummer, and the tax
   administration's Tenor synthetic test numbers), only when both mod-11 check
   digits and the birth date are valid;
+- Norwegian bank account numbers, only when the mod-11 check digit is valid:
+  dotted (`NNNN.NN.NNNNN`) or spaced (`NNNN NN NNNNN`, no-break spaces too) on
+  format, and a bare 11-digit run only with an account word beside it (`konto`,
+  `kontonummer`, `kontonr`, `account`, `bank`…). A bare run that is also a valid national id
+  is reported as a national id;
 - email addresses;
 - phone numbers, only when they are clearly phones: an international prefix
   (`+47`, or `0047` followed by a separator), or a phone word within 32
@@ -196,7 +201,7 @@ What is redacted, each replaced by a `[REDACTED:<type>]` placeholder:
 
 Email addresses and phone numbers are redacted on egress only. They are too
 common in mail to count as findings in the archive audit; the national id
-number is counted there too.
+and bank account numbers are counted there too.
 
 The envoy-ext-proc adapter expects the request body in `Buffered` processing
 mode, where the proxy sends the whole body as one gRPC message, so

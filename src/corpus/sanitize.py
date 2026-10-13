@@ -116,7 +116,7 @@ KEEP_ALL = Redaction(
 
 #: Bump when the projection's output changes for an unchanged policy (the
 #: matching, a placeholder), so the next sync re-projects every row.
-REDACTION_VERSION = 1
+REDACTION_VERSION = 2
 
 
 class Policy(_Config):
@@ -230,7 +230,8 @@ _PII_CLASS = {
     "email": "email_address",
     "phone": "phone",
     **{t: "financial_id" for t in (
-        "credit_card", "iban", "us_bank_number", "crypto_wallet", "no_national_id", "us_ssn",
+        "credit_card", "iban", "us_bank_number", "crypto_wallet", "no_national_id",
+        "no_bank_account", "us_ssn",
     )},
 }
 #: A name's word: letters, with inner apostrophes or hyphens ("O'Neil", "Anne-Marie").
