@@ -45,6 +45,7 @@ tiers:
         financial_id: mask
         email_address: drop
         phone: drop
+        place_name: drop
       sensitivity_gate: high
       gate_action: redact
     serve: {server_name: corpus-index, access: [orchestrator, pi]}
@@ -180,8 +181,9 @@ OIDC subject or group later.
 
 ## Redaction
 
-A projected tier's free-text columns are `one_line`, `action_summary` and
-`organizations` (`sanitize.REDACTED_COLS`): what a model wrote about the mail.
+A projected tier's free-text columns are `one_line`, `action_summary`,
+`organizations` and the place and carrier names in `facts`
+(`sanitize.REDACTED_COLS`): what a model wrote about the mail.
 Before they are stored, each entity class in them is kept, masked, replaced or
 dropped, as `projection.redact` says. The policy applies to every row, below
 the gate as well as at it.
@@ -204,6 +206,7 @@ one.
 | `financial_id` | `keep`, `mask`, `drop` | What the `pii` scan finds: a card number, an IBAN, a US bank account or SSN, a crypto wallet, a Norwegian national id (see [its limits](#what-financial_id-does-not-find)). |
 | `email_address` | `keep`, `drop` | Email addresses, found by the `pii` scan. |
 | `phone` | `keep`, `drop` | Phone numbers, found by the `pii` scan (an international prefix, or a phone word just before the number). |
+| `place_name` | `keep`, `drop` | The name of a trip's origin and destination in `facts`; its country is kept either way (see [Typed facts](#typed-facts)). |
 
 The actions:
 
@@ -235,6 +238,7 @@ keeps only the entries that are not.
 | `financial_id` | `mask` | As for references; the full number never leaves the sensitive tier. |
 | `email_address` | `drop` | An address identifies a person and adds nothing to a summary. |
 | `phone` | `drop` | As for addresses. |
+| `place_name` | `drop` | A place a message names can be someone's home, and no class finds a street address; the country is what the query model filters and counts by. |
 
 The rule behind it: keep personal data where it carries context, and mask or
 drop it where it is only an identifier. This is the default of any projected
@@ -328,6 +332,57 @@ The redacted text is still third-party-derived, so its columns stay in
 `untrusted_fields` and are checked for `instruction_like`. The placeholders
 match none of the patterns, so redaction never raises the flag; an injection
 that survives it is still flagged (see [MCP results](mcp-results.md#flags)).
+
+## Typed facts
+
+`facts` is a `jsonb` column holding the enrichment's typed facts (see
+[Enrichment](enrichment.md#typed-facts)), so far `{"travel": {start, end,
+origin, destination, carrier}}`. The query model filters and counts by them
+(see [Query model](query.md#typed-facts)). It is projected like any column:
+a tier whose `fields` name `facts` carries it, any other stores NULL. The
+default `fields` (every column) include it.
+
+The projection (`sanitize.project_facts`) checks the record against the
+schema again, so the column holds only ISO dates and upper-case country
+codes, which the query model compares and casts; a malformed record projects
+as NULL. Dates and country codes are kept as they are: a date is not an
+identifier, and a country is too coarse to locate anyone.
+
+A place's name is not safe to keep. The model writes the place as the message
+names it, and for a stay that can be someone's home: "Kari's place, Storgata 5,
+0155 Oslo". Redaction finds the names of the enrichment's `people`, references
+and what the `pii` scan knows, but no class finds a street address, and a
+person the enrichment does not list ("Anna Berg's flat, 12 Rue de Rivoli")
+passes whole. So by default (`place_name: drop`) a place keeps only its
+country: `{"country": "NO"}`. A tier that sets `place_name: keep` gets
+`{"name", "country"}`, the name redacted like the free text (a credential is
+always removed; "Kari's cabin" follows `person_name`), and with it the risk of
+an address. The query model reads only the countries, the dates and the
+carrier, so the setting changes no filter or group.
+
+The carrier is kept and redacted like the free text. A carrier that reads as
+an address or a person rather than an operator is dropped: one with a
+possessive ("Kari's", "Jonas'"), or a number beside a street word ("Storgata
+5", "12 Rue de Rivoli", "1 Main Street"; `sanitize._NOT_A_CARRIER`). That is
+a heuristic, not a recogniser: an address in another form, or a bare personal
+name, still passes, and an operator with a possessive in its name is dropped.
+
+The column is NULL when a row has no travel facts, and when the row is stubbed
+at the gate.
+
+`facts` is in `untrusted_fields`, and a stale row (see
+[below](#serving-a-row-not-yet-re-projected)) serves it NULL, so no `facts`
+filter or group reaches the facts of a row the current policy has not
+projected. A reader on a table the sync has not yet given the column reads it
+as a typed NULL, so the `facts` filters still run.
+
+The digest covers `facts` only through `fields`, and `place_name` only when
+`fields` include `facts`: a tier whose file lists its `fields` without `facts`
+keeps its digest and is not re-projected. A tier on
+the default `fields` gains the column, so its digest changes and every row is
+stale after the upgrade. Its `one_line`s do not change, so re-projecting embeds
+nothing: run `corpus sync --reproject` once after the upgrade rather than wait
+for the capped daily syncs (see [Rolling out a policy change](#rolling-out-a-policy-change)).
 
 ## The message link: `uri`
 
@@ -467,8 +522,8 @@ passes `Tier.projection.policy` to the store), and serves a row whose
 degraded until the sync re-projects it:
 
 - `one_line` is `[pending redaction] <domain> item`;
-- `action_summary`, `organizations`, and every column outside the policy's
-  `fields`, are NULL.
+- `action_summary`, `organizations`, `facts`, and every column outside the
+  policy's `fields`, are NULL.
 
 The store reads `messages` through a subquery that applies this
 (`sanitized_store._served`), so every read path sees only the degraded

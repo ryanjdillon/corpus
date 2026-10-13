@@ -13,12 +13,15 @@ from corpus.enrichment import (
     Disposition,
     Domain,
     Enrichment,
+    Facts,
     Importance,
     Person,
+    Place,
     Reference,
     ReferenceKind,
     SecretAudit,
     SecretSeverity,
+    Travel,
 )
 
 
@@ -42,7 +45,7 @@ def test_json_schema_forces_every_field_required():
     ):
         assert field in enr["required"]
     # Nested structs too: Person.role and every Appointment field were skippable.
-    for name in ("Person", "Reference", "Appointment", "Money"):
+    for name in ("Person", "Reference", "Appointment", "Money", "Facts", "Travel", "Place"):
         nested = schema["$defs"][name]
         assert set(nested["required"]) == set(nested["properties"])
 
@@ -117,7 +120,8 @@ def test_record_from_before_roles_still_decodes(people):
 
 
 def test_upgrade_keeps_a_current_record_as_it_is():
-    current = {"people": [{"role": "friend", "name": None}], "references": []}
+    current = {"people": [{"role": "friend", "name": None}], "references": [],
+               "facts": {"travel": None}}
 
     assert enrichment.upgrade(current) == current
 
@@ -182,6 +186,32 @@ def test_guided_schema_carries_no_keyword_a_provider_may_not_know():
     assert "minLength" not in msgspec.json.encode(schema).decode()
 
 
+#: The JSON-schema keywords the guided schema used before typed facts. Every
+#: supported provider accepts them; a new one must be tried on each first.
+_KNOWN_KEYWORDS = {
+    "$ref", "anyOf", "default", "description", "enum", "format", "items", "maxItems",
+    "maxLength", "required", "title", "type",
+}
+
+
+def _keywords(node: object) -> set[str]:
+    if isinstance(node, list):
+        return set().union(*map(_keywords, node)) if node else set()
+    if not isinstance(node, dict):
+        return set()
+    found = set()
+    for key, value in node.items():
+        if key in ("properties", "$defs"):
+            found |= set().union(*map(_keywords, value.values())) if value else set()
+        else:
+            found |= {key} | _keywords(value)
+    return found
+
+
+def test_guided_schema_adds_no_keyword_beyond_the_known_set():
+    assert _keywords(enrichment.json_schema()) <= _KNOWN_KEYWORDS
+
+
 def test_a_stored_person_with_only_name_and_role_still_decodes():
     # Person forbids unknown keys; the old stored shape had no others.
     old = {"one_line": "x", "abstract": "y", "category": "personal",
@@ -196,7 +226,70 @@ def test_a_stored_person_with_only_name_and_role_still_decodes():
 def test_upgrade_gives_an_old_record_an_empty_reference_list():
     upgraded = enrichment.upgrade({"one_line": "x"})
 
-    assert upgraded == {"one_line": "x", "references": []}
+    assert upgraded == {"one_line": "x", "references": [], "facts": {"travel": None}}
+
+
+def test_decode_reads_typed_travel_facts():
+    doc = enrichment.decode(
+        """
+        {"one_line": "A flight is booked", "abstract": "A return flight.",
+         "category": "transactional", "domain": "travel",
+         "facts": {"travel": {"start": "2025-06-02", "end": "2025-06-16",
+                              "origin": {"name": "Oslo", "country": "no"},
+                              "destination": {"name": "Boston", "country": "US"},
+                              "carrier": "Fjordair"}}}
+        """
+    )
+
+    assert doc.facts == Facts(travel=Travel(
+        start=date(2025, 6, 2), end=date(2025, 6, 16),
+        origin=Place(name="Oslo", country="NO"), destination=Place(name="Boston", country="US"),
+        carrier="Fjordair",
+    ))
+
+
+@pytest.mark.parametrize("country", ["U1", "  ", "", "ü", "Ü1", "SW", "UK", "usa", "Sweden"])
+def test_a_country_that_is_not_a_code_is_dropped_not_refused(country):
+    # A place without a country is still a fact; refusing it would lose the record.
+    assert Place(name="Boston", country=country).country is None
+
+
+@pytest.mark.parametrize(("country", "code"), [("GB", "GB"), ("gb", "GB"), (" no ", "NO")])
+def test_an_iso_country_code_is_kept_upper_case(country, code):
+    assert Place(name="Oslo", country=country).country == code
+
+
+def test_a_country_that_is_not_a_code_keeps_the_record():
+    # "usa" is past the two letters of a code but within the schema's bound, so
+    # the record decodes and only the country is lost.
+    record = {"one_line": "x", "abstract": "y", "category": "transactional",
+              "facts": {"travel": {"start": "2025-06-02",
+                                   "destination": {"name": "Boston", "country": "usa"}}}}
+    doc = enrichment.decode(msgspec.json.encode(record).decode())
+    assert doc.facts.travel.destination == Place(name="Boston", country=None)
+    assert doc.facts.travel.start == date(2025, 6, 2)
+
+
+def test_a_record_without_facts_decodes_with_none():
+    doc = enrichment.decode('{"one_line": "x", "abstract": "y", "category": "personal"}')
+    assert doc.facts == Facts(travel=None)
+    old = enrichment.decode('{"one_line": "x", "abstract": "y", "category": "personal", '
+                            '"facts": null}')
+    assert old.facts.travel is None
+
+
+def test_model_output_refuses_an_unknown_travel_key():
+    record = {"one_line": "x", "abstract": "y", "category": "personal",
+              "facts": {"travel": {"booking": "AB12CD"}}}
+    with pytest.raises(msgspec.ValidationError):
+        msgspec.json.decode(msgspec.json.encode(record), type=Enrichment)
+
+
+def test_the_guided_schema_bounds_the_travel_facts():
+    defs = enrichment.json_schema()["$defs"]
+    assert defs["Place"]["properties"]["country"]["anyOf"][0]["maxLength"] == 8
+    assert defs["Travel"]["properties"]["carrier"]["anyOf"][0]["maxLength"] == 120
+    assert "facts" in defs["Enrichment"]["required"]
 
 
 def test_decode_rejects_value_outside_enum():

@@ -11,6 +11,7 @@ import pytest
 
 from corpus import sanitized_store, store
 from corpus.query import (
+    FILTERS,
     SANITIZED_POLICY,
     SEMANTIC_DEPTH,
     SENSITIVE_POLICY,
@@ -40,7 +41,10 @@ FILTER_VALUES = {
     "due": True, "sender_domain": "example.com", "account": "me@example.com",
     "source": "imap:test", "label": "personal", "organization": "Acme",
     "sent_at": {"since": "2025-01-01"}, "deadline": {"until": "14d"},
-    "max_sensitivity": "medium",
+    "max_sensitivity": "medium", "facts.travel": True,
+    "facts.travel.origin_country": "NO", "facts.travel.destination_country": ["us", "CA"],
+    "facts.travel.carrier": "Norwegian", "facts.travel.start": {"since": "2025-01-01"},
+    "facts.travel.end": {"until": "2026-01-01"},
 }
 
 
@@ -65,7 +69,8 @@ def _all(policy: QueryPolicy, kind: str) -> list[str]:
 
 
 def test_every_filter_has_a_value_to_test_with():
-    assert set(FILTER_VALUES) == set(Filters.__struct_fields__)
+    assert set(FILTER_VALUES) == set(FILTERS)
+    assert set(FILTERS.values()) == set(Filters.__struct_fields__)
 
 
 def test_the_tier_policies_match_the_index_defaults():
@@ -74,6 +79,8 @@ def test_the_tier_policies_match_the_index_defaults():
     assert SENSITIVE_POLICY.aggregatable == {"label", "month", "account"}
     assert SANITIZED_POLICY.aggregatable == {
         "domain", "sender_domain", "organization", "month", "category", "importance",
+        "facts.travel.origin_country", "facts.travel.destination_country",
+        "facts.travel.start_year",
     }
     assert "label" not in SANITIZED_POLICY.filterable  # the sanitized tier has no label
 
@@ -164,6 +171,15 @@ def test_a_policy_cannot_reach_a_dimension_the_store_lacks():
         ({"group_by": ["month", "month"]}, "names a dimension twice"),
         ({"group_by": ["sender"]}, "Invalid enum value 'sender'"),
         ({"text": ""}, "length >= 1"),
+        ({"filters": {"facts.travel.destination_country": "USA"}}, "matching regex"),
+        ({"filters": {"facts.travel.destination_country": []}}, "is an empty list"),
+        ({"filters": {"facts.travel.start": {"since": "spring"}}}, "invalid date"),
+        ({"filters": {"facts.travel.price": 3}}, "unknown field `facts.travel.price`"),
+        ({"filters": {"travel_carrier": "SAS"}}, "unknown field `travel_carrier`"),
+        ({"group_by": ["facts.travel.carrier"]}, "Invalid enum value"),
+        ({"filters": {"facts.travel.origin_country": ["NO"] * 5000}}, "lists 5000 values"),
+        ({"filters": {"facts.travel.destination_country": ["US"] * 51}}, "at most 50"),
+        ({"filters": {"domain": ["travel"] * 51}}, "lists 51 values; at most 50"),
     ],
 )
 def test_parse_spec_rejects_an_invalid_spec(data, message):
@@ -176,6 +192,14 @@ def test_parse_spec_takes_one_value_or_a_list():
     assert [d.value for d in spec.filters.domain] == ["travel", "work"]
     assert spec.filters.importance.value == "high"
     assert spec.filters.used() == ["domain", "importance"]
+
+
+def test_a_list_filter_takes_up_to_fifty_values():
+    spec = parse_spec({"filters": {"facts.travel.destination_country": ["US"] * 50,
+                                   "domain": ["travel"] * 50}})
+    assert len(spec.filters.get("facts.travel.destination_country")) == 50
+    # Bounded in validation, not as maxItems: the tool schema gains no keyword.
+    assert "maxItems" not in msgspec.json.encode(msgspec.json.schema(QuerySpec)).decode()
 
 
 def test_the_spec_has_a_json_schema_for_tool_input():
@@ -384,3 +408,75 @@ def test_aggregate_groups_in_order_and_counts_items_apart():
         "organization": "Acme", "month": "2025-01", "count": 2,
         "min_sent_at": None, "max_sent_at": None,
     }
+
+
+# --- typed facts ----------------------------------------------------------------------
+
+
+def test_a_facts_filter_is_named_by_its_path_and_maps_to_a_fixed_expression():
+    spec = _spec(filters={
+        "facts.travel.destination_country": "us",
+        "facts.travel.start": {"since": "2025-01-01", "until": "2026-01-01"},
+    })
+    assert spec.filters.used() == ["facts.travel.destination_country", "facts.travel.start"]
+
+    built = build_query(spec, SANITIZED_POLICY, SANITIZED, now=lambda: NOW)
+
+    assert "facts->'travel'->'destination'->>'country' = ANY(%s)" in built.sql
+    assert (
+        "(facts->'travel'->>'start')::date >= %s AND (facts->'travel'->>'start')::date < %s"
+    ) in built.sql
+    # A country is compared upper-case; a start bound is a day.
+    assert built.params[:3] == [["US"], "2025-01-01", "2026-01-01"]
+
+
+def test_a_facts_key_never_reaches_the_sql():
+    spec = _spec(
+        filters={name: FILTER_VALUES[name] for name in FILTERS if name.startswith("facts.")}
+    )
+    built = build_query(spec, SANITIZED_POLICY, SANITIZED, now=lambda: NOW)
+    assert "facts.travel" not in built.sql
+    assert built.params[:3] == [True, ["NO"], ["US", "CA"]]
+    assert "lower(facts->'travel'->>'carrier') = lower(%s)" in built.sql
+
+    agg = build_aggregate(
+        _spec(group_by=["facts.travel.destination_country", "facts.travel.start_year"]),
+        SANITIZED_POLICY, SANITIZED,
+    )
+    assert "facts.travel" not in agg.sql
+    assert "AS g1" in agg.sql and "AS g2" in agg.sql
+    assert "to_char((facts->'travel'->>'start')::date, 'YYYY') AS g2" in agg.sql
+
+
+def test_an_aggregate_by_facts_reports_each_group_by_its_dimension():
+    built = build_aggregate(
+        _spec(group_by=["facts.travel.destination_country", "facts.travel.start_year"],
+              filters={"facts.travel": True}),
+        SANITIZED_POLICY, SANITIZED,
+    )
+    agg = built.result([("US", "2025", 3, None, None)], 3)
+    assert agg.groups == [{
+        "facts.travel.destination_country": "US", "facts.travel.start_year": "2025",
+        "count": 3, "min_sent_at": None, "max_sent_at": None,
+    }]
+
+
+def test_the_documents_tier_has_no_facts():
+    wide = msgspec.structs.replace(SENSITIVE_POLICY, filterable=SANITIZED_POLICY.filterable)
+    with pytest.raises(ValueError, match="filter 'facts.travel.start' is not available"):
+        build_query(_spec(filters={"facts.travel.start": {"since": "2025-01-01"}}), wide,
+                    DOCUMENTS)
+
+
+def test_a_policy_names_facts_filters_by_their_path():
+    data = msgspec.to_builtins(SENSITIVE_POLICY)
+    with pytest.raises(msgspec.ValidationError, match="unknown filter"):
+        msgspec.convert(data | {"filterable": ["travel_start"]}, QueryPolicy)
+    allowed = msgspec.convert(data | {"filterable": ["facts.travel.start"]}, QueryPolicy)
+    assert allowed.filterable == {"facts.travel.start"}
+
+
+def test_a_facts_filter_is_built_from_python_by_its_attribute():
+    spec = QuerySpec(filters=Filters(travel_destination_country=["US"]))
+    assert spec.filters.used() == ["facts.travel.destination_country"]
+    assert msgspec.to_builtins(spec.filters)["facts.travel.destination_country"] == ["US"]

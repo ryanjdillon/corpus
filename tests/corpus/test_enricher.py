@@ -81,6 +81,16 @@ def test_prompt_asks_for_role_based_summaries_and_separate_references(client):
         assert kind.value in system
 
 
+def test_prompt_fills_travel_facts_only_for_bookings_and_keeps_references_out(client):
+    Enricher(model="local", client=client).enrich("Hello there")
+
+    system = client.post.call_args.kwargs["json"]["messages"][0]["content"]
+    assert "facts.travel: fill it ONLY for a travel booking, e-ticket or itinerary" in system
+    assert "otherwise null" in system
+    assert "ISO 3166-1 alpha-2" in system
+    assert "Never put a booking code, ticket or seat number here" in system
+
+
 def test_enrich_parses_people_by_role_and_references(client):
     reply = {
         "one_line": "A friend proposes a weekend trip",

@@ -34,13 +34,17 @@ Filters:
 
 | Filter | Matches |
 | --- | --- |
-| `domain`, `category`, `transactional_type`, `importance`, `waiting_on`, `action_type`, `suggested_disposition` | One enrichment enum value, or a list meaning any of them. An empty list is refused. |
+| `domain`, `category`, `transactional_type`, `importance`, `waiting_on`, `action_type`, `suggested_disposition` | One enrichment enum value, or a list meaning any of them. An empty list is refused, as is one of more than 50 values (`query.MAX_ANY_OF`). |
 | `requires_action`, `time_sensitive` | A boolean. |
 | `sender_domain`, `account`, `source`, `label` | An exact value. |
 | `organization` | Any extracted organization containing the text, case-insensitively. `%` and `_` match literally. |
 | `sent_at`, `deadline` | `{since, until}`, half-open (`since <= value < until`), with either end optional. Each end is an ISO date (midnight UTC), an ISO datetime (UTC if no zone is given), or a duration before now such as `14d`, `36h` or `2w`. A relative end is resolved when the query runs. Send times are compared as instants, whatever offset the email header carried. |
 | `max_sensitivity` | `sensitivity_level` at or below this level (`none` < `low` < `medium` < `high`). A row with no level never passes. |
 | `due` | Time-sensitive, or carrying a deadline. Only the index's preset tools use it. |
+| `facts.travel` | A boolean: whether the row has travel facts. |
+| `facts.travel.origin_country`, `facts.travel.destination_country` | An ISO 3166-1 alpha-2 code, in either case, or a list meaning any of them (at most 50). |
+| `facts.travel.carrier` | The carrier, matched whole, ignoring case. |
+| `facts.travel.start`, `facts.travel.end` | `{since, until}` over the first and last day, resolved to days like `deadline`. |
 
 An unknown field, filter or value is refused when the spec is parsed.
 
@@ -56,8 +60,8 @@ timestamp directly would truncate the bound and drop its day.
 
 | | Sanitized (`corpus-index`) | Sensitive (`corpus`) |
 | --- | --- | --- |
-| Filters | `domain`, `category`, `transactional_type`, `importance`, `requires_action`, `time_sensitive`, `waiting_on`, `action_type`, `suggested_disposition`, `sender_domain`, `organization`, `account`, `source`, `sent_at`, `deadline`, `max_sensitivity` | `label`, `account`, `source`, `sent_at` |
-| `group_by` | `domain`, `sender_domain`, `organization`, `month`, `category`, `importance` | `label`, `month`, `account` |
+| Filters | `domain`, `category`, `transactional_type`, `importance`, `requires_action`, `time_sensitive`, `waiting_on`, `action_type`, `suggested_disposition`, `sender_domain`, `organization`, `account`, `source`, `sent_at`, `deadline`, `max_sensitivity`, and every `facts.travel` filter | `label`, `account`, `source`, `sent_at` |
+| `group_by` | `domain`, `sender_domain`, `organization`, `month`, `category`, `importance`, `facts.travel.origin_country`, `facts.travel.destination_country`, `facts.travel.start_year` | `label`, `month`, `account` |
 | Orders | `priority`, `newest`, `oldest`, `deadline` | `newest`, `oldest` |
 | `text`, `semantic` | yes | yes |
 | Most rows (or groups) per call | 100 | 100 |
@@ -123,6 +127,50 @@ none. `order` and `semantic` do not apply to a count and are refused with it.
 {"filters": {"domain": "travel", "sent_at": {"since": "2025-01-01", "until": "2026-01-01"}},
  "group_by": ["month"]}
 ```
+
+## Typed facts
+
+The enrichment's typed facts (see [Enrichment](enrichment.md#typed-facts)) are
+the sanitized tier's `facts` column, and a spec names each by its path,
+`facts.travel.<key>`, as a filter or a `group_by` dimension. A policy allows
+each path on its own, like any other filter. The path is a name in the spec
+and the policy, never SQL: `sanitized_store.layout` maps each allowed path to
+a fixed expression over the column (`facts->'travel'->'destination'->>'country'`,
+say), and the value is a bound parameter. Group columns are aliased by
+position, not by the dimension's name. A country is compared upper-case;
+`facts.travel.start_year` groups by the year of `start` (`YYYY`). A row
+without travel facts matches no `facts.travel.*` value filter and groups
+under no value; `"facts.travel": true` keeps only the rows that have them.
+The filters and groups read only the countries, the dates and the carrier,
+never a place's name, which the default projection does not keep (see
+[Tiers](tiers.md#typed-facts)).
+
+A list filter's 50-value bound is checked when the spec is parsed, not written
+as the tool schema's `maxItems`: that keyword is otherwise absent from the
+query model's schema, and a client that refuses an unfamiliar keyword would
+refuse the whole tool.
+The sensitive tier's documents table has no facts, so a `facts` filter there
+is refused as not available.
+
+"Trips to the US in 2025" is one `query` call on the sanitized tier:
+
+```json
+{"filters": {"facts.travel.destination_country": "US",
+             "facts.travel.start": {"since": "2025-01-01", "until": "2026-01-01"}},
+ "order": "oldest"}
+```
+
+and the trips per destination and year one `aggregate` call:
+
+```json
+{"spec": {"filters": {"facts.travel": true}},
+ "group_by": ["facts.travel.destination_country", "facts.travel.start_year"]}
+```
+
+A trip is counted by the year it starts, so a stay checking in on New Year's
+Eve is a 2025 trip. A relative bound on `facts.travel.start` is frozen in the
+cursor like one on `sent_at`, and the cursor is bound to the facts filters as
+to every other.
 
 ## The MCP tools
 

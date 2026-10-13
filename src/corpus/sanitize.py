@@ -4,9 +4,9 @@ Applies the tier's projection :class:`Policy` on the way down.
 
 **Included** (cloud-safe): opaque ids, timestamps, the enrichment classification
 signal, coarse sender-domain (org, never the person), LLM `one_line`,
-`action_summary`, `organizations`, and the provider's web link (`uri`) when it is
-an https URL. **Excluded** (never leaves local): raw
-`content`, raw `subject`, full sender/recipient addresses, secret material,
+`action_summary`, `organizations`, typed travel facts (`facts`), and the
+provider's web link (`uri`) when it is an https URL. **Excluded** (never leaves
+local): raw `content`, raw `subject`, full sender/recipient addresses, secret material,
 raw-body embeddings, any other `uri` (an IMAP URI names the mail host and the
 private folder).
 
@@ -40,7 +40,14 @@ from urllib.parse import urlsplit
 import msgspec
 
 from .embeddings import Embedder
-from .enrichment import UNKNOWN_ROLE, ReferenceKind, SensitivityLevel
+from .enrichment import (
+    UNKNOWN_ROLE,
+    Place,
+    ReferenceKind,
+    SensitivityLevel,
+    Travel,
+    country_code,
+)
 from .redact import Span, resolve_overlaps
 from .sanitized_store import COLS
 
@@ -84,6 +91,10 @@ class Redaction(_Config):
             so a bare one passes (see ``docs/tiers.md``).
         email_address: ``keep`` or ``drop`` an email address.
         phone: ``keep`` or ``drop`` a phone number.
+        place_name: ``keep`` or ``drop`` the name of a place in the ``facts``
+            column (a trip's origin and destination), which keeps its country
+            either way. A kept name is redacted like the free text, but no
+            class finds a street address in it.
     """
 
     organization: KeepOrDrop = "keep"
@@ -92,12 +103,13 @@ class Redaction(_Config):
     financial_id: IdAction = "mask"
     email_address: KeepOrDrop = "drop"
     phone: KeepOrDrop = "drop"
+    place_name: KeepOrDrop = "drop"
 
 
 #: Every class kept: the free text exactly as the enrichment wrote it.
 KEEP_ALL = Redaction(
     organization="keep", person_name="keep", reference_id="keep", financial_id="keep",
-    email_address="keep", phone="keep",
+    email_address="keep", phone="keep", place_name="keep",
 )
 
 #: Bump when the projection's output changes for an unchanged policy (the
@@ -127,14 +139,19 @@ class Policy(_Config):
 
         Every setting is written out, defaults included, so a changed default
         changes the digest as much as a changed file does. The column order is
-        not part of it: it does not change a row.
+        not part of it: it does not change a row. Nor is ``place_name`` when the
+        policy does not project ``facts``, the only column it applies to, so
+        such a tier is not re-projected for a setting that changes nothing.
         """
+        redact = {name: getattr(self.redact, name) for name in Redaction.__struct_fields__}
+        if "facts" not in self.fields:
+            del redact["place_name"]
         effective = {
             "version": REDACTION_VERSION,
             "fields": sorted(set(self.fields)),
             "sensitivity_gate": self.sensitivity_gate.value,
             "gate_action": self.gate_action,
-            "redact": {name: getattr(self.redact, name) for name in Redaction.__struct_fields__},
+            "redact": redact,
         }
         blob = json.dumps(effective, sort_keys=True).encode()
         return hashlib.sha256(blob).hexdigest()[:16]
@@ -147,11 +164,12 @@ DEFAULT_POLICY = Policy()
 STUB_POLICY = Policy(gate_action="stub", redact=KEEP_ALL)
 
 #: The projected columns holding free text a model wrote, which the policy
-#: redacts. The sanitized table has no other: ``sender_domain`` and
-#: ``thread_id`` come from mail headers, and the enrichment's other free-text
-#: fields (``key_points``, ``appointments``, ``topics``, ``locations``, where a
-#: name can still appear) have no column, so no ``fields`` list can project them.
-REDACTED_COLS = ("one_line", "action_summary", "organizations")
+#: redacts (``facts``: its carrier, and any place name the policy keeps). The
+#: sanitized table has no other: ``sender_domain`` and ``thread_id`` come from mail headers, and the
+#: enrichment's other free-text fields (``key_points``, ``appointments``,
+#: ``topics``, ``locations``, where a name can still appear) have no column, so
+#: no ``fields`` list can project them.
+REDACTED_COLS = ("one_line", "action_summary", "organizations", "facts")
 
 
 def _sender_domain(from_addr: str | None) -> str | None:
@@ -517,6 +535,67 @@ def credential_placeholder(span: Span) -> str:
     return f"[REDACTED:{span.entity_type}]"
 
 
+#: A carrier that reads as an address or a person rather than an operator: a
+#: possessive ("Kari's"), or a number beside a street word ("Storgata 5",
+#: "12 Rue de Rivoli", "1 Main Street"). Matched on the folded text (see :func:`fold`).
+_STREET = (
+    r"(?:\w*(?:gata|gate|gaten|veien|vegen|vei|veg|strasse|plass)"
+    r"|street|st|road|rd|avenue|ave|lane|ln|boulevard|blvd|rue|via|calle|alle)"
+)
+_NOT_A_CARRIER = re.compile(
+    rf"\w['\u2019]s\b|\ws['\u2019](?:\s|$)"
+    rf"|\d+[a-z]?\s+(?:\w+\s+){{0,2}}{_STREET}\b|\b{_STREET}\s+\d+"
+)
+
+
+def _carrier(value: str | None) -> str | None:
+    """*value* unless it reads as an address or a person (:data:`_NOT_A_CARRIER`)."""
+    if value is None or _NOT_A_CARRIER.search(fold(value)):
+        return None
+    return value
+
+
+def project_facts(
+    facts: object, text: Callable[[object], str | None], place_name: KeepOrDrop = "drop"
+) -> dict | None:
+    """The ``facts`` column for an enrichment's *facts*: its travel, names redacted.
+
+    The record is checked against the schema here (``enrichment.Travel``, whose
+    places keep only an ISO country code), so the column holds ISO dates and
+    upper-case country codes, which the query model compares and casts.
+
+    A place keeps its country and, only if *place_name* is ``keep``, its name:
+    a place a message names can be someone's home ("Kari's place, Storgata 5"),
+    and no redaction class finds a street address. The carrier is kept, unless
+    it reads as an address or a person. *text* redacts each name kept as the
+    free text is. ``None`` when there are no travel facts, or none survive.
+    """
+    raw = facts.get("travel") if isinstance(facts, dict) else None
+    try:
+        travel = msgspec.convert(raw, Travel | None)
+    except msgspec.ValidationError:
+        return None
+    if travel is None:
+        return None
+
+    def place(p: Place | None) -> dict | None:
+        if p is None:
+            return None
+        kept = {"country": country_code(p.country)}
+        if place_name == "keep":
+            kept = {"name": text(p.name), **kept}
+        return kept if any(kept.values()) else None
+
+    out = {
+        "start": travel.start.isoformat() if travel.start else None,
+        "end": travel.end.isoformat() if travel.end else None,
+        "origin": place(travel.origin),
+        "destination": place(travel.destination),
+        "carrier": text(_carrier(travel.carrier)),
+    }
+    return {"travel": out} if any(out.values()) else None
+
+
 def project(
     doc_id: str,
     meta: dict | None,
@@ -541,12 +620,13 @@ def project(
         stub = f"[sensitive] {domain} item"
         if enr.get("requires_action"):
             stub += f" — action: {action_type}"
-        one_line, action_summary, organizations = stub, None, None
+        one_line, action_summary, organizations, facts = stub, None, None, None
     else:
         redactor = _Redactor(enr, policy.redact)
         one_line = redactor.text(enr.get("one_line"))
         action_summary = redactor.text(enr.get("action_summary"))
         organizations = redactor.names(enr.get("organizations") or None)
+        facts = project_facts(enr.get("facts"), redactor.text, policy.redact.place_name)
     row = {
         "id": doc_id,
         "source": meta.get("source"),
@@ -570,6 +650,7 @@ def project(
         "organizations": organizations,
         "enriched_at": None,  # set by run_sync from the source enriched_at
         "uri": web_link(meta.get("uri")),
+        "facts": facts,
     }
     keep = set(policy.fields) | set(BOOKKEEPING)
     return {col: (value if col in keep else None) for col, value in row.items()}

@@ -162,6 +162,24 @@ def test_a_reader_reads_a_column_its_table_lacks_as_null(pg, reader_dsn):
         assert _query(reader, filters={"domain": "travel"}, order="oldest")[0] == "t5"
 
 
+def test_a_reader_filters_and_counts_facts_on_a_table_without_the_column(pg, reader_dsn):
+    # The column reads as a typed NULL, so the facts expressions still bind.
+    with psycopg.connect(pg, autocommit=True) as conn:
+        conn.execute(f"ALTER TABLE {SCHEMA}.messages DROP COLUMN facts")
+    with SanitizedStore(
+        dsn=reader_dsn, schema=SCHEMA, read_only=True, projection=DEFAULT_POLICY
+    ) as reader:
+        assert _query(reader, filters={
+            "facts.travel.destination_country": "US", "facts.travel.carrier": "Fjordair",
+            "facts.travel.start": {"since": "2025-01-01"},
+        }) == []
+        assert len(_query(reader, filters={"facts.travel": False})) == len(ROWS)
+        spec = parse_spec({"group_by": ["facts.travel.start_year"]})
+        groups = reader.aggregate(spec, SANITIZED_POLICY).groups
+        assert [(g["facts.travel.start_year"], g["count"]) for g in groups] == [(None, len(ROWS))]
+        assert reader.get("t1")["facts"] is None
+
+
 def test_a_reader_reads_a_table_without_the_policy_hash(pg, reader_dsn):
     # The sync's bookkeeping column, added by its DDL: a reader never selects it.
     with psycopg.connect(pg, autocommit=True) as conn:
