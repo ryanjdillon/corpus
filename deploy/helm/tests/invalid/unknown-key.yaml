@@ -1,0 +1,4 @@
+# Must fail: a misspelt key (replica for replicas).
+defaults:
+  serve:
+    replica: 2

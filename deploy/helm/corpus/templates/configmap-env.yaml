@@ -1,0 +1,16 @@
+{{- $vars := dict -}}
+{{- range $k, $v := .Values.commonEnv.vars }}{{ $_ := set $vars $k $v }}{{ end -}}
+{{- $_ := set $vars "CORPUS_CONFIG_FILE" (printf "%s/%s" .Values.configFile.mountPath .Values.configFile.fileName) -}}
+{{- $_ := set $vars "CORPUS_HOST" (toString .Values.server.host) -}}
+{{- with .Values.otel.endpoint }}{{ $_ := set $vars "OTEL_EXPORTER_OTLP_ENDPOINT" . }}{{ end -}}
+{{- with .Values.otel.serviceName }}{{ $_ := set $vars "OTEL_SERVICE_NAME" . }}{{ end -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "corpus.commonEnvName" . }}
+  labels:
+    {{- include "corpus.labels" (dict "root" . "component" "config") | nindent 4 }}
+data:
+  {{- range $k := keys $vars | sortAlpha }}
+  {{ $k }}: {{ index $vars $k | quote }}
+  {{- end }}

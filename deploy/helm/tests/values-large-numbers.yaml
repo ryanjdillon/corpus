@@ -1,0 +1,39 @@
+# Regression values for scripts/check.sh: integers of a million and more, which
+# Helm holds as floats and would print as 2e+06 if a template did not format
+# them, and an env value that is a quoted number. check.sh asserts the rendered
+# output carries each one exactly.
+
+commonEnv:
+  vars:
+    CORPUS_SHARED_LIMIT: "2000000"
+
+defaults:
+  serve:
+    replicas: 1000000
+    terminationGracePeriodSeconds: 2000001
+    readinessProbe:
+      exec: {command: ["true"]}
+      periodSeconds: 2000002
+  pipeline:
+    successfulJobsHistoryLimit: 1000001
+    failedJobsHistoryLimit: 1000002
+    backoffLimit: 1000003
+    activeDeadlineSeconds: 2000000
+    terminationGracePeriodSeconds: 2000003
+
+tiers:
+  - name: sanitized
+    serve:
+      enabled: true
+    deploy:
+      env:
+        CORPUS_SERVE_LIMIT: "2000004"
+
+sources:
+  - name: inbox-a
+    kind: imap
+    enrich: true
+    pipeline: {batch_size: 16, limit: 2000005}
+    runtime:
+      env:
+        CORPUS_PIPELINE_LIMIT: "2000006"

@@ -1,0 +1,21 @@
+{{- $root := . -}}
+{{- range .Values.tiers }}
+{{- if and (kindIs "map" .serve) .serve.enabled }}
+{{- $name := include "corpus.tierDeployName" . }}
+{{- $w := (fromJson (include "corpus.layer" (list $root.Values.defaults.serve .deploy))).v }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ default $name $w.serviceName }}
+  labels:
+    {{- include "corpus.labels" (dict "root" $root "component" "serve") | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ $name }}
+  ports:
+    - name: {{ $w.servicePortName }}
+      port: {{ $root.Values.server.port | int64 }}
+      targetPort: {{ $w.servicePortName }}
+{{- end }}
+{{- end }}

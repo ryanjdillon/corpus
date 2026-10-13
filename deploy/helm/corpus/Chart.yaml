@@ -1,0 +1,16 @@
+apiVersion: v2
+name: corpus
+description: >-
+  corpus, one security domain per release: the config file (tiers and sources),
+  one pipeline CronJob per source, one MCP server per served tier, and the
+  network policies around them.
+type: application
+version: 0.1.0
+appVersion: "0.6.0"
+home: https://github.com/ryanjdillon/corpus
+sources:
+  - https://github.com/ryanjdillon/corpus
+keywords:
+  - corpus
+  - mcp
+  - email

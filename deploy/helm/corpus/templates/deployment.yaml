@@ -1,0 +1,81 @@
+{{- $root := . -}}
+{{- /* Both ConfigMaps the servers read: a change to either rolls them. */ -}}
+{{- $checksum := print (include (print $.Template.BasePath "/configmap-config.yaml") .) (include (print $.Template.BasePath "/configmap-env.yaml") .) | sha256sum -}}
+{{- range .Values.tiers }}
+{{- if and (kindIs "map" .serve) .serve.enabled }}
+{{- $name := include "corpus.tierDeployName" . }}
+{{- $w := (fromJson (include "corpus.layer" (list $root.Values.defaults.pod $root.Values.defaults.serve .deploy))).v }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "corpus.labels" (dict "root" $root "component" "serve") | nindent 4 }}
+spec:
+  replicas: {{ $w.replicas | int64 }}
+  {{- with $w.strategy }}
+  strategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  # The selector is name-only and immutable: it must keep matching pods across
+  # releases and chart versions.
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $name }}
+  template:
+    metadata:
+      labels:
+        {{- $pl := merge (dict "app.kubernetes.io/name" $name "app.kubernetes.io/instance" $root.Release.Name "app.kubernetes.io/component" "serve") (default dict $w.podLabels) }}
+        {{- toYaml $pl | nindent 8 }}
+      annotations:
+        checksum/config: {{ $checksum }}
+        {{- with $w.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with (include "corpus.podCommon" (dict "root" $root "w" $w) | trim) }}{{ . | nindent 6 }}{{ end }}
+      {{- if not (kindIs "invalid" $w.terminationGracePeriodSeconds) }}
+      terminationGracePeriodSeconds: {{ $w.terminationGracePeriodSeconds | int64 }}
+      {{- end }}
+      containers:
+        - name: {{ $w.containerName }}
+          image: {{ include "corpus.image" $root }}
+          {{- with $root.Values.image.pullPolicy }}
+          imagePullPolicy: {{ . }}
+          {{- end }}
+          args: [serve, {{ .name | quote }}]
+          ports:
+            - name: {{ $w.servicePortName }}
+              containerPort: {{ $root.Values.server.port | int64 }}
+          envFrom:
+            {{- include "corpus.envFrom" (dict "root" $root "w" $w) | nindent 12 }}
+          env:
+            {{- /* The one source of the listen port: the container port, the Service and the readiness probe all follow server.port. The schema refuses CORPUS_MCP_PORT in user env, so nothing can contradict it. */}}
+            - name: CORPUS_MCP_PORT
+              value: {{ $root.Values.server.port | int64 | toString | quote }}
+            {{- with (include "corpus.env" $w | trim) }}
+            {{- . | nindent 12 }}
+            {{- end }}
+          {{- with $w.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $w.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $w.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $w.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            {{- include "corpus.configMount" $root | nindent 12 }}
+      volumes:
+        {{- include "corpus.configVolume" $root | nindent 8 }}
+{{- end }}
+{{- end }}

@@ -1,0 +1,10 @@
+{{- if .Values.gateway.enabled -}}
+{{- fail "gateway.enabled: the gateway resources (MCPRoute, SecurityPolicy) are not implemented in this chart version" -}}
+{{- end -}}
+{{- range .Values.sources -}}
+{{- $mode := "cronjob" -}}
+{{- with .runtime }}{{ $mode = default "cronjob" .mode }}{{ end -}}
+{{- if eq $mode "worker" -}}
+{{- fail (printf "sources[%s].runtime.mode: worker is not implemented yet; use cronjob" .name) -}}
+{{- end -}}
+{{- end -}}

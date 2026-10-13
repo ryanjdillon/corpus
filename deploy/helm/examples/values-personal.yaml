@@ -1,0 +1,147 @@
+# Example: a personal domain. One Gmail source, both tiers served, an
+# on-demand backfill, and network policies that admit only the AI gateway.
+# Synthetic: hosts, nodes and principals are placeholders.
+#
+#   helm template corpus deploy/helm/corpus -n corpus \
+#     -f deploy/helm/examples/values-personal.yaml
+
+# What a Flux Kustomization's commonMetadata used to add, kept on every object.
+commonLabels:
+  app.kubernetes.io/name: corpus
+
+otel:
+  endpoint: http://otel-collector.monitoring:4317
+  # serviceName unset: each command reports its own (corpus-mcp, corpus-index,
+  # corpus-pipeline, ...).
+
+commonEnv:
+  vars:
+    CORPUS_DB_SCHEMA: corpus
+    CORPUS_OPENAI_API_BASE: http://ai-gateway.gateway-system.svc.cluster.local/v1
+    CORPUS_EMBEDDING_MODEL: local-embed
+    CORPUS_EMBEDDING_DIMENSIONS: "1024"
+    CORPUS_ENRICH_MODEL: local-coder
+    CORPUS_ENRICH_TIMEOUT: "600"
+    CORPUS_CHUNK_TOKENS: "200"
+
+defaults:
+  serve:
+    # The servers run beside the database on a dedicated node.
+    nodeSelector:
+      kubernetes.io/hostname: node-db
+    tolerations:
+      - {key: ai-compute, operator: Exists, effect: NoSchedule}
+  pipeline:
+    nodeSelector:
+      kubernetes.io/hostname: node-general
+    timeZone: Europe/Oslo
+
+tiers:
+  # Both tiers are named like the built-ins, so (corpus >= 0.6.0) each inherits
+  # every key it leaves out: store, query policy, projection.
+  - name: sensitive
+    serve:
+      access: [agent-local]
+      enabled: true
+    deploy:
+      # The default Service name is the Deployment's (`corpus`, from the
+      # built-in server name); an existing route targets another.
+      serviceName: corpus-mcp
+      resources:
+        requests: {cpu: 100m, memory: 256Mi}
+        limits: {cpu: "1", memory: 1Gi}
+      secretEnv:
+        CORPUS_DATABASE_URL: {name: corpus-db, key: DATABASE_URL}
+        CORPUS_OPENAI_API_KEY: {name: corpus-gateway-key, key: OPENAI_API_KEY}
+  - name: sanitized
+    serve:
+      access: [orchestrator]
+      enabled: true
+    deploy:
+      # Deployment and Service `corpus-index`, from the built-in server name.
+      env:
+        CORPUS_EMBED_QUERY_TIMEOUT: "15"
+      secretEnv:
+        CORPUS_INDEX_DATABASE_URL: {name: corpus-index-db, key: DATABASE_URL}
+        CORPUS_OPENAI_API_KEY: {name: corpus-gateway-key, key: OPENAI_API_KEY}
+
+sources:
+  - name: personal
+    kind: gmail
+    enrich: true
+    pipeline: {batch_size: 16, limit: 400}
+    runtime:
+      # Keeps an existing CronJob's name; the default would be
+      # corpus-pipeline-personal.
+      name: corpus-pipeline-gmail
+      schedule: "30 7,18 * * *"
+      # CORPUS_GMAIL_PERSONAL_{CLIENT_ID,CLIENT_SECRET,REFRESH_TOKEN}.
+      envFromSecrets: [corpus-gmail]
+      env:
+        CORPUS_ENRICH_CONCURRENCY: "2"
+        CORPUS_ENRICH_MAX_INPUT_CHARS: "32000"
+      secretEnv:
+        CORPUS_DATABASE_URL: {name: corpus-db, key: DATABASE_URL}
+        CORPUS_SANITIZED_DATABASE_URL: {name: corpus-sanitized-db, key: DATABASE_URL}
+        CORPUS_EMBED_API_KEY: {name: corpus-gateway-key, key: OPENAI_API_KEY}
+        CORPUS_ENRICH_API_KEY: {name: corpus-enrich-key, key: OPENAI_API_KEY}
+
+jobs:
+  # Ingest only, triggered by hand:
+  #   kubectl -n corpus create job --from=cronjob/corpus-backfill-ingest ingest-$(date +%s)
+  corpus-backfill-ingest:
+    schedule: "0 4 * * *"
+    backoffLimit: 2
+    containerName: ingest
+    args: [pipeline, "gmail:personal", --stages, ingest]
+    nodeSelector:
+      kubernetes.io/hostname: node-db
+    tolerations:
+      - {key: ai-compute, operator: Exists, effect: NoSchedule}
+    envFromSecrets: [corpus-gmail]
+    secretEnv:
+      CORPUS_DATABASE_URL: {name: corpus-db, key: DATABASE_URL}
+      CORPUS_EMBED_API_KEY: {name: corpus-gateway-key, key: OPENAI_API_KEY}
+    resources:
+      requests: {cpu: 100m, memory: 256Mi}
+      limits: {cpu: "1", memory: 1Gi}
+
+networkPolicies:
+  # The sensitive server: MCP from the gateway's proxies only.
+  corpus-ingress:
+    podSelector:
+      matchLabels: {app.kubernetes.io/name: corpus}
+    policyTypes: [Ingress]
+    ingress:
+      - from:
+          - namespaceSelector:
+              matchLabels: {kubernetes.io/metadata.name: gateway-system}
+            podSelector:
+              matchLabels: {gateway.example.org/gateway: ai-gateway}
+        ports: [{protocol: TCP, port: 9000}]
+  # The sanitized server: MCP from the gateway in; DNS, Postgres, the gateway
+  # (query embeddings) and the collector out.
+  corpus-index:
+    podSelector:
+      matchLabels: {app.kubernetes.io/name: corpus-index}
+    policyTypes: [Ingress, Egress]
+    ingress:
+      - from:
+          - namespaceSelector:
+              matchLabels: {kubernetes.io/metadata.name: gateway-system}
+            podSelector:
+              matchLabels: {gateway.example.org/gateway: ai-gateway}
+        ports: [{protocol: TCP, port: 9000}]
+    egress:
+      - to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}}]
+        ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+      - to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: postgres}}}]
+        ports: [{protocol: TCP, port: 5432}]
+      - to:
+          - namespaceSelector:
+              matchLabels: {kubernetes.io/metadata.name: gateway-system}
+            podSelector:
+              matchLabels: {gateway.example.org/gateway: ai-gateway}
+        ports: [{protocol: TCP, port: 10080}]
+      - to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: monitoring}}}]
+        ports: [{protocol: TCP, port: 4317}]

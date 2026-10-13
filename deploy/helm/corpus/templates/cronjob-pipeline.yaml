@@ -1,0 +1,10 @@
+{{- $root := . -}}
+{{- range .Values.sources }}
+{{- $w := (fromJson (include "corpus.layer" (list $root.Values.defaults.pod $root.Values.defaults.pipeline .runtime))).v }}
+{{- $args := list "pipeline" (printf "%s:%s" .kind .name) }}
+{{- $args = concat $args (default list $w.extraArgs) }}
+{{- $_ := set $w "args" $args }}
+{{- $_ := unset $w "command" }}
+---
+{{ include "corpus.cronjob" (dict "root" $root "name" (include "corpus.sourceJobName" (dict "source" . "prefix" $root.Values.defaults.pipeline.namePrefix)) "component" "pipeline" "w" $w) }}
+{{- end }}
