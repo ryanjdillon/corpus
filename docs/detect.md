@@ -15,13 +15,56 @@ from corpus_detect import detect, detect_spans, redact
 detect(text)        # {secret_type: count}; types and counts, never values
 detect_spans(text)  # [Span(start, end, entity_type, category)], overlaps unresolved
 redact(text)        # RedactResult(text, findings, counts): each match -> [REDACTED:<type>]
+redact(text, extra_spans=spans)  # also mask matches from a detector of your own
 ```
 
 Also exported: `Span` and `resolve_overlaps` (leftmost-longest, a credential
-before an identity number on a tie), `RedactResult`, `ENTITY_TYPES` (every fixed
+before an identity number on a tie), `validate_spans(spans, len(text))` (the
+check `redact` applies to `extra_spans`, for a caller to run first),
+`RedactResult`, `ENTITY_TYPES` (every fixed
 type name a detector emits), `LeaksSettings`, and `fingerprint_parts()`. The
 `pii` and `leaks` submodules stay importable for a caller that needs one
 detector alone, as the tier projection does.
+
+### Extra spans
+
+`redact(text, *, extra_spans=())` also masks matches a caller found itself, such
+as scan-gate's Betterleaks sidecar. Each is a `Span(start, end, entity_type,
+category)`:
+
+- `start` and `end` are **code-point offsets** into `text`, which is what
+  Python `str` indices are (not UTF-8 bytes): in `"Året ø key"` the key starts
+  at 7. They must satisfy `0 <= start < end <= len(text)`.
+- `category` is `secret` or `pii`.
+- `entity_type` matches `^[a-z0-9:_-]{1,64}$`, for example
+  `secret:betterleaks:generic-api-key`.
+
+Anything else raises `ValueError`. The message names the span and the field
+(`extra_spans[2].entity_type …`) but never a value from the span or the text, so
+it is safe to log.
+
+Extra spans are resolved together with the detected ones (`resolve_strictest`)
+so that no character any span covers stays in the text. Spans are placed
+secrets first, then by start, longest first, then by type name; each keeps only
+the parts no earlier span covers. So a secret always wins over a pii span and
+every secret character is masked under a secret's type; a span cut around an
+earlier one is masked as several pieces, each under its own type; identical
+spans take the lexicographically smallest type; and the result does not depend
+on the order the spans arrive in. With no overlapping spans, the output is the
+same as `resolve_overlaps` gives.
+
+`findings` lists the masks, so a span cut into two pieces is two findings.
+`counts` counts each matched span once, however many pieces it was masked as;
+a span wholly covered by others is not counted. Gate on `counts`, not on
+`len(findings)`.
+
+Every mask is `[REDACTED:<type>]`, built from the span alone, so it never holds
+any of the matched value. This holds for a type corpus-detect does not know,
+such as `secret:betterleaks:aws-access-token`. The `[<label> ••••<last two>]`
+form belongs to corpus's tier projection, not to `redact`. `redact` does not
+decide whether to block a body; the caller does that from `counts` (scan-gate's
+`block_types`). `detect` and `detect_spans` take no extra spans, and they do not
+affect `fingerprint_parts()`.
 
 Importing the package does not load Presidio (over a second); the names that
 need it load on first use.

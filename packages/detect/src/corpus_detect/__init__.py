@@ -17,7 +17,7 @@ from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
 from .leaks import LeaksSettings
-from .span import Span, resolve_overlaps
+from .span import Span, resolve_overlaps, validate_spans
 
 if TYPE_CHECKING:
     from .detectors import ENTITY_TYPES, detect, detect_spans, fingerprint_parts
@@ -42,6 +42,7 @@ __all__ = [
     "fingerprint_parts",
     "redact",
     "resolve_overlaps",
+    "validate_spans",
 ]
 
 

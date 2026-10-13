@@ -1,6 +1,6 @@
 [project]
 name = "corpus-detect"
-version = "0.1.2"
+version = "0.1.3"
 description = "Deterministic PII and credential detection, and redaction built on it"
 readme = "README.md"
 requires-python = ">=3.12"
