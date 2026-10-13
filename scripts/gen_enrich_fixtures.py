@@ -41,7 +41,7 @@ from eval_enrich import (
     validate_record,
 )
 
-from corpus.enrichment import Domain
+from corpus.enrichment import Domain, ReferenceKind
 
 
 # --------------------------------------------------------------------------- #
@@ -666,7 +666,25 @@ WRITER_SCHEMA = {
         "subject": {"type": "string"},
         "from_addr": {"type": ["string", "null"]},
         "body": {"type": "string"},
-        "people": {"type": "array", "items": {"type": "string"}},
+        "people": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"role": {"type": "string"}, "name": {"type": ["string", "null"]}},
+                "required": ["role", "name"],
+            },
+        },
+        "references": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "kind": {"enum": [k.value for k in ReferenceKind]},
+                    "value": {"type": "string"},
+                },
+                "required": ["kind", "value"],
+            },
+        },
         "organizations": {"type": "array", "items": {"type": "string"}},
         "monetary_amounts": {
             "type": "array",
@@ -677,7 +695,10 @@ WRITER_SCHEMA = {
             },
         },
     },
-    "required": ["subject", "from_addr", "body", "people", "organizations", "monetary_amounts"],
+    "required": [
+        "subject", "from_addr", "body", "people", "references", "organizations",
+        "monetary_amounts",
+    ],
 }
 
 
@@ -704,7 +725,11 @@ def build_prompt(slot: dict) -> list[dict[str, str]]:
         (
             f"Exactly {slot['n_people']} named people (other than the recipient), "
             f"{slot['n_orgs']} named organizations, and {slot['n_amounts']} monetary amounts. "
-            "Return them in people / organizations / monetary_amounts exactly as they appear."
+            "Return them in people / organizations / monetary_amounts exactly as they appear; "
+            "give each person a role, a short noun for how they relate to the reader "
+            "(friend, landlord, mechanic, colleague). List every identifier the text "
+            "quotes (booking, order, case, invoice, ticket, parking, membership, tracking, "
+            "or customer account number) in references, exactly as written."
         ),
     ]
     if slot.get("sent"):
@@ -726,7 +751,15 @@ def build_prompt(slot: dict) -> list[dict[str, str]]:
 def realise(slot: dict, reply: dict) -> dict:
     """Merge a writer's reply into ``slot``, returning a fixture record."""
     labels = dict(slot["labels"])
-    labels["people"] = list(reply.get("people") or [])
+    # A person is a bare name in replies written before roles, else {role, name}.
+    labels["people"] = [
+        p if isinstance(p, str) else {"role": p["role"], "name": p.get("name") or None}
+        for p in reply.get("people") or []
+    ]
+    if "references" in reply:
+        labels["references"] = [
+            {"kind": r["kind"], "value": r["value"]} for r in reply["references"]
+        ]
     labels["organizations"] = list(reply.get("organizations") or [])
     labels["monetary_amounts"] = [
         {"amount": float(m["amount"]), "currency": str(m["currency"]).upper()}

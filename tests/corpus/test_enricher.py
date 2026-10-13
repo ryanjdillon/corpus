@@ -20,7 +20,15 @@ from corpus.enricher import (
     EnrichUnavailableError,
     cap_input,
 )
-from corpus.enrichment import MAX_ITEMS, Category, SensitivityLevel, json_schema
+from corpus.enrichment import (
+    MAX_ITEMS,
+    Category,
+    Person,
+    Reference,
+    ReferenceKind,
+    SensitivityLevel,
+    json_schema,
+)
 
 _COMPLETION = {
     "choices": [
@@ -60,6 +68,46 @@ def test_enrich_sends_schema_and_frame_and_parses(client):
     assert body["messages"][0]["role"] == "system"
     assert "UNTRUSTED DATA" in body["messages"][0]["content"]
     assert body["messages"][1]["content"] == "Hello there"
+
+
+def test_prompt_asks_for_role_based_summaries_and_separate_references(client):
+    Enricher(model="local", client=client).enrich("Hello there")
+
+    system = client.post.call_args.kwargs["json"]["messages"][0]["content"]
+    assert "one_line, abstract and action_summary refer to people by ROLE" in system
+    assert "quote no reference numbers" in system
+    assert "references:" in system
+    for kind in ReferenceKind:
+        assert kind.value in system
+
+
+def test_enrich_parses_people_by_role_and_references(client):
+    reply = {
+        "one_line": "A friend proposes a weekend trip",
+        "abstract": "A friend suggests a cabin trip; the booking is held.",
+        "category": "personal",
+        "people": [{"role": "friend", "name": "Zoe Example"}, {"role": "host", "name": None}],
+        "references": [{"kind": "booking", "value": "QX7-2291"}],
+    }
+    client.post.return_value = _response(
+        200, json_body={"choices": [{"message": {"content": json.dumps(reply)}}]}
+    )
+
+    doc = Enricher(model="local", client=client).enrich("x")
+
+    assert doc.people == [Person(role="friend", name="Zoe Example"), Person(role="host")]
+    assert doc.references == [Reference(kind=ReferenceKind.booking, value="QX7-2291")]
+
+
+def test_a_person_without_a_role_is_unparseable(client):
+    reply = {"one_line": "hi", "abstract": "a note", "category": "personal",
+             "people": [{"name": "Zoe Example"}]}
+    client.post.return_value = _response(
+        200, json_body={"choices": [{"message": {"content": json.dumps(reply)}}]}
+    )
+
+    with pytest.raises(EnrichError):
+        Enricher(model="local", client=client).enrich("x")
 
 
 def test_client_error_is_non_retryable(client):
@@ -194,7 +242,7 @@ def _stalled(prefix: str) -> dict:
     [
         '{"one_line": "hi", "abstract": "a note", "category": "personal", "topics": [',
         '{"one_line": "hi", "abstract": "a note", "category": "personal", "topics": ["a",',
-        '{"one_line": "hi", "abstract": "a note", "category": "personal", "topics": ["a"], "people": [{"name": "Ola"}',
+        '{"one_line": "hi", "abstract": "a note", "category": "personal", "topics": ["a"], "people": [{"role": "friend", "name": "Ola"}',
         '{"one_line": "hi", "abstract": "a note", "category": "personal", "importance":',
         '{"one_line": "hi", "abstract": "a \\"quoted [note\\"", "category": "personal", "topics": [',
     ],
@@ -261,7 +309,7 @@ def test_recovered_sensitivity_fails_closed(client, tail, level):
 
 @pytest.mark.parametrize(
     "tail",
-    ['"appointments": [{', '"appointments": [{"who": "Ola"}, {', '"people": [{"name":'],
+    ['"appointments": [{', '"appointments": [{"who": "Ola"}, {', '"people": [{"role":'],
     ids=["first-item", "after-an-item", "dangling-nested-key"],
 )
 def test_recovery_drops_an_unfilled_object(client, tail):
@@ -270,6 +318,21 @@ def test_recovery_drops_an_unfilled_object(client, tail):
     result = Enricher(model="local", client=client).enrich("x")
 
     assert {} not in [msgspec.to_builtins(a) for a in result.appointments + result.people]
+
+
+@pytest.mark.parametrize(
+    "tail",
+    ['"people": [{"role": "", "name": "Ola"}', '"references": [{"kind": "order", "value": " "}',
+     '"people": [{"role": "friend", "name": "Ola", "phone": "none"}'],
+    ids=["empty-role", "blank-reference", "unknown-key"],
+)
+def test_a_stalled_reply_with_a_blank_or_padded_entity_is_not_recovered(client, tail):
+    # Recovery decodes through the same structs, so it refuses what a complete
+    # reply would: the record is unparseable, not saved with a blank role.
+    client.post.return_value = _response(200, json_body=_stalled(_HEAD + tail))
+
+    with pytest.raises(EnrichError):
+        Enricher(model="local", client=client).enrich("x")
 
 
 def test_short_trailing_whitespace_is_not_treated_as_a_stall(client):
@@ -415,4 +478,9 @@ def test_inlined_schema_keeps_the_length_bounds():
     # The llama.cpp path inlines $refs; its grammar needs the bounds to survive.
     flat = enricher_mod.inline_refs(json_schema())
     assert flat["properties"]["topics"]["maxItems"] == MAX_ITEMS
-    assert flat["properties"]["people"]["items"]["properties"]["name"]["maxLength"] == 120
+    person = flat["properties"]["people"]["items"]["properties"]
+    assert person["role"]["maxLength"] == 60
+    assert person["name"]["anyOf"][0]["maxLength"] == 120
+    reference = flat["properties"]["references"]
+    assert reference["maxItems"] == MAX_ITEMS
+    assert reference["items"]["properties"]["value"]["maxLength"] == 120

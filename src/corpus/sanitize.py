@@ -21,7 +21,7 @@ the projected columns are the sanitized tier's ``projection`` (see ``tiers``).
 from __future__ import annotations
 
 import logging
-from collections.abc import Collection
+from collections.abc import Callable, Collection
 from contextlib import closing
 from urllib.parse import urlsplit
 
@@ -152,15 +152,18 @@ def run_sync(
     fields: Collection[str] = COLS,
     embedder: Embedder | None = None,
     batch_size: int = 64,
+    projector: Callable[[str, dict | None, dict | None, str, Collection[str]], dict] = project,
 ) -> dict[str, int]:
     """Project enriched documents into the sanitized store.
 
     Skips rows whose source enrichment is unchanged since the last sync unless
     ``force``, which re-projects every row (after the projection itself
     changed). ``limit`` caps the rows projected (0 does all). *gate* and
-    *fields* are the tier's projection (see :func:`project`). ``store`` is an
-    open SanitizedStore and ``documents`` an open DocumentStore on the source
-    tier, whose lifecycles the caller owns.
+    *fields* are the tier's projection (see :func:`project`); ``projector``
+    builds each row (``project`` unless a caller substitutes its own policy and
+    accepts the same arguments). ``store`` is an open SanitizedStore and
+    ``documents`` an open DocumentStore on the source tier, whose lifecycles
+    the caller owns.
 
     A row is embedded only when its ``one_line`` (the embedded text) differs
     from the stored one; otherwise only its projected columns are rewritten, and
@@ -195,7 +198,7 @@ def run_sync(
             if not force and stored is not None and stored[0] == enriched_at:
                 counts["skipped"] += 1
                 continue
-            row = project(doc_id, meta, enr, gate, fields)
+            row = projector(doc_id, meta, enr, gate, fields)
             row["enriched_at"] = enriched_at
             pending = to_update if stored is not None and stored[1] == row["one_line"] else to_embed
             pending.append(row)

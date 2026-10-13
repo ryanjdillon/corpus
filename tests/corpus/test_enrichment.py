@@ -14,6 +14,9 @@ from corpus.enrichment import (
     Domain,
     Enrichment,
     Importance,
+    Person,
+    Reference,
+    ReferenceKind,
     SecretAudit,
     SecretSeverity,
 )
@@ -34,10 +37,12 @@ def test_json_schema_forces_every_field_required():
     schema = enrichment.json_schema()
     enr = schema["$defs"]["Enrichment"] if "$defs" in schema else schema
     assert set(enr["required"]) == set(enr["properties"])
-    for field in ("domain", "deadline", "people", "organizations", "monetary_amounts"):
+    for field in (
+        "domain", "deadline", "people", "references", "organizations", "monetary_amounts",
+    ):
         assert field in enr["required"]
     # Nested structs too: Person.role and every Appointment field were skippable.
-    for name in ("Person", "Appointment", "Money"):
+    for name in ("Person", "Reference", "Appointment", "Money"):
         nested = schema["$defs"][name]
         assert set(nested["required"]) == set(nested["properties"])
 
@@ -72,6 +77,126 @@ def test_decode_full_record_parses_nested_and_dates():
     assert doc.people[0].name == "Pat"
     assert doc.people[0].role == "vendor"
     assert doc.monetary_amounts[0].amount == 42.5
+
+
+def test_decode_reads_people_by_role_and_references():
+    doc = enrichment.decode(
+        """
+        {"one_line": "A friend proposes a weekend trip", "abstract": "A trip idea.",
+         "category": "personal",
+         "people": [{"role": "friend", "name": "Zoe Example"}, {"role": "host", "name": null}],
+         "references": [{"kind": "booking", "value": "QX7-2291"},
+                        {"kind": "case", "value": "CASE 0042-B"}]}
+        """
+    )
+    assert doc.people == [Person(role="friend", name="Zoe Example"), Person(role="host")]
+    assert doc.references == [
+        Reference(kind=ReferenceKind.booking, value="QX7-2291"),
+        Reference(kind=ReferenceKind.case, value="CASE 0042-B"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "people",
+    [
+        [{"name": "Pat", "role": None}],  # the old shape, as stored: role null
+        [{"name": "Pat"}],  # role omitted altogether
+    ],
+    ids=["null-role", "missing-role"],
+)
+def test_record_from_before_roles_still_decodes(people):
+    # Stored records keep the shape they were written in; reading one must not fail
+    # because roles became required and references were added.
+    old = {"one_line": "Pat sends notes", "abstract": "Notes.", "category": "personal",
+           "people": people}
+
+    doc = enrichment.decode(msgspec.json.encode(old))
+
+    assert doc.people == [Person(role=enrichment.UNKNOWN_ROLE, name="Pat")]
+    assert doc.references == []
+
+
+def test_upgrade_keeps_a_current_record_as_it_is():
+    current = {"people": [{"role": "friend", "name": None}], "references": []}
+
+    assert enrichment.upgrade(current) == current
+
+
+def test_new_output_must_give_every_person_a_role():
+    # The model's output is decoded strictly: only stored records are upgraded.
+    with pytest.raises(msgspec.ValidationError):
+        msgspec.json.decode(
+            b'{"one_line": "x", "abstract": "y", "category": "personal", '
+            b'"people": [{"name": "Pat"}]}',
+            type=Enrichment,
+        )
+
+
+@pytest.mark.parametrize("data", ['["not", "an", "object"]', '{"one_line": "x"', '""'])
+def test_decode_rejects_anything_but_a_record(data):
+    with pytest.raises(msgspec.DecodeError):
+        enrichment.decode(data)
+
+
+@pytest.mark.parametrize(
+    "item",
+    [{"kind": "coupon", "value": "X1"}, {"kind": "order", "value": ""},
+     {"kind": "order", "value": "  "}, {"kind": "order", "value": "X1", "note": "extra"}],
+    ids=["kind-outside-enum", "empty-value", "blank-value", "unknown-key"],
+)
+def test_decode_rejects_a_malformed_reference(item):
+    record = {"one_line": "x", "abstract": "y", "category": "personal", "references": [item]}
+    with pytest.raises(msgspec.ValidationError):
+        enrichment.decode(msgspec.json.encode(record))
+
+
+@pytest.mark.parametrize(
+    ("field", "item"),
+    [
+        ("people", {"role": "", "name": "Pat"}),
+        ("people", {"role": " ", "name": None}),
+        ("people", {"role": "friend", "name": "Pat", "email": "pat@mail.example"}),
+        ("references", {"kind": "order", "value": ""}),
+        ("references", {"kind": "order", "value": "X1", "label": "x"}),
+    ],
+    ids=["empty-role", "blank-role", "person-extra-key", "empty-value", "reference-extra-key"],
+)
+def test_model_output_refuses_a_blank_or_padded_entity(field, item):
+    # The model's output is decoded strictly; non-empty and no-extra-keys are
+    # checked here, after decoding, since the guided schema does not carry them.
+    record = {"one_line": "x", "abstract": "y", "category": "personal", field: [item]}
+    with pytest.raises(msgspec.ValidationError):
+        msgspec.json.decode(msgspec.json.encode(record), type=Enrichment)
+
+
+def test_guided_schema_carries_no_keyword_a_provider_may_not_know():
+    # minLength and additionalProperties are enforced after decoding instead; a
+    # provider that rejects a keyword would refuse every enrich request.
+    schema = enrichment.json_schema()
+    for name in ("Person", "Reference"):
+        definition = schema["$defs"][name]
+        assert "additionalProperties" not in definition, name
+        for prop in definition["properties"].values():
+            for variant in prop.get("anyOf", [prop]):
+                assert "minLength" not in variant, name
+    assert "minLength" not in msgspec.json.encode(schema).decode()
+
+
+def test_a_stored_person_with_only_name_and_role_still_decodes():
+    # Person forbids unknown keys; the old stored shape had no others.
+    old = {"one_line": "x", "abstract": "y", "category": "personal",
+           "people": [{"name": "Pat", "role": "classmate"}, {"name": "Kim", "role": None}]}
+
+    doc = enrichment.decode(msgspec.json.encode(old))
+
+    assert doc.people == [Person(role="classmate", name="Pat"),
+                          Person(role=enrichment.UNKNOWN_ROLE, name="Kim")]
+
+
+def test_upgrade_gives_an_old_record_an_empty_reference_list():
+    upgraded = enrichment.upgrade({"one_line": "x"})
+
+    assert upgraded == {"one_line": "x", "references": []}
 
 
 def test_decode_rejects_value_outside_enum():
@@ -114,6 +239,7 @@ def test_schema_bounds_every_list_and_free_text_field():
     for field in (
         "key_points",
         "people",
+        "references",
         "organizations",
         "topics",
         "projects",
@@ -124,6 +250,8 @@ def test_schema_bounds_every_list_and_free_text_field():
         assert props[field]["maxItems"] == enrichment.MAX_ITEMS, field
     assert props["topics"]["items"]["maxLength"] == 120
     assert props["abstract"]["maxLength"] == 400
+    reference = enrichment.json_schema()["$defs"]["Reference"]["properties"]
+    assert reference["value"]["maxLength"] == 120
     audit = enrichment.secret_audit_schema()["$defs"]["SecretAudit"]["properties"]
     assert audit["findings"]["maxItems"] == enrichment.MAX_ITEMS
 
@@ -162,3 +290,10 @@ def test_every_enrichment_field_is_classified_as_free_text_or_not():
 
     assert set(enrichment.FREE_TEXT_FIELDS) <= fields
     assert fields - set(enrichment.FREE_TEXT_FIELDS) == structured
+
+
+def test_references_are_scanned_as_untrusted_free_text():
+    # A reference value is copied from the email as written, so it can carry an
+    # injected instruction like any summary: it is scanned, not trusted as an id.
+    assert "references" in enrichment.FREE_TEXT_FIELDS
+    assert "people" in enrichment.FREE_TEXT_FIELDS

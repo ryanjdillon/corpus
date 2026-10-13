@@ -30,6 +30,7 @@ from corpus.enrichment import (
     SCHEMA_VERSION,
     Category,
     Enrichment,
+    ReferenceKind,
     SecretAudit,
     json_schema,
 )
@@ -106,7 +107,8 @@ def _pred(fixture: dict, **overrides) -> dict:
     lab = fixture["labels"]
     pred = {k: v for k, v in lab.items() if k != "people"}
     pred.update(one_line=fixture["subject"], abstract="", key_points=[], action_summary=None,
-                people=[{"name": n, "role": None} for n in lab["people"]])
+                people=[{"role": p["role"] or "contact", "name": p["name"]}
+                        for p in ev.gold_people(lab)])
     pred.update(overrides)
     return pred
 
@@ -119,8 +121,10 @@ def test_committed_fixtures_are_valid_and_stratified():
 
     assert len(records) >= 300
     assert ev.coverage_gaps(records) == []
+    # The generated hard cases come 15 apiece; the hand-written reference set is smaller.
+    minimum = {"references": 8}
     for tag in ev.HARD_CASES:
-        assert sum(r["hard_case"] == tag for r in records) >= 15
+        assert sum(r["hard_case"] == tag for r in records) >= minimum.get(tag, 15), tag
     bulky = sum(r["labels"]["category"] in ("promotional", "newsletter") for r in records)
     assert bulky < len(records) / 4
 
@@ -137,7 +141,8 @@ def test_gold_labels_fit_the_live_schema_bounds():
         gold = {
             **labels,
             "one_line": "x", "abstract": "y",
-            "people": [{"name": n} for n in labels["people"]],
+            "people": [{"role": p["role"] or "contact", "name": p["name"]}
+                       for p in ev.gold_people(labels)],
         }
         try:
             msgspec.convert(gold, Enrichment)
@@ -168,6 +173,83 @@ def test_incoherent_labels_are_rejected(fixtures):
 
     with pytest.raises(ev.FixtureError, match="requires_action and action_type disagree"):
         ev.validate_record(bad)
+
+
+@pytest.fixture
+def booking() -> dict:
+    """A record that states its people by role and the references it quotes."""
+    return {
+        "id": "t-booking", "kind": "email", "subject": "Cabin booking confirmed",
+        "from_addr": "stay@lodge.example", "headers": {},
+        "body": "Your host Ingrid Vossberg confirms booking FJX-1234 at Fjordlodge. "
+                "Order QX7-2291 is paid.",
+        "labels": _labels(
+            category="transactional", domain="travel", transactional_type="booking",
+            people=[{"role": "host", "name": "Ingrid Vossberg"}, {"role": "cleaner"}],
+            organizations=["Fjordlodge"],
+            references=[{"kind": "booking", "value": "FJX-1234"},
+                        {"kind": "order", "value": "QX7-2291"}],
+        ),
+        "seeded_secrets": [], "injection": False, "hard_case": "references",
+    }
+
+
+def test_people_by_role_and_references_are_a_valid_fixture(booking):
+    ev.validate_record(booking)
+
+    assert ev.gold_people(booking["labels"]) == [
+        {"role": "host", "name": "Ingrid Vossberg"}, {"role": "cleaner", "name": None},
+    ]
+
+
+def test_references_are_optional_and_bare_names_stay_valid(fixtures):
+    # The original format: people as bare names, and no references label at all.
+    assert "references" not in fixtures[0]["labels"]
+    ev.validate_record(fixtures[0])
+
+    assert ev.gold_people(fixtures[0]["labels"]) == [{"role": None, "name": "Ada Quill"}]
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        (lambda lab: lab.update(references=[{"kind": "coupon", "value": "FJX-1234"}]),
+         "kind 'coupon' is not one of"),
+        (lambda lab: lab.update(references=[{"kind": "order", "value": "ZZ-0000"}]),
+         "not in the subject or body"),
+        (lambda lab: lab.update(references=[{"kind": "order"}]), "bad reference"),
+        (lambda lab: lab.update(references=[{"kind": "order", "value": ""}]), "bad reference"),
+        (lambda lab: lab.update(references={"kind": "order", "value": "FJX-1234"}),
+         "must be a list"),
+        (lambda lab: lab.update(people=[{"name": "Ingrid Vossberg"}]), "neither a name nor"),
+        (lambda lab: lab.update(people=[{"role": "", "name": "Ingrid Vossberg"}]),
+         "neither a name nor"),
+        (lambda lab: lab.update(people=[{"role": "host", "name": "", "age": 3}]),
+         "neither a name nor"),
+    ],
+    ids=["kind", "value-unseen", "no-value", "empty-value", "not-a-list", "no-role",
+         "empty-role", "extra-key"],
+)
+def test_bad_references_or_people_fail_loudly(booking, change, message):
+    change(booking["labels"])
+
+    with pytest.raises(ev.FixtureError, match=message):
+        ev.validate_record(booking)
+
+
+def test_too_many_references_fail_loudly(booking):
+    booking["labels"]["references"] = [{"kind": "order", "value": "QX7-2291"}] * 13
+
+    with pytest.raises(ev.FixtureError, match="at most 12"):
+        ev.validate_record(booking)
+
+
+def test_a_reference_may_not_be_a_seeded_secret(fixtures):
+    key = copy.deepcopy(fixtures[1])
+    key["labels"]["references"] = [{"kind": "account", "value": AWS}]
+
+    with pytest.raises(ev.FixtureError, match="is a seeded secret"):
+        ev.validate_record(key)
 
 
 def test_select_filters_by_hard_case_and_limit(fixtures):
@@ -559,6 +641,156 @@ def test_bare_short_type_earns_no_severity_credit(fixtures):
     assert _headline(rows, "audit severity accuracy")["value"] == 0.0
 
 
+@pytest.mark.parametrize(
+    "summary",
+    [
+        {"one_line": "Ingrid confirms the cabin"},  # a first name alone
+        {"abstract": "The host, Ms. VOSSBERG, confirms it."},  # case and punctuation
+        {"action_summary": "Ask Ingrid Vossberg about check-in"},
+        {"one_line": "Booking FJX-1234 confirmed"},
+        {"abstract": "Booking fjx 1234 is confirmed."},  # regrouped, other case
+        {"action_summary": "Pay order QX72291"},  # separators dropped
+    ],
+    ids=["first-name", "surname-case", "action-summary", "reference", "regrouped",
+         "unseparated"],
+)
+def test_name_or_reference_in_a_summary_is_a_leak(booking, summary):
+    report = ev.score_rows([_row(booking, _pred(booking, **summary))], resamples=10)
+
+    assert report["name_reference_leaks"] == {"count": 1, "ids": ["t-booking"]}
+    assert report["headline"]["free-text name/reference leak rate"]["value"] == 1.0
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        {"one_line": "A host confirms a cabin booking at Fjordlodge",
+         "abstract": "The booking is confirmed and the order is paid.",
+         "action_summary": "Check in on arrival"},
+        {"one_line": "Codes FJX, 1234 differ"},  # two values, not the reference
+        {"key_points": ["Ingrid Vossberg hosts; booking FJX-1234"]},  # not a summary field
+    ],
+    ids=["role-based", "split-value", "key-points"],
+)
+def test_role_based_summaries_do_not_leak(booking, summary):
+    report = ev.score_rows([_row(booking, _pred(booking, **summary))], resamples=10)
+
+    assert report["name_reference_leaks"]["count"] == 0
+    assert report["headline"]["free-text name/reference leak rate"]["value"] == 0.0
+
+
+def test_a_name_word_the_organization_shares_is_not_a_leak(booking):
+    booking["labels"]["organizations"] = ["Vossberg Lodges"]
+
+    rows = [_row(booking, _pred(booking, one_line="Vossberg Lodges confirms a cabin"))]
+
+    assert ev.score_rows(rows, resamples=10)["name_reference_leaks"]["count"] == 0
+
+
+def test_leak_rate_counts_records_that_expect_a_name_or_reference(fixtures, booking):
+    rows = [
+        _row(fixtures[1], _pred(fixtures[1])),  # no people, no references: out
+        _row(booking, None),  # no output: out
+        _row(fixtures[0], _pred(fixtures[0], one_line="Lunch with Ada")),
+    ]
+
+    h = _headline(rows, "free-text name/reference leak rate")
+
+    assert (h["value"], h["n"]) == (1.0, 1)
+
+
+def test_reference_matching_ignores_case_and_separators_within_one_value():
+    assert ev._quotes_reference("see clm 2026 08812 for details", "CLM-2026-08812")
+    assert ev._quotes_reference("ref: CLM-2026-08812.", "CLM-2026-08812")
+    assert not ev._quotes_reference("CLM-2026, 08812", "CLM-2026-08812")
+    assert not ev._quotes_reference("CLM-2026-0881", "CLM-2026-08812")
+    assert not ev._quotes_reference("anything", "--")
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["CLM\u20132026\u201308812", "CLM\u20142026\u201408812", "clm_2026_08812",
+     "CLM -2026 - 08812", "CLM  2026  08812", "CLM-2026\n08812", "CLM-2026 \r\n 08812"],
+    ids=["en-dash", "em-dash", "underscore", "spaced-hyphen", "double-space", "line-break",
+         "crlf"],
+)
+def test_reference_matching_takes_any_separator_within_one_identifier(text):
+    assert ev._quotes_reference(f"see {text} today", "CLM-2026-08812")
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["the claim ending 08812", "claim 2026-08812", "CLM-2026; 08812"],
+    ids=["suffix", "partial-prefix-dropped", "semicolon-ends-it"],
+)
+def test_a_partial_reference_is_not_a_quote(text):
+    # Only the whole value counts: the last digits of a code do not identify it.
+    assert not ev._quotes_reference(text, "CLM-2026-08812")
+
+
+def test_folding_transliterates_nordic_letters():
+    assert ev._fold("Bjørn Ærlig Åsheim, Søren Bråten") == "bjorn aerlig asheim, soren braten"
+
+
+def test_a_nordic_name_written_without_its_letters_is_still_a_leak(booking):
+    booking["labels"]["people"] = [{"role": "neighbour", "name": "Bjørn Ølstad"}]
+
+    rows = [_row(booking, _pred(booking, one_line="Bjorn asks to borrow the trailer"))]
+
+    assert ev.score_rows(rows, resamples=10)["name_reference_leaks"]["ids"] == ["t-booking"]
+
+
+@pytest.mark.parametrize(
+    "one_line",
+    ["Will you confirm the cabin?", "Arrival is in May", "Hope the trip goes well"],
+)
+def test_a_name_that_is_a_common_word_is_not_a_leak_alone(booking, one_line):
+    booking["labels"]["people"] = [{"role": "host", "name": "Will Maylund"},
+                                   {"role": "guest", "name": "May"},
+                                   {"role": "friend", "name": "Hope Ostervik"}]
+    booking["labels"]["references"] = []
+
+    rows = [_row(booking, _pred(booking, one_line=one_line))]
+
+    assert ev.score_rows(rows, resamples=10)["name_reference_leaks"]["count"] == 0
+
+
+def test_the_rest_of_a_common_word_name_still_leaks(booking):
+    booking["labels"]["people"] = [{"role": "host", "name": "Will Maylund"}]
+    booking["labels"]["references"] = []
+
+    rows = [_row(booking, _pred(booking, one_line="Maylund confirms the cabin"))]
+
+    assert ev.score_rows(rows, resamples=10)["name_reference_leaks"]["count"] == 1
+
+
+def test_references_are_scored_only_where_the_fixture_states_them(fixtures, booking):
+    pred = _pred(booking, references=[{"kind": "booking", "value": "fjx 1234"},
+                                      {"kind": "order", "value": "WRONG-1"}])
+    rows = [_row(booking, pred), _row(fixtures[0], _pred(fixtures[0], references=[
+        {"kind": "order", "value": "NOT-SCORED"}]))]
+
+    assert _headline(rows, "references recall")["value"] == 0.5
+    assert _headline(rows, "references precision")["value"] == 0.5
+    assert _headline(rows, "references precision")["n"] == 1  # the unlabelled record is out
+
+
+def test_people_named_by_role_alone_are_not_scored_by_name(booking):
+    pred = _pred(booking, people=[{"role": "host", "name": "Ingrid Vossberg"},
+                                  {"role": "cleaner", "name": None}])
+    rows = [_row(booking, pred)]
+
+    assert _headline(rows, "people recall")["value"] == 1.0
+    assert _headline(rows, "people precision")["value"] == 1.0
+
+
+def test_a_secret_filed_as_a_reference_is_a_leak(fixtures):
+    key = fixtures[1]
+    pred = _pred(key, references=[{"kind": "account", "value": AWS}])
+
+    assert ev.score_rows([_row(key, pred)], resamples=10)["leaks"]["ids"] == ["t-key"]
+
+
 def test_leak_check_reads_each_number_on_its_own():
     value = "123456789"
 
@@ -756,6 +988,19 @@ def test_fake_run_end_to_end(tmp_path, capsys):
     assert out.with_suffix(".report.json").exists()
 
 
+def test_fake_oracle_exercises_roles_references_and_the_name_leak():
+    records = ev.select(ev.load_fixtures(ev.DEFAULT_FIXTURES), "hard_case=references")
+    fake = ev.FakeEnricher(records)
+
+    rows = ev.run_records(records, fake, fake.audit, concurrency=1)
+    report = ev.score_rows(rows, resamples=10)
+
+    produced = [r["enrichment"] for r in rows if r["enrichment"]]
+    assert produced and all(p["role"] for e in produced for p in e["people"])
+    assert report["headline"]["free-text name/reference leak rate"]["n"] == len(produced)
+    assert report["name_reference_leaks"]["count"] > 0
+
+
 def _llm_handler(seen: list | None = None):
     """A chat endpoint that answers enrichment and audit requests validly."""
     def handler(request: httpx.Request) -> httpx.Response:
@@ -943,3 +1188,26 @@ def test_realise_merges_reply_into_a_valid_record():
     ev.validate_record(record)
     assert record["from_addr"] is None  # documents have no sender
     assert record["labels"]["category"] == "other"
+
+
+def test_realise_keeps_roles_and_references_from_the_reply():
+    slot = next(s for s in gen.plan(n=120, seed=3) if s["hard_case"] is None
+                and not s["seeded_secrets"])
+    reply = {"subject": "Plumber visit", "from_addr": "a@b.example",
+             "body": "Your landlord Rosa Example booked a plumber; work order WO-77-QA.",
+             "people": [{"role": "landlord", "name": "Rosa Example"},
+                        {"role": "plumber", "name": None}],
+             "references": [{"kind": "other", "value": "WO-77-QA"}],
+             "organizations": [], "monetary_amounts": []}
+
+    record = gen.realise(slot, reply)
+
+    ev.validate_record(record)
+    assert record["labels"]["people"] == reply["people"]
+    assert record["labels"]["references"] == reply["references"]
+
+
+def test_writer_schema_asks_for_every_reference_kind():
+    item = gen.WRITER_SCHEMA["properties"]["references"]["items"]
+    assert item["properties"]["kind"]["enum"] == [k.value for k in ReferenceKind]
+    assert "references" in gen.WRITER_SCHEMA["required"]

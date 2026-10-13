@@ -42,6 +42,19 @@ _SYSTEM = (
     "contain any secret value — no passwords, API keys, tokens, one-time or "
     "recovery codes, or full card/account/SSN numbers. Name such a thing "
     '("a recovery code was included"); never quote it.\n'
+    "- one_line, abstract and action_summary refer to people by ROLE, never by "
+    'name ("a friend proposes a weekend trip", not "Zoe proposes a weekend '
+    'trip"), and quote no reference numbers ("the booking is confirmed", not '
+    '"booking AB12CD is confirmed"). Organizations may be named.\n'
+    "- people: one entry per person the message involves, other than the "
+    "reader. role is a short noun for how they relate to the reader or the "
+    "message (friend, colleague, mechanic, landlord, recruiter, doctor); name "
+    "is their name as written, or null if none is given.\n"
+    "- references: identifiers the message quotes, each with its kind (booking, "
+    "order, case, invoice, ticket, parking, membership, tracking, account, "
+    "other; account is a customer number with a company) and its value exactly "
+    "as written. Never put a secret here: no card or bank account numbers, "
+    "passwords, or one-time or recovery codes.\n"
     "- category = how the message FUNCTIONS (personal, newsletter, promotional, "
     "notification, transactional, bulk, other).\n"
     "- domain = the life-area the message is ABOUT. Choose the MOST SPECIFIC of: "

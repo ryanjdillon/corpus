@@ -132,11 +132,68 @@ Names = Annotated[list[Name], _LIST]
 Texts = Annotated[list[Text], _LIST]
 
 
-class Person(msgspec.Struct):
-    """A person referenced by the message."""
+# Role and ReferenceValue must not be blank, but that is checked after decoding
+# (``__post_init__``), not with ``minLength``: the guided schema keeps to the
+# keywords every supported provider already accepts, and a provider that rejects
+# an unfamiliar one fails every request, not just the odd record.
+#: A short noun for how a person relates to the message or its owner.
+Role = Annotated[str, msgspec.Meta(max_length=60)]
+#: An identifier as written: a booking code, an order or case number.
+ReferenceValue = Annotated[str, msgspec.Meta(max_length=120)]
+#: The role a person decoded from a record written before roles were required.
+UNKNOWN_ROLE = "unknown"
 
-    name: Name
-    role: Name | None = None  # best-effort: "classmate", "colleague", "vendor"
+
+def _require_text(value: str, field: str) -> None:
+    """Refuse a blank string; msgspec reports the ValueError as a ValidationError."""
+    if not value.strip():
+        raise ValueError(f"{field} must not be empty")
+
+
+class Person(msgspec.Struct, forbid_unknown_fields=True):
+    """A person referenced by the message, identified by role first.
+
+    The role ("friend", "mechanic", "landlord", "colleague") is what the
+    summaries say instead of the name, so a tier that must not see names can
+    drop ``name`` and still read every summary. ``name`` is the name as written,
+    when the message gives one.
+    """
+
+    role: Role
+    name: Name | None = None
+
+    def __post_init__(self) -> None:
+        _require_text(self.role, "role")
+
+
+class ReferenceKind(enum.Enum):
+    """What a reference identifies."""
+
+    booking = "booking"
+    order = "order"
+    case = "case"
+    invoice = "invoice"
+    ticket = "ticket"
+    parking = "parking"
+    membership = "membership"
+    tracking = "tracking"
+    account = "account"
+    other = "other"
+
+
+class Reference(msgspec.Struct, forbid_unknown_fields=True):
+    """An identifier the message quotes: a booking code, an order or case number.
+
+    Kept out of the summaries, like names, so a later policy can decide per tier
+    whether the value is shown. Never a secret: card and bank account numbers,
+    passwords and one-time codes are the ``pii`` scan's, not a reference.
+    """
+
+    kind: ReferenceKind
+    value: ReferenceValue
+
+    def __post_init__(self) -> None:
+        _require_text(self.value, "value")
 
 
 class Appointment(msgspec.Struct):
@@ -158,9 +215,12 @@ class Enrichment(msgspec.Struct):
     """Per-message structured metadata.
 
     Verbose by design so the index can answer many queries without re-enrichment.
+    The summaries (``one_line``, ``abstract``, ``action_summary``) name people by
+    role and quote no reference values; names and identifiers live only in
+    ``people`` and ``references``, where a per-tier policy can withhold them.
     """
 
-    # --- summary (free text, secret-free) ---
+    # --- summary (free text, secret-free, names and reference values left out) ---
     one_line: Annotated[str, msgspec.Meta(max_length=160)]  # aim for <=120 chars
     abstract: Text  # 2-3 sentences
 
@@ -185,6 +245,7 @@ class Enrichment(msgspec.Struct):
 
     # --- entities / topics / events ---
     people: Annotated[list[Person], _LIST] = msgspec.field(default_factory=list)
+    references: Annotated[list[Reference], _LIST] = msgspec.field(default_factory=list)
     organizations: Names = msgspec.field(default_factory=list)
     topics: Names = msgspec.field(default_factory=list)
     projects: Names = msgspec.field(default_factory=list)
@@ -203,8 +264,8 @@ class Enrichment(msgspec.Struct):
 #: injected instruction from the email it summarises. Every other field is a schema
 #: enum, a boolean, a date, or a bounded amount and currency.
 FREE_TEXT_FIELDS = (
-    "one_line", "abstract", "key_points", "action_summary", "people", "organizations",
-    "topics", "projects", "locations", "appointments",
+    "one_line", "abstract", "key_points", "action_summary", "people", "references",
+    "organizations", "topics", "projects", "locations", "appointments",
 )
 
 
@@ -249,11 +310,17 @@ def json_schema() -> dict:
     vLLM then dropped every entity list and llama.cpp every deadline. Required
     means "decide", not "non-empty": an empty list or a null deadline is still a
     valid answer.
+
+    ``additionalProperties: false`` (from ``forbid_unknown_fields``) is dropped:
+    the grammar already emits only the listed properties, and decoding still
+    refuses an unknown key, so the keyword would only add one more a provider
+    must support.
     """
     schema = msgspec.json.schema(Enrichment)
     for definition in schema.get("$defs", {}).values():
         if "properties" in definition:
             definition["required"] = sorted(definition["properties"])
+            definition.pop("additionalProperties", None)
     return schema
 
 
@@ -274,11 +341,34 @@ RECOVERED_MARKER = "+recovered"
 RECOVERED_SCHEMA_VERSION = f"{SCHEMA_VERSION}{RECOVERED_MARKER}"
 
 
+def upgrade(fields: dict) -> dict:
+    """Return a stored enrichment's fields in the current shape.
+
+    A record written before roles were required has people with a null or
+    missing ``role``; they take :data:`UNKNOWN_ROLE`. A record written before
+    ``references`` existed gets an empty list. The result is still a plain
+    dict, so a reader of raw stored rows (``DocumentStore.iter_enriched``) sees
+    the same shape as one that decodes them.
+    """
+    upgraded = {**fields}
+    upgraded.setdefault("references", [])
+    people = fields.get("people")
+    if isinstance(people, list):
+        upgraded["people"] = [
+            {**p, "role": p.get("role") or UNKNOWN_ROLE} if isinstance(p, dict) else p
+            for p in people
+        ]
+    return upgraded
+
+
 def decode(data: bytes | str) -> Enrichment:
-    """Parse a model's JSON output into an ``Enrichment``.
+    """Parse an enrichment's JSON, current or written under an older schema.
 
     Raise on malformed JSON or a value outside the schema.
     """
     if isinstance(data, str):
         data = data.encode()
-    return msgspec.json.decode(data, type=Enrichment)
+    fields = msgspec.json.decode(data)
+    if not isinstance(fields, dict):
+        raise msgspec.ValidationError(f"expected an object, got {type(fields).__name__}")
+    return msgspec.convert(upgrade(fields), type=Enrichment)
