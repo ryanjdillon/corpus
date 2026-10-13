@@ -179,11 +179,11 @@ def test_filter_summary_hides_any_value_outside_its_vocabulary(name, value):
 
 
 def test_an_id_keeps_its_source_and_hashes_the_rest():
-    summary = filter_summary({"id": "imap:kbl::Styret/Lønn:1700000000:42"})["id"]
+    summary = filter_summary({"id": "imap:inbox-c::Arkiv/Året:1700000000:42"})["id"]
 
-    assert summary["source"] == "imap:kbl"
+    assert summary["source"] == "imap:inbox-c"
     assert len(summary["sha256"]) == 12
-    assert "Styret" not in str(summary)
+    assert "Arkiv" not in str(summary)
 
 
 def test_an_id_with_an_unexpected_source_drops_it():

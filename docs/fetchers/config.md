@@ -13,9 +13,9 @@ sources:
     kind: gmail
     enrich: true
     options: {labels: [INBOX, Receipts]}
-  - name: kasserar
+  - name: inbox-a
     kind: imap
-    credentials_env_prefix: KBL_KASSERAR
+    credentials_env_prefix: MAIL_INBOX_A
     enrich: true
     options: {folders: [INBOX, Archive]}
     pipeline: {limit: 400, tier: sanitized}
@@ -59,11 +59,11 @@ The default prefix is the naming the fetchers used before sources were
 configured: the kind and the name, upper-cased, so `imap:example` reads
 `CORPUS_IMAP_EXAMPLE_HOST`. A deployment's existing variables therefore keep
 working when it adds a `sources:` entry without a prefix. A name with a `-`
-keeps the `-` in its default prefix (`CORPUS_IMAP_KBL-POST_HOST`), which most
+keeps the `-` in its default prefix (`CORPUS_IMAP_INBOX-B_HOST`), which most
 shells cannot set; give such a source an explicit `credentials_env_prefix`.
 
-An explicit prefix replaces the default: `imap:kasserar` above reads
-`KBL_KASSERAR_HOST` and never `CORPUS_IMAP_KASSERAR_HOST`. A missing credential
+An explicit prefix replaces the default: `imap:inbox-a` above reads
+`MAIL_INBOX_A_HOST` and never `CORPUS_IMAP_INBOX_A_HOST`. A missing credential
 fails when the fetcher is built, with an error that names the variables.
 
 These are the fetcher's mailbox credentials only. The keys for the embedding

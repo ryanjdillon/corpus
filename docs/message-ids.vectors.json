@@ -14,9 +14,9 @@
       "uid": "0123456789abcdef0123456789abcdef"
     },
     {
-      "id": "imap:kbl-post::INBOX:1700000000:42",
+      "id": "imap:inbox-b::INBOX:1700000000:42",
       "kind": "imap",
-      "mailbox": "kbl-post",
+      "mailbox": "inbox-b",
       "uid": "INBOX:1700000000:42",
       "imap": {
         "folder": "INBOX",
@@ -25,12 +25,12 @@
       }
     },
     {
-      "id": "imap:kbl::Styret/Lønn:1:7",
+      "id": "imap:inbox-c::Arkiv/Året:1:7",
       "kind": "imap",
-      "mailbox": "kbl",
-      "uid": "Styret/Lønn:1:7",
+      "mailbox": "inbox-c",
+      "uid": "Arkiv/Året:1:7",
       "imap": {
-        "folder": "Styret/Lønn",
+        "folder": "Arkiv/Året",
         "uidvalidity": 1,
         "uid": 7
       }
@@ -70,9 +70,9 @@
       }
     },
     {
-      "id": "imap:kbl::Sent Items:12:3",
+      "id": "imap:inbox-c::Sent Items:12:3",
       "kind": "imap",
-      "mailbox": "kbl",
+      "mailbox": "inbox-c",
       "uid": "Sent Items:12:3",
       "imap": {
         "folder": "Sent Items",
@@ -81,9 +81,9 @@
       }
     },
     {
-      "id": "imap:kbl::::1:7",
+      "id": "imap:inbox-c::::1:7",
       "kind": "imap",
-      "mailbox": "kbl",
+      "mailbox": "inbox-c",
       "uid": "::1:7",
       "imap": {
         "folder": ":",
@@ -114,15 +114,15 @@
       "why": "gmail uid too short"
     },
     {
-      "id": "imap:kbl:::1700000000:42",
+      "id": "imap:inbox-c:::1700000000:42",
       "why": "empty imap folder"
     },
     {
-      "id": "imap:kbl::INBOX:1700000000",
+      "id": "imap:inbox-c::INBOX:1700000000",
       "why": "imap uid without uidvalidity"
     },
     {
-      "id": "imap:kbl::INBOX:x:42",
+      "id": "imap:inbox-c::INBOX:x:42",
       "why": "non-numeric uidvalidity"
     },
     {
@@ -146,11 +146,11 @@
       "why": "a uri is not an id"
     },
     {
-      "id": "imap:kbl::INBOX:01:7",
+      "id": "imap:inbox-c::INBOX:01:7",
       "why": "leading zero in uidvalidity"
     },
     {
-      "id": "imap:kbl::INBOX:1:0",
+      "id": "imap:inbox-c::INBOX:1:0",
       "why": "uid 0"
     },
     {
@@ -166,7 +166,7 @@
       "why": "33-character mailbox"
     },
     {
-      "id": "imap:kbl.post::INBOX:1:7",
+      "id": "imap:inbox.b::INBOX:1:7",
       "why": "mailbox with ."
     }
   ]

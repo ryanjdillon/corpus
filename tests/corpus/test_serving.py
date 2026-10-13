@@ -144,11 +144,11 @@ def test_each_tier_serves_the_generic_tools_and_its_presets(tier, name, presets)
 
 def test_the_index_serves_under_its_overridden_name(open_index):
     # The deprecated CORPUS_INDEX_SERVER_NAME still renames the sanitized server.
-    config = _registry(index_server_name="corpus-index-kbl").tier("sanitized")
+    config = _registry(index_server_name="corpus-index-shared").tier("sanitized")
     server = serving.build_mcp("sanitized", config=config, open_store=open_index)
 
-    assert server.name == "corpus-index-kbl"
-    assert call(server, "index_stats")["server"] == "corpus-index-kbl"
+    assert server.name == "corpus-index-shared"
+    assert call(server, "index_stats")["server"] == "corpus-index-shared"
 
 
 def test_a_projected_tier_from_a_file_serves_the_sanitized_surface(open_index, index_store):

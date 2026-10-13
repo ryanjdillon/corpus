@@ -36,9 +36,9 @@ sources:
     kind: gmail
     enrich: true
     options: {labels: [INBOX, Receipts]}
-  - name: kasserar
+  - name: inbox-a
     kind: imap
-    credentials_env_prefix: KBL_KASSERAR
+    credentials_env_prefix: MAIL_INBOX_A
     enrich: true
     options: {folders: [INBOX]}
     pipeline: {batch_size: 20, limit: 400, tier: partner}
@@ -84,15 +84,15 @@ def process_config(monkeypatch):
 def test_a_file_declares_each_source_once(config_file):
     reg = declared(config_file(FILE))
 
-    assert [s.id for s in reg.sources()] == ["gmail:personal", "imap:kasserar", "imap:notices"]
+    assert [s.id for s in reg.sources()] == ["gmail:personal", "imap:inbox-a", "imap:notices"]
     personal = reg.source("gmail:personal")
     assert personal == GmailSource(
         name="personal", enrich=True, options=GmailOptions(labels=["INBOX", "Receipts"])
     )
-    kasserar = reg.source("imap:kasserar")
-    assert kasserar.env_prefix == "KBL_KASSERAR"
-    assert kasserar.options == ImapOptions(folders=["INBOX"])
-    assert kasserar.pipeline == PipelineOptions(batch_size=20, limit=400, tier="partner")
+    inbox_a = reg.source("imap:inbox-a")
+    assert inbox_a.env_prefix == "MAIL_INBOX_A"
+    assert inbox_a.options == ImapOptions(folders=["INBOX"])
+    assert inbox_a.pipeline == PipelineOptions(batch_size=20, limit=400, tier="partner")
     assert reg.source("imap:notices").pipeline == PipelineOptions()
 
 
@@ -123,7 +123,7 @@ def test_a_file_with_only_tiers_keeps_the_pre_file_sources(config_file):
 
 
 def test_an_undeclared_source_is_refused_naming_the_declared_ones(config_file):
-    with pytest.raises(ValueError, match=r"no source 'imap:other'.*gmail:personal, imap:kasserar"):
+    with pytest.raises(ValueError, match=r"no source 'imap:other'.*gmail:personal, imap:inbox-a"):
         declared(config_file(FILE)).source("imap:other")
 
 
@@ -141,7 +141,7 @@ def test_an_empty_list_declares_no_sources(config_file):
         (lambda f: f.replace("kind: gmail", "kind: jmap"), r"Invalid value 'jmap'.*sources\[0\]\.kind"),
         (lambda f: f.replace("    kind: gmail\n", ""), r"missing required field `kind`"),
         (lambda f: f.replace("name: personal", "name: Personal"), r"sources\[0\]\.name"),
-        (lambda f: f.replace("name: personal", "name: kbl.post"), r"sources\[0\]\.name"),
+        (lambda f: f.replace("name: personal", "name: inbox.b"), r"sources\[0\]\.name"),
         (lambda f: f.replace("name: personal", "name: " + "a" * 33), r"sources\[0\]\.name"),
         (lambda f: f.replace("kind: gmail\n    enrich: true", "kind: gmail\n    colour: red\n    enrich: true"),
          r"unknown field `colour`"),
@@ -151,7 +151,7 @@ def test_an_empty_list_declares_no_sources(config_file):
          r"missing required field `enrich`"),
         (lambda f: f.replace("{folders: [INBOX]}", "{labels: [INBOX]}"), r"unknown field `labels`"),
         (lambda f: f.replace("{labels: [INBOX, Receipts]}", "{labels: []}"), r"length >= 1"),
-        (lambda f: f.replace("KBL_KASSERAR", "kbl_kasserar"), r"credentials_env_prefix"),
+        (lambda f: f.replace("MAIL_INBOX_A", "mail_inbox_a"), r"credentials_env_prefix"),
         (lambda f: f.replace("limit: 400", "limit: -1"), r"pipeline\.limit"),
         (lambda f: f.replace("batch_size: 20", "batch_size: 0"), r"pipeline\.batch_size"),
     ],
@@ -162,8 +162,8 @@ def test_a_bad_source_is_refused_with_a_clear_error(config_file, edit, error):
 
 
 def test_a_source_declared_twice_is_refused(config_file):
-    text = FILE.replace("name: notices", "name: kasserar")
-    with pytest.raises(SourceConfigError, match="source 'imap:kasserar' is declared twice"):
+    text = FILE.replace("name: notices", "name: inbox-a")
+    with pytest.raises(SourceConfigError, match="source 'imap:inbox-a' is declared twice"):
         declared(config_file(text))
 
 
@@ -182,7 +182,7 @@ def test_the_same_name_under_two_kinds_is_two_sources(config_file):
         ("gmail:work", True),
         ("imap:fastmail", True),
         # By kind alone, as before: ids stored before the name grammar keep it.
-        ("imap:kbl.post", True),
+        ("imap:inbox.b", True),
         ("imap", True),
         ("youtube:@chan", False),
         ("files:notes", False),
@@ -195,7 +195,7 @@ def test_without_sources_enrichment_is_by_kind_as_before(source, enrichable):
 
 
 @pytest.mark.parametrize("kind", ["gmail", "imap"])
-@pytest.mark.parametrize("name", ["personal", "kbl_post", "kbl-post", "x1"])
+@pytest.mark.parametrize("name", ["personal", "inbox_b", "inbox-b", "x1"])
 def test_the_default_prefix_reproduces_the_pre_file_variable_names(kind, name):
     # The names gmail.py and imap.py composed before: CORPUS_<KIND>_<NAME.upper()>_<KEY>.
     source = Registry(None).source(f"{kind}:{name}")
@@ -228,7 +228,7 @@ def test_without_sources_the_process_logs_the_deprecation_once(process_config, c
 
 def test_enrichment_follows_each_entry(config_file):
     reg = declared(config_file(FILE))
-    assert reg.may_enrich("gmail:personal") and reg.may_enrich("imap:kasserar")
+    assert reg.may_enrich("gmail:personal") and reg.may_enrich("imap:inbox-a")
     assert not reg.may_enrich("imap:notices")
     assert not reg.may_enrich("imap:undeclared")
     assert not reg.may_enrich(None)
@@ -261,9 +261,9 @@ GMAIL_ENV = {
     "CORPUS_GMAIL_PERSONAL_REFRESH_TOKEN": "rt",
 }
 IMAP_ENV = {
-    "KBL_KASSERAR_HOST": "imap.example.com",
-    "KBL_KASSERAR_USER": "kasserar",
-    "KBL_KASSERAR_PASSWORD": "x",
+    "MAIL_INBOX_A_HOST": "imap.example.com",
+    "MAIL_INBOX_A_USER": "inbox-a",
+    "MAIL_INBOX_A_PASSWORD": "x",
 }
 
 
@@ -271,12 +271,12 @@ def test_build_fetcher_dispatches_on_the_kind(config_file):
     reg = declared(config_file(FILE))
 
     gmail = build_fetcher(reg.source("gmail:personal"), environ=GMAIL_ENV)
-    imap = build_fetcher(reg.source("imap:kasserar"), environ=IMAP_ENV)
+    imap = build_fetcher(reg.source("imap:inbox-a"), environ=IMAP_ENV)
 
     assert isinstance(gmail, GmailFetcher) and gmail.source == "gmail:personal"
     assert gmail.labels == ["INBOX", "Receipts"]
-    assert isinstance(imap, ImapFetcher) and imap.source == "imap:kasserar"
-    assert (imap.host, imap.user, imap.folders) == ("imap.example.com", "kasserar", ["INBOX"])
+    assert isinstance(imap, ImapFetcher) and imap.source == "imap:inbox-a"
+    assert (imap.host, imap.user, imap.folders) == ("imap.example.com", "inbox-a", ["INBOX"])
 
 
 def test_build_fetcher_reads_the_pre_file_names_for_a_synthesised_source():
@@ -294,10 +294,10 @@ def test_build_fetcher_reads_the_pre_file_names_for_a_synthesised_source():
 
 
 def test_build_fetcher_does_not_read_another_sources_variables(config_file):
-    # The explicit prefix replaces the default: CORPUS_IMAP_KASSERAR_* is not read.
-    env = {k.replace("KBL_KASSERAR", "CORPUS_IMAP_KASSERAR"): v for k, v in IMAP_ENV.items()}
-    with pytest.raises(ValueError, match="KBL_KASSERAR_HOST"):
-        build_fetcher(declared(config_file(FILE)).source("imap:kasserar"), environ=env)
+    # The explicit prefix replaces the default: CORPUS_IMAP_INBOX_A_* is not read.
+    env = {k.replace("MAIL_INBOX_A", "CORPUS_IMAP_INBOX_A"): v for k, v in IMAP_ENV.items()}
+    with pytest.raises(ValueError, match="MAIL_INBOX_A_HOST"):
+        build_fetcher(declared(config_file(FILE)).source("imap:inbox-a"), environ=env)
 
 
 def test_build_fetcher_refuses_a_kind_it_has_no_fetcher_for():
@@ -313,8 +313,8 @@ def test_build_fetcher_refuses_a_kind_it_has_no_fetcher_for():
 
 def test_the_process_reads_sources_from_the_config_file(process_config, config_file):
     process_config(config_file(FILE))
-    assert [s.id for s in sources.sources()] == ["gmail:personal", "imap:kasserar", "imap:notices"]
-    assert sources.source("imap:kasserar").pipeline.limit == 400
+    assert [s.id for s in sources.sources()] == ["gmail:personal", "imap:inbox-a", "imap:notices"]
+    assert sources.source("imap:inbox-a").pipeline.limit == 400
     assert not sources.may_enrich("imap:notices")
     with pytest.raises(ValueError, match="not declared enrichable"):
         sources.require_enrichable("imap:notices")
@@ -326,7 +326,7 @@ def test_the_tiers_file_variable_still_names_the_config_file(
     process_config()
     monkeypatch.setattr(settings, "tiers_file", config_file(FILE))
     with caplog.at_level(logging.WARNING, logger="corpus.tiers"):
-        assert sources.source("imap:kasserar").env_prefix == "KBL_KASSERAR"
+        assert sources.source("imap:inbox-a").env_prefix == "MAIL_INBOX_A"
     assert "CORPUS_TIERS_FILE is deprecated" in caplog.text
 
 

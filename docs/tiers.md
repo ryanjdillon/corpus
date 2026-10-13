@@ -27,7 +27,7 @@ tiers:
     serve: {access: [pi-local]}
   - name: sanitized
     store: {schema: corpus}
-    serve: {server_name: corpus-index-kbl, access: [orchestrator, pi]}
+    serve: {server_name: corpus-index-shared, access: [orchestrator, pi]}
     projection:
       redact: {person_name: initial}
 ```

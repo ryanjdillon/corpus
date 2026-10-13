@@ -45,7 +45,7 @@ changes the mailbox in any other way.
 Any IMAPS server works, Stalwart included. For a shared or role mailbox, log in as
 the mailbox's own principal (its service password) instead of as a member with
 access to it. Stalwart group principals log in by their bare principal name
-(`kasserar`), not the full address. The fetcher then sees the mailbox as its own INBOX, and
+(`inbox-a`), not the full address. The fetcher then sees the mailbox as its own INBOX, and
 access revokes when that password is rotated. Configure one source per mailbox
-(`imap:kasserar`, `imap:post`, …), so each mailbox keeps its own cursor and can
+(`imap:inbox-a`, `imap:inbox-b`, …), so each mailbox keeps its own cursor and can
 be stored in its own schema or database.

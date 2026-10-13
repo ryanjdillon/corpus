@@ -174,6 +174,6 @@ deprecated overrides of the config file's tiers, for one release; see
 [Tiers](tiers.md#environment-overrides-deprecated).
 
 Give the sanitized tier its own `store.schema` when several raw schemas feed one
-sanitized view. For example, one raw schema per mailbox (`mbx_kasserar`, `mbx_post`, …) can
-each run `corpus sync` into a shared `kbl` schema. Record ids include the source
+sanitized view. For example, one raw schema per mailbox (`mbx_inbox_a`, `mbx_inbox_b`, …) can
+each run `corpus sync` into one shared schema, `mbx_shared`. Record ids include the source
 (`imap:<mailbox>::…`), so rows from different mailboxes never collide.
