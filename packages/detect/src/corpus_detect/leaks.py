@@ -11,6 +11,13 @@ Two layers, both returning secret *types* and counts — never the values:
    curated ruleset is unioned in for rule types the local regexes don't cover.
    Only the rule id is read from its report, never the matched secret.
 
+If Betterleaks is configured but cannot be run (missing, failed, timed out), the
+scan quietly narrows to the local regexes. That must not go unnoticed, so
+:func:`scan` reports which scanner actually ran through its ``on_scanner``
+callback — ``"betterleaks"`` or ``"local"`` — for the caller to turn into a
+metric, and the first fallback in a process is logged once as a warning naming
+the reason (never content).
+
 This complements ``pii`` (identity/financial numbers): a leaked API key is a
 different, higher-severity class than an SSN, and detectable with far better
 precision than any hand-rolled recovery-code heuristic — which is why recovery
@@ -29,8 +36,10 @@ import logging
 import os
 import re
 import subprocess
+import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from typing import Literal
 
 from .span import Span
 
@@ -62,6 +71,14 @@ _PRIVATE_KEY_BLOCK = re.compile(
     r"-----END (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----",
     re.DOTALL,
 )
+
+#: Which scanner a :func:`scan` ran: Betterleaks (its report read, unioned with the
+#: local rules) or the local rules alone (unconfigured, or a fallback).
+Scanner = Literal["betterleaks", "local"]
+
+#: Why a configured Betterleaks did not run: the binary is missing, it failed
+#: (error, non-zero exit, unreadable report) or it ran past its timeout.
+FallbackReason = Literal["missing", "failed", "timeout"]
 
 #: Every type name a local rule can carry. Betterleaks maps onto these where it
 #: can and reports any other rule as ``leak_<ruleid>``, so counts are open-ended.
@@ -115,17 +132,38 @@ class LeaksSettings:
 settings = LeaksSettings.from_env()
 
 
+# One warning per process: the enrich audit scans every document, so a broken
+# binary would otherwise log once per message. The per-call signal is the
+# ``on_scanner`` callback.
+_fallback_lock = threading.Lock()
+_fallback_warned = threading.Event()
+
+
+def _note_fallback(reason: FallbackReason) -> None:
+    """Log a fallback to the local rules: a warning the first time, debug after."""
+    with _fallback_lock:
+        first = not _fallback_warned.is_set()
+        _fallback_warned.set()
+    if first:
+        log.warning(
+            "betterleaks is configured but unavailable (%s); credential scans fall back "
+            "to the local rules (logged once per process; later fallbacks at debug)",
+            reason,
+        )
+    else:
+        log.debug("betterleaks %s; local rules only", reason)
+
+
 def _run_betterleaks(
     text: str,
     config: LeaksSettings,
     *,
     run: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
-) -> dict[str, int]:
+) -> dict[str, int] | FallbackReason:
     """Scan ``text`` with the external Betterleaks binary via stdin.
 
-    Returns ``{rule_name: count}``. Degrades to ``{}`` (with a warning) if the
-    binary is missing or its report can't be read — the local regexes remain the
-    guaranteed baseline.
+    Returns ``{rule_name: count}``, or why it could not: the local regexes remain
+    the guaranteed baseline, so the caller degrades rather than fails.
     """
     try:
         proc = run(
@@ -145,16 +183,24 @@ def _run_betterleaks(
             timeout=config.timeout,
             check=False,
         )
-    except (FileNotFoundError, OSError, subprocess.SubprocessError) as exc:
-        log.warning("betterleaks unavailable (%s); credential scan limited to local rules", exc)
-        return {}
+    except FileNotFoundError:
+        return "missing"
+    except subprocess.TimeoutExpired:
+        return "timeout"
+    except (OSError, subprocess.SubprocessError):
+        return "failed"
+    # ``--exit-code 0`` makes a run with findings exit 0, so any other exit is an
+    # error: whatever report it left must not read as a clean scan.
+    if proc.returncode != 0:
+        return "failed"
     try:
         findings = json.loads(proc.stdout or b"[]")
     except json.JSONDecodeError:
-        log.warning("betterleaks returned no parseable report; skipping external scan")
-        return {}
+        return "failed"
+    if not isinstance(findings, list):
+        return "failed"
     counts: dict[str, int] = {}
-    for finding in findings or []:
+    for finding in findings:
         rule = str(finding.get("RuleID") or "generic").lower()
         name = _RULE_MAP.get(rule, f"leak_{rule}")  # rule id only — never the value
         counts[name] = counts.get(name, 0) + 1
@@ -166,10 +212,13 @@ def scan(
     *,
     config: LeaksSettings | None = None,
     run: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
+    on_scanner: Callable[[Scanner], None] | None = None,
 ) -> dict[str, int]:
     """Detect leaked credentials in ``text`` — {secret_name: count}, no values.
 
-    ``config`` defaults to the environment's :data:`settings`.
+    ``config`` defaults to the environment's :data:`settings`. ``on_scanner``, if
+    given, is called once per non-empty ``text`` with the :data:`Scanner` that
+    ran: ``"local"`` when Betterleaks is unconfigured or fell back.
     """
     if config is None:
         config = settings
@@ -180,11 +229,19 @@ def scan(
         n = len(pattern.findall(text))
         if n:
             counts[name] = counts.get(name, 0) + n
+    scanner: Scanner = "local"
     if config.bin:
-        for name, n in _run_betterleaks(text, config, run=run).items():
-            # Local regexes take precedence; the external scanner only adds rule
-            # types the local layer doesn't already cover (avoids double counting).
-            counts.setdefault(name, n)
+        external = _run_betterleaks(text, config, run=run)
+        if isinstance(external, str):
+            _note_fallback(external)
+        else:
+            scanner = "betterleaks"
+            for name, n in external.items():
+                # Local regexes take precedence; the external scanner only adds rule
+                # types the local layer doesn't already cover (avoids double counting).
+                counts.setdefault(name, n)
+    if on_scanner is not None:
+        on_scanner(scanner)
     return counts
 
 

@@ -20,7 +20,9 @@ pip install "corpus-detect @ git+https://github.com/ryanjdillon/corpus@<tag>#sub
 
 `CORPUS_LEAKS_BIN` names a [Betterleaks](https://github.com/betterleaks/betterleaks)
 binary to union its ruleset into the credential counts; `CORPUS_LEAKS_TIMEOUT`
-bounds one run (seconds, default 30). Unset, the local rules run alone.
+bounds one run (seconds, default 30). Unset, the local rules run alone. If the
+binary is missing, fails or times out, the scan falls back to the local rules;
+pass `on_scanner` to `detect` or `leaks.scan` to learn which scanner ran.
 
 See [Detectors](https://ryanjdillon.github.io/corpus/detect/) for the interface,
 what each detector finds, and the version fingerprint.

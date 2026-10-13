@@ -89,7 +89,36 @@ deployment sets the same variables either way:
 | `CORPUS_LEAKS_TIMEOUT` | seconds one Betterleaks run may take (default `30`) |
 
 They are read once at import. `leaks.scan(text, config=LeaksSettings(...))`
-takes explicit settings instead, as the tests do.
+(or `detect(text, leaks_config=...)`) takes explicit settings instead, as the
+tests do.
+
+### Which scanner ran
+
+If Betterleaks is configured but missing, failing (an error, any non-zero exit
+— corpus runs it with `--exit-code 0`, so findings exit 0 — or an unreadable
+report) or timed out, `leaks.scan` falls back to the local
+rules rather than failing. So that a broken install cannot narrow an audit
+unnoticed, it reports the scanner that actually ran:
+
+```python
+from corpus_detect import detect
+from corpus_detect.leaks import Scanner  # Literal["betterleaks", "local"]
+
+def on_scanner(scanner: Scanner) -> None: ...
+
+detect(text, on_scanner=on_scanner)        # passed through to leaks.scan
+leaks.scan(text, on_scanner=on_scanner)
+```
+
+The callback runs once per non-empty text: `"betterleaks"` when its report was
+read, `"local"` when Betterleaks is unconfigured or fell back. The package has no
+telemetry dependency; corpus turns the callback into the
+`corpus.detect.leaks_scanner` counter (see
+[Observability](observability.md#credential-scanner-fallback)). The first
+fallback in a process is also logged once as a warning naming the reason
+(`missing`, `failed` or `timeout`), never the content; later ones log at debug.
+The callback is not part of `fingerprint_parts()`, so `SCAN_VERSION` is
+unaffected.
 
 ## Versions
 
@@ -110,3 +139,6 @@ tag:
 ```bash
 pip install "corpus-detect @ git+https://github.com/ryanjdillon/corpus@<tag>#subdirectory=packages/detect"
 ```
+
+The image installs the Betterleaks binary from a release tarball pinned by
+sha256; see [Build](development.md#build) for the pin and how to bump it.

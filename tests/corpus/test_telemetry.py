@@ -95,6 +95,23 @@ def test_configure_sets_providers_and_is_idempotent(monkeypatch):
         HTTPXClientInstrumentor().uninstrument()
 
 
+# --- credential scanner ----------------------------------------------------------
+
+
+def test_leaks_scanner_is_counted_by_scanner(reader):
+    from opentelemetry.sdk.metrics import MeterProvider
+
+    meter = MeterProvider(metric_readers=[reader]).get_meter("test")
+    counter = meter.create_counter("corpus.detect.leaks_scanner")
+
+    telemetry.record_leaks_scanner("betterleaks", counter=counter)
+    telemetry.record_leaks_scanner("local", counter=counter)
+    telemetry.record_leaks_scanner("local", counter=counter)
+
+    points = _collect(reader)["corpus.detect.leaks_scanner"].data_points
+    assert {p.attributes["scanner"]: p.value for p in points} == {"betterleaks": 1, "local": 2}
+
+
 # --- sync backlog --------------------------------------------------------------
 
 

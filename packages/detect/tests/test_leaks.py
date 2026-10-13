@@ -19,8 +19,30 @@ _BETTERLEAKS = LeaksSettings(bin="betterleaks", timeout=5.0)
 
 @pytest.fixture
 def run():
-    """Autospec of the subprocess.run boundary the Betterleaks scan shells out to."""
-    return create_autospec(subprocess.run)
+    """Autospec of the subprocess.run boundary the Betterleaks scan shells out to.
+
+    It returns a clean, successful run unless a test says otherwise.
+    """
+    mock = create_autospec(subprocess.run)
+    mock.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout=b"[]")
+    return mock
+
+
+@pytest.fixture
+def on_scanner():
+    """A spec-bound ``on_scanner`` callback, recording which scanner ran."""
+
+    def callback(scanner: leaks.Scanner) -> None: ...
+
+    return create_autospec(callback)
+
+
+@pytest.fixture(autouse=True)
+def fresh_fallback_warning():
+    """Each test starts as a fresh process would: no fallback warned yet."""
+    leaks._fallback_warned.clear()
+    yield
+    leaks._fallback_warned.clear()
 
 
 def test_detects_private_key_block():
@@ -82,6 +104,97 @@ def test_bad_external_report_is_ignored(run):
     run.return_value.stdout = b"not json"
 
     assert leaks.scan("just text", config=_BETTERLEAKS, run=run) == {}
+
+
+def test_a_successful_external_scan_reports_betterleaks(run, on_scanner):
+    leaks.scan("just text", config=_BETTERLEAKS, run=run, on_scanner=on_scanner)
+
+    on_scanner.assert_called_once_with("betterleaks")
+
+
+def test_findings_from_a_clean_exit_are_read(run, on_scanner):
+    # ``--exit-code 0`` makes a run with findings exit 0: its report is the result.
+    report = json.dumps([{"RuleID": "github-pat"}, {"RuleID": "generic-api-key"}]).encode()
+    run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout=report)
+
+    counts = leaks.scan("nothing structured here", config=_BETTERLEAKS, run=run, on_scanner=on_scanner)
+
+    assert counts == {"github_token": 1, "leak_generic-api-key": 1}
+    on_scanner.assert_called_once_with("betterleaks")
+
+
+def test_a_missing_binary_reports_local_and_warns_once(run, on_scanner, caplog):
+    run.side_effect = FileNotFoundError("betterleaks")
+
+    with caplog.at_level("DEBUG", logger="corpus_detect.leaks"):
+        for _ in range(2):
+            leaks.scan("just text", config=_BETTERLEAKS, run=run, on_scanner=on_scanner)
+
+    assert [c.args for c in on_scanner.call_args_list] == [("local",), ("local",)]
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert "unavailable (missing)" in warnings[0].getMessage()
+
+
+@pytest.mark.parametrize(
+    ("outcome", "reason"),
+    [
+        (subprocess.TimeoutExpired(cmd="betterleaks", timeout=5.0), "timeout"),
+        (PermissionError("betterleaks"), "failed"),
+        (subprocess.CompletedProcess(args=[], returncode=1, stdout=b""), "failed"),
+        (subprocess.CompletedProcess(args=[], returncode=1, stdout=b"[]"), "failed"),
+        (
+            subprocess.CompletedProcess(
+                args=[], returncode=1, stdout=json.dumps([{"RuleID": "github-pat"}]).encode()
+            ),
+            "failed",
+        ),
+        (subprocess.CompletedProcess(args=[], returncode=2, stdout=b"[]"), "failed"),
+        (subprocess.CompletedProcess(args=[], returncode=0, stdout=b"not json"), "failed"),
+        (subprocess.CompletedProcess(args=[], returncode=0, stdout=b"{}"), "failed"),
+    ],
+    ids=[
+        "timeout",
+        "os-error",
+        "error-exit",
+        "error-exit-empty-report",
+        "error-exit-with-report",
+        "other-exit",
+        "unparseable",
+        "not-a-list",
+    ],
+)
+def test_a_failing_binary_reports_local_and_names_the_reason(
+    run, on_scanner, caplog, outcome, reason
+):
+    if isinstance(outcome, BaseException):
+        run.side_effect = outcome
+    else:
+        run.return_value = outcome
+    secret = "AKIAIOSFODNN7EXAMPLE"
+
+    with caplog.at_level("WARNING", logger="corpus_detect.leaks"):
+        counts = leaks.scan(f"key {secret}", config=_BETTERLEAKS, run=run, on_scanner=on_scanner)
+
+    assert counts == {"aws_access_key": 1}  # the local rules still ran
+    on_scanner.assert_called_once_with("local")
+    assert f"unavailable ({reason})" in caplog.text
+    assert secret not in caplog.text  # the reason, never content
+
+
+def test_unconfigured_reports_local_without_a_warning(run, on_scanner, caplog):
+    with caplog.at_level("WARNING", logger="corpus_detect.leaks"):
+        leaks.scan("just text", config=LeaksSettings(), run=run, on_scanner=on_scanner)
+
+    on_scanner.assert_called_once_with("local")
+    assert caplog.records == []
+
+
+def test_empty_text_reports_no_scanner(run, on_scanner):
+    leaks.scan("", config=_BETTERLEAKS, run=run, on_scanner=on_scanner)
+
+    on_scanner.assert_not_called()
+    run.assert_not_called()
 
 
 def test_external_not_invoked_when_unconfigured(run):
