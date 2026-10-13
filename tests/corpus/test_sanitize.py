@@ -7,6 +7,7 @@ sync. It writes a real sanitized store, so those tests run in the Docker tier.
 from __future__ import annotations
 
 import threading
+import time
 from datetime import UTC, datetime
 from unittest.mock import create_autospec
 
@@ -1560,31 +1561,101 @@ def test_concurrent_syncs_of_a_tier_embed_each_row_once(pg, store, embedder, doc
     assert sorted(embedded) == [f"a friend asks about item {i}" for i in range(4)]
 
 
+#: The advisory-lock key a sync of the ``corpus`` tier re-embeds under.
+REEMBED_KEY = "corpus.messages reembed"
+#: Generous enough for a loaded run; a lock-wait test fails, not hangs, past it.
+LOCK_WAIT_TIMEOUT = 30.0
+#: Sessions queued on, not holding, the advisory lock on ``hashtext(%(key)s)`` in
+#: this database. ``pg_advisory_lock(bigint)`` stores its key split into
+#: ``classid`` (high 32 bits) and ``objid`` (low 32 bits) with ``objsubid = 1``;
+#: the split is computed here so it follows the key expression the store uses.
+_ADVISORY_WAITERS = """
+    FROM pg_locks, (SELECT hashtext(%(key)s)::bigint AS k) AS key
+    WHERE locktype = 'advisory' AND NOT granted
+      AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+      AND classid::bigint = (key.k >> 32) & 4294967295
+      AND objid::bigint = key.k & 4294967295
+      AND objsubid = 1
+"""
+
+
+def _await_advisory_waiter(conn, key=REEMBED_KEY, timeout=LOCK_WAIT_TIMEOUT):
+    """Whether some session queues on *key*'s advisory lock within *timeout* seconds.
+
+    A waiter's callback runs before it sends its blocking lock request, so only
+    the server's lock table shows that it has actually blocked.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if conn.execute(f"SELECT count(*) {_ADVISORY_WAITERS}", {"key": key}).fetchone()[0]:
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def _release_and_join(holder, thread, timeout=LOCK_WAIT_TIMEOUT):
+    """Release *holder*'s re-embed lock and join *thread*, cancelling it if still blocked.
+
+    The cancel frees a thread that never got the lock, so a failing test leaves
+    no thread blocked inside a connection the fixtures are about to close. It
+    reaches only waiters on the re-embed key, never another session's lock.
+    """
+    holder.execute("SELECT pg_advisory_unlock(hashtext(%s))", (REEMBED_KEY,))
+    thread.join(timeout=timeout)
+    if thread.is_alive():
+        holder.execute(f"SELECT pg_cancel_backend(pid) {_ADVISORY_WAITERS}",
+                       {"key": REEMBED_KEY})
+        thread.join(timeout=timeout)
+
+
+@pytest.mark.integration
+def test_the_lock_wait_poll_sees_only_waiters_on_its_own_key(pg):
+    # Its hash is negative, unlike the re-embed key's, so the poll's split of a
+    # sign-extended key into classid and objid is exercised too.
+    other_key = "corpus.another lock"
+    with (psycopg.connect(pg, autocommit=True) as holder,
+          psycopg.connect(pg, autocommit=True) as waiter):
+        holder.execute("SELECT pg_advisory_lock(hashtext(%s))", (other_key,))
+        blocked = threading.Thread(
+            target=waiter.execute, args=("SELECT pg_advisory_lock(hashtext(%s))", (other_key,)),
+            daemon=True,
+        )
+        blocked.start()
+        try:
+            assert _await_advisory_waiter(holder, key=other_key), "the waiter never queued"
+            assert not _await_advisory_waiter(holder, timeout=0.2)
+        finally:
+            holder.execute("SELECT pg_advisory_unlock(hashtext(%s))", (other_key,))
+            blocked.join(timeout=LOCK_WAIT_TIMEOUT)
+        waiter.execute("SELECT pg_advisory_unlock(hashtext(%s))", (other_key,))
+
+    assert not blocked.is_alive()
+
+
 @pytest.mark.integration
 def test_a_waiting_sync_embeds_once_the_lock_is_released(pg, store, embedder, documents):
     docs = [_people(i) for i in range(4)]
     _stale(store, embedder, documents, docs)
     waiting, result = threading.Event(), []
 
+    def drain():
+        result.append(sanitize.run_sync(
+            store, documents=documents(*docs), embedder=embedder, reembed_limit=0,
+            reembed_wait=True, on_reembed_wait=waiting.set,
+        ))
+
+    # Daemon, so a thread that outlives every join cannot hang the run's exit.
+    sync = threading.Thread(target=drain, daemon=True)
     with psycopg.connect(pg, autocommit=True) as holder:
-        holder.execute("SELECT pg_advisory_lock(hashtext('corpus.messages reembed'))")
-
-        def drain():
-            result.append(sanitize.run_sync(
-                store, documents=documents(*docs), embedder=embedder, reembed_limit=0,
-                reembed_wait=True, on_reembed_wait=waiting.set,
-            ))
-
-        # Daemon, so a lock that is never granted fails the test instead of hanging it.
-        sync = threading.Thread(target=drain, daemon=True)
+        holder.execute("SELECT pg_advisory_lock(hashtext(%s))", (REEMBED_KEY,))
         sync.start()
-        assert waiting.wait(timeout=10), "the sync never reached the held lock"
-        sync.join(timeout=0.5)
-        assert sync.is_alive(), "the sync did not wait for the lock"
-        embedder.embed.assert_not_called()
-
-        holder.execute("SELECT pg_advisory_unlock(hashtext('corpus.messages reembed'))")
-        sync.join(timeout=10)
+        try:
+            assert waiting.wait(timeout=LOCK_WAIT_TIMEOUT), "the sync never reached the held lock"
+            assert _await_advisory_waiter(holder), "the sync did not wait for the lock"
+            assert sync.is_alive()
+            embedder.embed.assert_not_called()
+        finally:
+            _release_and_join(holder, sync)
 
     assert not sync.is_alive(), "the sync did not resume once the lock was released"
     assert result == [_counts(scanned=4, synced=4, reprojected=4, embedded=4)]
