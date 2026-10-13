@@ -1,0 +1,8 @@
+# Must fail: an unquoted number as an env value, which Helm would render as 2e+06.
+sources:
+  - name: inbox-a
+    kind: imap
+    enrich: true
+    runtime:
+      env:
+        CORPUS_PIPELINE_LIMIT: 2000000

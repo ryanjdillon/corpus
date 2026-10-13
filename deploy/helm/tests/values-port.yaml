@@ -1,0 +1,9 @@
+# server.port with no CORPUS_MCP_PORT anywhere in env: the container port, the
+# probe's environment and the Service must all follow it.
+server:
+  port: 9100
+
+tiers:
+  - name: sanitized
+    serve:
+      enabled: true

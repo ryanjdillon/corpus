@@ -1,0 +1,7 @@
+# Must fail: `labels` is a Gmail option; an IMAP source takes `folders`.
+sources:
+  - name: inbox-a
+    kind: imap
+    enrich: true
+    options:
+      labels: [INBOX]

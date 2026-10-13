@@ -1,0 +1,179 @@
+# Example: a shared-mailbox domain (a club's role mailboxes) as its own
+# release in its own namespace. Three IMAP sources, each with its own raw
+# schema, login and DSN, feed one shared sanitized tier; only that tier is
+# served. Default-deny network policy; pipelines may reach the mail server by
+# a pinned IP. Synthetic: hosts, IPs, mailboxes and principals are placeholders.
+#
+#   helm template corpus deploy/helm/corpus -n corpus-club \
+#     -f deploy/helm/examples/values-shared-tier.yaml
+
+commonLabels:
+  app.kubernetes.io/part-of: corpus-club
+
+otel:
+  endpoint: http://otel-collector.monitoring:4317
+  # One service name for the whole domain, so its telemetry and alerts are
+  # told apart from another domain's.
+  serviceName: corpus-club
+
+commonEnv:
+  # Keeps an existing shared ConfigMap's name; the default is <release>-config.
+  configMapName: club-common
+  vars:
+    CORPUS_OPENAI_API_BASE: http://ai-gateway.gateway-system.svc.cluster.local/v1
+    CORPUS_EMBEDDING_MODEL: local-embed
+    CORPUS_EMBEDDING_DIMENSIONS: "1024"
+    CORPUS_CHUNK_TOKENS: "200"
+    CORPUS_ENRICH_MODEL: local-coder
+    CORPUS_AUDIT_MODEL: local-coder
+    CORPUS_ENRICH_CONCURRENCY: "2"
+    CORPUS_ENRICH_TIMEOUT: "600"
+    CORPUS_ENRICH_MAX_INPUT_CHARS: "32000"
+
+defaults:
+  pod:
+    nodeSelector:
+      kubernetes.io/hostname: node-general
+  pipeline:
+    # CronJobs club-<mailbox> rather than corpus-pipeline-<mailbox>.
+    namePrefix: club-
+    timeZone: Europe/Oslo
+    backoffLimit: 1
+    activeDeadlineSeconds: 7200
+    restartPolicy: Never
+    terminationGracePeriodSeconds: null
+    # Selected by the workers-egress policy below.
+    podLabels:
+      corpus.example.org/role: worker
+    resources:
+      requests: {cpu: 250m, memory: 1Gi}
+      limits: {cpu: "1", memory: 2Gi}
+    # Shared by every mailbox; each adds its own DSN and IMAP secret.
+    secretEnv:
+      CORPUS_SANITIZED_DATABASE_URL: {name: club-sanitized-db, key: DATABASE_URL}
+      CORPUS_OPENAI_API_KEY: {name: club-gateway-key, key: OPENAI_API_KEY}
+
+tiers:
+  # The raw mail: one schema per mailbox (CORPUS_DB_SCHEMA, per source below).
+  # Not served.
+  - name: sensitive
+  - name: sanitized
+    store:
+      # Every mailbox's sync writes this one shared schema.
+      schema: club
+    serve:
+      server_name: club-index
+      access: [orchestrator]
+      enabled: true
+    deploy:
+      # Deployment and Service `club-index`, from serve.server_name.
+      env:
+        CORPUS_EMBED_QUERY_TIMEOUT: "15"
+      secretEnv:
+        CORPUS_INDEX_DATABASE_URL: {name: club-index-db, key: DATABASE_URL}
+        CORPUS_OPENAI_API_KEY: {name: club-gateway-key, key: OPENAI_API_KEY}
+
+sources:
+  - name: inbox-a
+    kind: imap
+    enrich: true
+    # A name with `-` needs an explicit prefix (see docs/fetchers/config.md).
+    credentials_env_prefix: MAIL_INBOX_A
+    pipeline: {batch_size: 16, limit: 200}
+    runtime:
+      schedule: "40 4,16 * * *"
+      # MAIL_INBOX_A_PASSWORD.
+      envFromSecrets: [mail-inbox-a]
+      env:
+        CORPUS_DB_SCHEMA: mbx_inbox_a
+        MAIL_INBOX_A_HOST: imap.example.org
+        MAIL_INBOX_A_PORT: "993"
+        MAIL_INBOX_A_USER: inbox-a
+      secretEnv:
+        CORPUS_DATABASE_URL: {name: db-inbox-a, key: DATABASE_URL}
+  - name: inbox-b
+    kind: imap
+    enrich: true
+    credentials_env_prefix: MAIL_INBOX_B
+    pipeline: {batch_size: 16, limit: 200}
+    runtime:
+      schedule: "50 4,16 * * *"
+      envFromSecrets: [mail-inbox-b]
+      env:
+        CORPUS_DB_SCHEMA: mbx_inbox_b
+        MAIL_INBOX_B_HOST: imap.example.org
+        MAIL_INBOX_B_PORT: "993"
+        MAIL_INBOX_B_USER: inbox-b
+      secretEnv:
+        CORPUS_DATABASE_URL: {name: db-inbox-b, key: DATABASE_URL}
+  - name: inbox-c
+    kind: imap
+    enrich: true
+    credentials_env_prefix: MAIL_INBOX_C
+    pipeline: {batch_size: 16, limit: 200}
+    runtime:
+      # Keeps an existing CronJob's name; the default would be club-inbox-c.
+      name: club-archive
+      schedule: "0 5,17 * * *"
+      envFromSecrets: [mail-inbox-c]
+      env:
+        CORPUS_DB_SCHEMA: mbx_inbox_c
+        MAIL_INBOX_C_HOST: imap.example.org
+        MAIL_INBOX_C_PORT: "993"
+        MAIL_INBOX_C_USER: inbox-c
+      secretEnv:
+        CORPUS_DATABASE_URL: {name: db-inbox-c, key: DATABASE_URL}
+
+networkPolicies:
+  # Nothing enters or leaves the namespace unless allowed below.
+  default-deny:
+    podSelector: {}
+    policyTypes: [Ingress, Egress]
+  # The pipelines: DNS, the mail server's IMAPS port, the gateway, Postgres and
+  # the collector.
+  workers-egress:
+    podSelector:
+      matchLabels: {corpus.example.org/role: worker}
+    policyTypes: [Egress]
+    egress:
+      - to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}}]
+        ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+      # The mail server, by IP: a NetworkPolicy cannot match a hostname.
+      - to: [{ipBlock: {cidr: 192.0.2.10/32}}]
+        ports: [{protocol: TCP, port: 993}]
+      - to:
+          - namespaceSelector:
+              matchLabels: {kubernetes.io/metadata.name: gateway-system}
+            podSelector:
+              matchLabels: {gateway.example.org/gateway: ai-gateway}
+        ports: [{protocol: TCP, port: 10080}]
+      - to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: postgres}}}]
+        ports: [{protocol: TCP, port: 5432}]
+      - to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: monitoring}}}]
+        ports: [{protocol: TCP, port: 4317}]
+  # The served index: MCP from the gateway in; DNS, the gateway, Postgres and
+  # the collector out.
+  club-index:
+    podSelector:
+      matchLabels: {app.kubernetes.io/name: club-index}
+    policyTypes: [Ingress, Egress]
+    ingress:
+      - from:
+          - namespaceSelector:
+              matchLabels: {kubernetes.io/metadata.name: gateway-system}
+            podSelector:
+              matchLabels: {gateway.example.org/gateway: ai-gateway}
+        ports: [{protocol: TCP, port: 9000}]
+    egress:
+      - to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}}]
+        ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+      - to:
+          - namespaceSelector:
+              matchLabels: {kubernetes.io/metadata.name: gateway-system}
+            podSelector:
+              matchLabels: {gateway.example.org/gateway: ai-gateway}
+        ports: [{protocol: TCP, port: 10080}]
+      - to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: postgres}}}]
+        ports: [{protocol: TCP, port: 5432}]
+      - to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: monitoring}}}]
+        ports: [{protocol: TCP, port: 4317}]

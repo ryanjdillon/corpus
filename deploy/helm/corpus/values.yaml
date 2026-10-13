@@ -1,0 +1,207 @@
+# Default values for the corpus chart. One release is one security domain: its
+# own namespace, databases, credentials, sources and network policy. See
+# README.md for the full reference and docs/deployment/helm.md for the model.
+#
+# Layering: a workload's settings come from `defaults.pod`, then the class
+# defaults (`defaults.serve` or `defaults.pipeline`), then the workload's own
+# block (`tiers[].deploy`, `sources[].runtime`). A later layer replaces a key
+# outright, except `env`, `secretEnv`, `podLabels` and `podAnnotations`, which
+# merge per entry. Extra CronJobs under `jobs` layer on `defaults.pod` only.
+
+# Replaces the chart name in the generated object names (`<release>-config`,
+# `<release>-config-file`) when set.
+fullnameOverride: ""
+
+# Labels added to the metadata of every object (not to selectors).
+commonLabels: {}
+
+image:
+  repository: ghcr.io/ryanjdillon/corpus
+  # Default: "v" + the chart's appVersion.
+  tag: ""
+  # Unset leaves the cluster default.
+  pullPolicy: ""
+imagePullSecrets: []
+
+# MCP listen address and port of every served tier: CORPUS_HOST in the shared
+# environment, CORPUS_MCP_PORT in each server container, and the Services' port.
+server:
+  host: "0.0.0.0"
+  port: 9000
+
+# OpenTelemetry export. The app names its service per command
+# (corpus-mcp, corpus-index, corpus-pipeline, ...); `serviceName` overrides that
+# for every workload in the release via OTEL_SERVICE_NAME, so leave it unset
+# unless one name per domain is what the dashboards and alerts expect.
+otel:
+  # OTEL_EXPORTER_OTLP_ENDPOINT; unset disables the variable.
+  endpoint: ""
+  serviceName: ""
+
+# The ConfigMap holding the config file (tiers and sources), mounted read-only
+# in every corpus container with CORPUS_CONFIG_FILE pointing at it.
+configFile:
+  # Default: <fullname>-config-file.
+  configMapName: ""
+  mountPath: /etc/corpus
+  fileName: corpus.yaml
+
+# The non-secret environment shared by every corpus container (envFrom), next
+# to the variables the chart sets itself (CORPUS_CONFIG_FILE, CORPUS_HOST,
+# OTEL_*; CORPUS_MCP_PORT is set from `server.port`, so it is refused here).
+# Never a DSN, key or password: those come from
+# Secrets, by name, through `secretEnv` / `envFromSecrets`.
+commonEnv:
+  # Default: <fullname>-config.
+  configMapName: ""
+  vars: {}
+  # e.g.
+  #   CORPUS_DB_SCHEMA: corpus
+  #   CORPUS_OPENAI_API_BASE: http://ai-gateway.example.svc.cluster.local/v1
+  #   CORPUS_EMBEDDING_MODEL: local-embed
+  #   CORPUS_EMBEDDING_DIMENSIONS: "1024"
+
+defaults:
+  # Every pod: servers, pipelines and extra jobs.
+  pod:
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+    # The image runs as the unprivileged `corpus` user (uid 1000).
+    #
+    # Hardening defaults. The pod-level ones bind init containers too: an init
+    # container that runs as root (such as a backfill job's setup step) is
+    # refused under runAsNonRoot, so the hardening cannot simply be switched on
+    # while such a job exists. Null them on that job, or, for a like-for-like
+    # migration of manifests that set none of them, null all three in the
+    # values file:
+    #   defaults: {pod: {podSecurityContext: null, securityContext: null,
+    #                    automountServiceAccountToken: null}}
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 1000
+      runAsGroup: 1000
+      seccompProfile:
+        type: RuntimeDefault
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop: [ALL]
+    serviceAccountName: ""
+    automountServiceAccountToken: false
+
+  # Every served tier's Deployment and Service.
+  serve:
+    replicas: 1
+    containerName: server
+    # Rolling with no unavailability: the servers hold no volume, so the new
+    # pod starts beside the old one and the route never drops.
+    strategy:
+      type: RollingUpdate
+      rollingUpdate:
+        maxUnavailable: 0
+        maxSurge: 1
+    resources:
+      requests: {cpu: 50m, memory: 128Mi}
+      limits: {cpu: 500m, memory: 512Mi}
+    # An exec probe on localhost: an ingress NetworkPolicy that admits only the
+    # gateway would otherwise block a kubelet tcpSocket or httpGet probe. It
+    # reads the port from CORPUS_MCP_PORT (`server.port`, set on the
+    # server container), so it follows the port the server listens on.
+    readinessProbe:
+      exec:
+        command:
+          - python
+          - -c
+          - 'import os, socket; socket.create_connection(("localhost", int(os.environ["CORPUS_MCP_PORT"])), timeout=3).close()'
+      initialDelaySeconds: 10
+      periodSeconds: 15
+    livenessProbe: {}
+    terminationGracePeriodSeconds: null
+    env: {}
+    # VAR: {name: <secret>, key: <key>}
+    secretEnv: {}
+    envFromSecrets: []
+    podLabels: {}
+    podAnnotations: {}
+    servicePortName: mcp
+
+  # Every source's pipeline CronJob (`corpus pipeline <kind>:<name>`).
+  pipeline:
+    # Default CronJob name: <namePrefix><source name>.
+    namePrefix: corpus-pipeline-
+    containerName: pipeline
+    schedule: "30 6 * * *"
+    timeZone: ""
+    suspend: false
+    concurrencyPolicy: Forbid
+    successfulJobsHistoryLimit: 3
+    failedJobsHistoryLimit: 3
+    # Every stage resumes where the last run stopped, so a few retries suffice.
+    backoffLimit: 3
+    activeDeadlineSeconds: 10800
+    restartPolicy: OnFailure
+    terminationGracePeriodSeconds: 60
+    resources:
+      requests: {cpu: 100m, memory: 256Mi}
+      limits: {cpu: "1", memory: 1Gi}
+    extraArgs: []
+    env: {}
+    secretEnv: {}
+    envFromSecrets: []
+    podLabels: {}
+    podAnnotations: {}
+
+# The storage tiers: the config file's `tiers:`, entry for entry. Each entry is
+# rendered into the file without the chart-only keys `serve.enabled` and
+# `deploy`. Empty: the file has no `tiers:` and corpus uses its built-in tiers.
+# Since corpus 0.6.0 a tier named `sensitive` or `sanitized` inherits every key
+# it leaves out from the built-in tier.
+#
+#   - name: sanitized
+#     serve:
+#       access: [orchestrator]
+#       enabled: true          # chart: run `corpus serve sanitized`
+#     deploy:                  # chart: the Deployment and Service
+#       name: ""               # default: serve.server_name, then the built-in
+#       serviceName: ""        #   server name, then the tier name
+#       secretEnv:
+#         CORPUS_INDEX_DATABASE_URL: {name: corpus-index-db, key: DATABASE_URL}
+tiers: []
+
+# The sources: the config file's `sources:`, entry for entry, without the
+# chart-only key `runtime`. Each source gets one pipeline CronJob. Empty: the
+# file has no `sources:` (corpus's deprecated implicit-source mode) and no
+# CronJob is rendered.
+#
+#   - name: inbox-a
+#     kind: imap
+#     enrich: true
+#     pipeline: {batch_size: 16, limit: 200}
+#     runtime:                 # chart: the CronJob
+#       mode: cronjob          # `worker` is not implemented yet
+#       name: ""               # default: defaults.pipeline.namePrefix + name
+#       schedule: "40 4,16 * * *"
+#       envFromSecrets: [mail-inbox-a]
+sources: []
+
+# Extra CronJobs, keyed by name: on-demand backfills and maintenance runs that
+# are not one source's pipeline. Each layers on `defaults.pod` only, mounts the
+# config file and takes the shared environment. Suspended unless it says
+# otherwise.
+#
+#   corpus-backfill-ingest:
+#     args: [pipeline, "gmail:personal", --stages, ingest]
+#     secretEnv:
+#       CORPUS_DATABASE_URL: {name: corpus-db, key: DATABASE_URL}
+jobs: {}
+
+# NetworkPolicies, keyed by name; each value is the policy's `spec`, rendered
+# as written. The servers' pods carry `app.kubernetes.io/name: <deployment
+# name>`; pipeline pods carry what `podLabels` gives them.
+networkPolicies: {}
+
+# Gateway resources (MCPRoute / SecurityPolicy from each tier's serve.access).
+# Not implemented in this chart version; enabling it fails the render.
+gateway:
+  enabled: false

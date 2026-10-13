@@ -1,0 +1,9 @@
+{{- $root := . -}}
+{{- $base := dict "suspend" true "concurrencyPolicy" "Forbid" "successfulJobsHistoryLimit" 3 "failedJobsHistoryLimit" 3 "restartPolicy" "OnFailure" "containerName" "job" -}}
+{{- range $name := keys .Values.jobs | sortAlpha }}
+{{- $job := index $root.Values.jobs $name }}
+{{- $w := (fromJson (include "corpus.layer" (list $root.Values.defaults.pod $base $job))).v }}
+{{- if not $w.args }}{{ fail (printf "jobs.%s.args is required" $name) }}{{ end }}
+---
+{{ include "corpus.cronjob" (dict "root" $root "name" $name "component" "job" "w" $w) }}
+{{- end }}

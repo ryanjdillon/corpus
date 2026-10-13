@@ -1,0 +1,1507 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "corpus chart values",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "fullnameOverride": {
+      "type": "string"
+    },
+    "commonLabels": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repository": {
+          "type": "string"
+        },
+        "tag": {
+          "type": "string"
+        },
+        "pullPolicy": {
+          "enum": [
+            "",
+            "Always",
+            "IfNotPresent",
+            "Never"
+          ]
+        }
+      }
+    },
+    "imagePullSecrets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      }
+    },
+    "server": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "host": {
+          "type": "string"
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        }
+      }
+    },
+    "otel": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "endpoint": {
+          "type": "string"
+        },
+        "serviceName": {
+          "type": "string"
+        }
+      }
+    },
+    "configFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "configMapName": {
+          "type": "string"
+        },
+        "mountPath": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "fileName": {
+          "type": "string"
+        }
+      }
+    },
+    "commonEnv": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "configMapName": {
+          "type": "string"
+        },
+        "vars": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Strings only: quote a number (\"2000000\"), which Helm would otherwise render in scientific notation. CORPUS_MCP_PORT is refused: the chart sets it from server.port.",
+          "propertyNames": {
+            "not": {
+              "const": "CORPUS_MCP_PORT"
+            }
+          }
+        }
+      }
+    },
+    "defaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "pod": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "nodeSelector": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "tolerations": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "object"
+              }
+            },
+            "affinity": {
+              "type": [
+                "object",
+                "null"
+              ]
+            },
+            "podSecurityContext": {
+              "type": [
+                "object",
+                "null"
+              ]
+            },
+            "securityContext": {
+              "type": [
+                "object",
+                "null"
+              ]
+            },
+            "serviceAccountName": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "automountServiceAccountToken": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            }
+          }
+        },
+        "serve": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "nodeSelector": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "tolerations": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "object"
+              }
+            },
+            "affinity": {
+              "type": [
+                "object",
+                "null"
+              ]
+            },
+            "podSecurityContext": {
+              "type": [
+                "object",
+                "null"
+              ]
+            },
+            "securityContext": {
+              "type": [
+                "object",
+                "null"
+              ]
+            },
+            "serviceAccountName": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "automountServiceAccountToken": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "containerName": {
+              "type": "string",
+              "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+            },
+            "resources": {
+              "type": [
+                "object",
+                "null"
+              ]
+            },
+            "env": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "Strings only: quote a number (\"2000000\"), which Helm would otherwise render in scientific notation. CORPUS_MCP_PORT is refused: the chart sets it from server.port.",
+              "propertyNames": {
+                "not": {
+                  "const": "CORPUS_MCP_PORT"
+                }
+              }
+            },
+            "secretEnv": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "key": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "key"
+                ]
+              }
+            },
+            "envFromSecrets": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              }
+            },
+            "podLabels": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "podAnnotations": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "terminationGracePeriodSeconds": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            },
+            "replicas": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "strategy": {
+              "type": [
+                "object",
+                "null"
+              ]
+            },
+            "readinessProbe": {
+              "type": [
+                "object",
+                "null"
+              ]
+            },
+            "livenessProbe": {
+              "type": [
+                "object",
+                "null"
+              ]
+            },
+            "servicePortName": {
+              "type": "string"
+            }
+          }
+        },
+        "pipeline": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "nodeSelector": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "tolerations": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "object"
+              }
+            },
+            "affinity": {
+              "type": [
+                "object",
+                "null"
+              ]
+            },
+            "podSecurityContext": {
+              "type": [
+                "object",
+                "null"
+              ]
+            },
+            "securityContext": {
+              "type": [
+                "object",
+                "null"
+              ]
+            },
+            "serviceAccountName": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "automountServiceAccountToken": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "containerName": {
+              "type": "string",
+              "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+            },
+            "resources": {
+              "type": [
+                "object",
+                "null"
+              ]
+            },
+            "env": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "Strings only: quote a number (\"2000000\"), which Helm would otherwise render in scientific notation. CORPUS_MCP_PORT is refused: the chart sets it from server.port.",
+              "propertyNames": {
+                "not": {
+                  "const": "CORPUS_MCP_PORT"
+                }
+              }
+            },
+            "secretEnv": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "key": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "key"
+                ]
+              }
+            },
+            "envFromSecrets": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              }
+            },
+            "podLabels": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "podAnnotations": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "terminationGracePeriodSeconds": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            },
+            "schedule": {
+              "type": "string"
+            },
+            "timeZone": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "suspend": {
+              "type": "boolean"
+            },
+            "concurrencyPolicy": {
+              "enum": [
+                "Allow",
+                "Forbid",
+                "Replace"
+              ]
+            },
+            "successfulJobsHistoryLimit": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            },
+            "failedJobsHistoryLimit": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            },
+            "backoffLimit": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            },
+            "activeDeadlineSeconds": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 1
+            },
+            "restartPolicy": {
+              "enum": [
+                "OnFailure",
+                "Never"
+              ]
+            },
+            "namePrefix": {
+              "type": "string"
+            },
+            "extraArgs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "tiers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "store": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "dsn_env": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+              },
+              "reader_dsn_env": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+              },
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          },
+          "serve": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "server_name": {
+                "type": "string"
+              },
+              "access": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "enabled": {
+                "type": "boolean",
+                "description": "Chart only: run `corpus serve <tier>` as a Deployment and Service. Not written to the config file."
+              }
+            }
+          },
+          "query": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "max_limit": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "filterable": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "aggregatable": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "orders": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "text": {
+                "type": "boolean"
+              },
+              "semantic": {
+                "type": "boolean"
+              },
+              "search_depth": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 200
+              }
+            }
+          },
+          "projection": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "from": {
+                "type": "string"
+              },
+              "fields": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "redact": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "organization": {
+                    "enum": [
+                      "keep",
+                      "drop"
+                    ]
+                  },
+                  "person_name": {
+                    "enum": [
+                      "keep",
+                      "initial",
+                      "role",
+                      "drop"
+                    ]
+                  },
+                  "reference_id": {
+                    "enum": [
+                      "keep",
+                      "mask",
+                      "drop"
+                    ]
+                  },
+                  "financial_id": {
+                    "enum": [
+                      "keep",
+                      "mask",
+                      "drop"
+                    ]
+                  },
+                  "email_address": {
+                    "enum": [
+                      "keep",
+                      "drop"
+                    ]
+                  },
+                  "phone": {
+                    "enum": [
+                      "keep",
+                      "drop"
+                    ]
+                  },
+                  "place_name": {
+                    "enum": [
+                      "keep",
+                      "drop"
+                    ]
+                  }
+                }
+              },
+              "sensitivity_gate": {
+                "enum": [
+                  "none",
+                  "low",
+                  "medium",
+                  "high"
+                ]
+              },
+              "gate_action": {
+                "enum": [
+                  "redact",
+                  "stub"
+                ]
+              }
+            }
+          },
+          "deploy": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "nodeSelector": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "additionalProperties": {
+                  "type": "string"
+                }
+              },
+              "tolerations": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "object"
+                }
+              },
+              "affinity": {
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
+              "podSecurityContext": {
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
+              "securityContext": {
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
+              "serviceAccountName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "automountServiceAccountToken": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "containerName": {
+                "type": "string",
+                "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+              },
+              "resources": {
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
+              "env": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "description": "Strings only: quote a number (\"2000000\"), which Helm would otherwise render in scientific notation. CORPUS_MCP_PORT is refused: the chart sets it from server.port.",
+                "propertyNames": {
+                  "not": {
+                    "const": "CORPUS_MCP_PORT"
+                  }
+                }
+              },
+              "secretEnv": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "additionalProperties": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "key": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "key"
+                  ]
+                }
+              },
+              "envFromSecrets": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "string"
+                }
+              },
+              "podLabels": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "additionalProperties": {
+                  "type": "string"
+                }
+              },
+              "podAnnotations": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "additionalProperties": {
+                  "type": "string"
+                }
+              },
+              "terminationGracePeriodSeconds": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0
+              },
+              "replicas": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "strategy": {
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
+              "readinessProbe": {
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
+              "livenessProbe": {
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
+              "servicePortName": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string",
+                "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+                "maxLength": 63
+              },
+              "serviceName": {
+                "type": "string",
+                "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+                "maxLength": 63
+              }
+            },
+            "description": "Chart only: the tier's Deployment and Service. Not written to the config file."
+          }
+        },
+        "required": [
+          "name"
+        ]
+      }
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z0-9_-]{1,32}$"
+          },
+          "kind": {
+            "enum": [
+              "gmail",
+              "imap"
+            ]
+          },
+          "enrich": {
+            "type": "boolean"
+          },
+          "credentials_env_prefix": {
+            "type": "string",
+            "pattern": "^[A-Z_][A-Z0-9_]*$"
+          },
+          "options": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "labels": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "minItems": 1
+              },
+              "folders": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "minItems": 1
+              }
+            }
+          },
+          "pipeline": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "batch_size": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "limit": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "tier": {
+                "type": "string"
+              }
+            }
+          },
+          "runtime": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "nodeSelector": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "additionalProperties": {
+                  "type": "string"
+                }
+              },
+              "tolerations": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "object"
+                }
+              },
+              "affinity": {
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
+              "podSecurityContext": {
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
+              "securityContext": {
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
+              "serviceAccountName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "automountServiceAccountToken": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "containerName": {
+                "type": "string",
+                "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+              },
+              "resources": {
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
+              "env": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "description": "Strings only: quote a number (\"2000000\"), which Helm would otherwise render in scientific notation. CORPUS_MCP_PORT is refused: the chart sets it from server.port.",
+                "propertyNames": {
+                  "not": {
+                    "const": "CORPUS_MCP_PORT"
+                  }
+                }
+              },
+              "secretEnv": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "additionalProperties": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "key": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "key"
+                  ]
+                }
+              },
+              "envFromSecrets": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "string"
+                }
+              },
+              "podLabels": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "additionalProperties": {
+                  "type": "string"
+                }
+              },
+              "podAnnotations": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "additionalProperties": {
+                  "type": "string"
+                }
+              },
+              "terminationGracePeriodSeconds": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0
+              },
+              "schedule": {
+                "type": "string"
+              },
+              "timeZone": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "suspend": {
+                "type": "boolean"
+              },
+              "concurrencyPolicy": {
+                "enum": [
+                  "Allow",
+                  "Forbid",
+                  "Replace"
+                ]
+              },
+              "successfulJobsHistoryLimit": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0
+              },
+              "failedJobsHistoryLimit": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0
+              },
+              "backoffLimit": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0
+              },
+              "activeDeadlineSeconds": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 1
+              },
+              "restartPolicy": {
+                "enum": [
+                  "OnFailure",
+                  "Never"
+                ]
+              },
+              "mode": {
+                "enum": [
+                  "cronjob",
+                  "worker"
+                ]
+              },
+              "name": {
+                "type": "string",
+                "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+                "maxLength": 52
+              },
+              "extraArgs": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Chart only: the source's pipeline CronJob. Not written to the config file."
+          }
+        },
+        "required": [
+          "name",
+          "kind",
+          "enrich"
+        ],
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "const": "gmail"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "options": {
+                  "propertyNames": {
+                    "enum": [
+                      "labels"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "const": "imap"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "options": {
+                  "propertyNames": {
+                    "enum": [
+                      "folders"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "jobs": {
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+        "maxLength": 52
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "nodeSelector": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "tolerations": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "object"
+            }
+          },
+          "affinity": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "podSecurityContext": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "securityContext": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "serviceAccountName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "automountServiceAccountToken": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "containerName": {
+            "type": "string",
+            "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+          },
+          "resources": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "env": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Strings only: quote a number (\"2000000\"), which Helm would otherwise render in scientific notation. CORPUS_MCP_PORT is refused: the chart sets it from server.port.",
+            "propertyNames": {
+              "not": {
+                "const": "CORPUS_MCP_PORT"
+              }
+            }
+          },
+          "secretEnv": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "key": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "key"
+              ]
+            }
+          },
+          "envFromSecrets": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "podLabels": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "podAnnotations": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "terminationGracePeriodSeconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "schedule": {
+            "type": "string"
+          },
+          "timeZone": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "suspend": {
+            "type": "boolean"
+          },
+          "concurrencyPolicy": {
+            "enum": [
+              "Allow",
+              "Forbid",
+              "Replace"
+            ]
+          },
+          "successfulJobsHistoryLimit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "failedJobsHistoryLimit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "backoffLimit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "activeDeadlineSeconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1
+          },
+          "restartPolicy": {
+            "enum": [
+              "OnFailure",
+              "Never"
+            ]
+          },
+          "command": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "args": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "initContainers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "name"
+              ]
+            }
+          },
+          "extraVolumes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "name"
+              ]
+            }
+          },
+          "extraVolumeMounts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "mountPath"
+              ]
+            }
+          }
+        },
+        "required": [
+          "args"
+        ]
+      }
+    },
+    "networkPolicies": {
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+        "maxLength": 63
+      },
+      "additionalProperties": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "podSelector": {
+            "type": "object"
+          },
+          "policyTypes": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "Ingress",
+                "Egress"
+              ]
+            }
+          },
+          "ingress": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "egress": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          }
+        },
+        "required": [
+          "podSelector"
+        ]
+      }
+    },
+    "gateway": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

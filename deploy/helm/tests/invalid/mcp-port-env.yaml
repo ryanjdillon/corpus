@@ -1,0 +1,4 @@
+# Must fail: CORPUS_MCP_PORT is set from server.port, never from user env.
+commonEnv:
+  vars:
+    CORPUS_MCP_PORT: "9100"
