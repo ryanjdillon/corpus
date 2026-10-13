@@ -1,5 +1,8 @@
+from unittest.mock import call, create_autospec
+
 import pytest
-from corpus_detect import pii
+from corpus_detect import Span, pii
+from tldextract import TLDExtract
 
 
 def test_detects_ssn_with_adjacent_context():
@@ -372,3 +375,42 @@ def test_a_bare_national_id_is_labelled_a_national_id_even_beside_an_account_wor
 ])
 def test_phone_numbers_and_dates_are_not_account_numbers(text):
     assert not [s for s in pii.scan_spans(text) if s.entity_type == "no_bank_account"]
+
+
+@pytest.mark.parametrize(("fqdn", "valid"), [("", False), ("example.org", True)])
+def test_email_validation_delegates_to_the_injected_extractor(fqdn, valid):
+    extractor = create_autospec(TLDExtract, instance=True)
+    extractor.return_value.fqdn = fqdn
+    recognizer = pii._OfflineEmailRecognizer(extractor=extractor)
+    assert recognizer.validate_result("ola@example.org") is valid
+    # assert_called_once_with would bind against the unbound __call__ (self included)
+    # on an instance autospec, so compare the recorded calls directly.
+    assert extractor.call_args_list == [call("ola@example.org")]
+
+
+def test_default_extractor_uses_the_bundled_suffix_list_only():
+    # No suffix list URLs means no fetch; cache_dir=None disables the disk cache
+    # (tldextract stores the directory as str(None), so check the enabled flag).
+    extractor = pii._OfflineEmailRecognizer()._tld_extractor
+    assert extractor.suffix_list_urls == ()
+    assert extractor._cache.enabled is False
+
+
+def test_email_detections_carry_their_offsets():
+    text = "Write to ola.nordmann@example.org or kari@mail.example.co.uk today."
+    results = pii._OfflineEmailRecognizer().analyze(
+        text=text, entities=["EMAIL_ADDRESS"], nlp_artifacts=None
+    )
+    assert sorted(text[r.start : r.end] for r in results) == [
+        "kari@mail.example.co.uk",
+        "ola.nordmann@example.org",
+    ]
+
+
+def test_email_spans():
+    assert pii.scan_spans("Kontakt: ola.nordmann@example.org.") == [Span(9, 33, "email", "pii")]
+
+
+def test_email_with_an_unknown_suffix_is_rejected():
+    # Validation still requires a public suffix: a domain ending in no known TLD fails.
+    assert pii.scan_spans("ola@host.notarealtld") == []
