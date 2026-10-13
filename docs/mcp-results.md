@@ -139,18 +139,32 @@ The stats tools return one row per group (`label` and `count` on `corpus`;
 
 | Flag | Meaning |
 | --- | --- |
-| `instruction_like` | An untrusted field reads like instructions to an AI, in English or Norwegian: override phrasing ("ignore previous instructions", "ignorer alle tidligere instruksjoner"), an address to an AI ("to any AI reading this", "du er nå en AI-assistent"), a request for the system prompt, chat-template or tool-call syntax, or a URL carrying credentials. |
+| `instruction_like` | An untrusted field reads like instructions to an AI, in English or Norwegian: override phrasing ("ignore previous instructions", "ignorer alle tidligere instruksjoner"), an address to an AI ("to any AI reading this", "du er nå en AI-assistent", "til KI-assistenten som leser dette"), a request for the system prompt, chat-template or tool-call syntax (`<tool_call>`, a `"tool_calls"` key, an OpenAI `{"function": {"name": …}}` item, `<function_calls>`/`<invoke name=…>` markup), a URL carrying credentials (user and password before the host, or an `access_token`, `api_key`, `client_secret` or `password` query value), or a GitHub token in its exact shape (`ghp_` and 36 letters or digits, or a fine-grained `github_pat_…`) anywhere in the text. A bare `token=` is a password-reset or unsubscribe link and is not flagged, nor is a documentation placeholder value (`YOUR_API_KEY_HERE`, `{api_key}`, `<your-key>`) or a path that merely starts `ghs_` or `github_pat_`. |
 
 A flagged row is marked, never dropped: an injected email should still reach the
 human reading the briefing, visibly marked as suspicious, but no agent should
 act on it. The check runs when the result is built, over every untrusted field,
 so it covers rows already stored and a pattern change applies at once. Text is
 normalised first (NFKC, HTML entities decoded, invisible format characters
-removed, Cyrillic and Greek look-alikes mapped to Latin, whitespace collapsed),
-so a phrase split across lines or disguised with a zero-width space still
-matches. The
+removed, reply-quote markers (`> `) at line starts dropped, Cyrillic and Greek
+look-alikes mapped to Latin, whitespace collapsed), so a phrase split across
+lines, wrapped inside a quoted reply, or disguised with a zero-width space still
+matches. A phrase split across two fields (a subject ending "ignore all
+previous", a body starting "instructions") matches too: the seam between every
+pair of a row's untrusted strings is checked in both orders, joined by a line
+break so a quote marker opening the second string is still dropped. The strings
+of a mapping such as `meta` take part at any depth; list items do not, since
+they are model-written entities, each whole in itself, and pairing every item
+with every other costs quadratic time. Every pattern scans in linear time, since
+the sender chooses the text and it is scanned on every read. The
 patterns aim for precision: ordinary mail ("please reply by Friday", "this is an
 automated system message", "ignore these instructions if you have already
 renewed") must not match, or readers learn to ignore the flag. The flag is a
 signal, not a filter, and will miss phrasings it has no pattern for; the
 untrusted-field framing is what protects a consumer.
+
+Tool-call syntax is flagged wherever it appears, so an untrusted field that
+quotes SDK or API documentation (an `<invoke name=…>` example, an OpenAI
+`"function": {"name": …}` item) is flagged too. That is an accepted trade-off:
+mail that quotes tool-call syntax is rare, and an agent reading such a row
+loses nothing by treating it as suspicious.

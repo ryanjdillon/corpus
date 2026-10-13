@@ -97,6 +97,8 @@ the owner should see that the email arrived; it is counted as `instruction_like`
 in the run log and in the `corpus.enrich.instruction_like` metric (by model), and
 logged as a warning with the document id. Envelopes flag the row again each time
 it is read, so a pattern added later covers records enriched before it.
+How a model handles injected email (described, not repeated or obeyed) is
+measured on the evaluation's [red-team records](evaluation.md#red-team-records).
 
 ## People, references, and role-based summaries
 
