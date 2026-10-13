@@ -144,14 +144,18 @@ def wrap(
     untrusted_fields: Iterable[str],
     total: int | None = None,
     next_cursor: str | None = None,
+    truncated: bool | None = None,
 ) -> dict[str, Any]:
     """Wrap one page of *rows* as a ``corpus.result/v1`` envelope.
 
     ``count`` is the rows on this page; ``total`` is the full match count when it
     is cheap to know, else ``None``. ``next_cursor`` is ``None`` on the last page.
+    ``truncated`` is given only by a count that is not paged (an aggregate): it
+    says more groups exist than were returned, and is omitted everywhere else.
     """
     fields = sorted(untrusted_fields)
     out = [{**row, "flags": flags(row, fields)} for row in rows]
+    extra = {} if truncated is None else {"truncated": truncated}
     return {
         "kind": KIND,
         "server": server,
@@ -163,6 +167,7 @@ def wrap(
         "count": len(out),
         "total": total,
         "next_cursor": next_cursor,
+        **extra,
         "rows": out,
     }
 

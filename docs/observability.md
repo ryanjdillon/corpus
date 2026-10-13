@@ -1,13 +1,14 @@
 # Observability
 
 Set `OTEL_EXPORTER_OTLP_ENDPOINT` (and optionally `OTEL_SERVICE_NAME`) and the
-API, MCP, and ingest processes export OpenTelemetry over OTLP:
+MCP servers and batch processes export OpenTelemetry over OTLP. A server reports
+as `corpus-mcp` (`corpus serve sensitive`) or `corpus-index` (`corpus serve
+sanitized`) unless `OTEL_SERVICE_NAME` says otherwise.
 
-- **Traces** — FastAPI request spans and outgoing httpx spans (embedding calls,
-  source APIs).
+- **Traces** — outgoing httpx spans (embedding calls, source APIs).
 - **Metrics** — ingest counters and histograms (documents written and skipped,
-  embed latency, batch size), a corpus-size gauge by data-class, FastAPI HTTP
-  server metrics, MCP tool calls by principal (see below), and enrichments
+  embed latency, batch size), a corpus-size gauge by data-class (from the
+  sensitive server), MCP tool calls by principal (see below), and enrichments
   whose free text reads like instructions to an AI
   (`corpus.enrich.instruction_like`, by model).
 
@@ -39,10 +40,12 @@ which tier, how much, and when", and carries no row content.
   (`[a-z0-9_-]{1,32}`) is `other`, which keeps the metric label bounded.
 - `filters` is the call's argument shape. A value is logged verbatim only when
   it is safe in itself: a number, a boolean, a member of the argument's closed
-  vocabulary (`label`, `domain`, `importance`, `who`), or a date or duration. A
-  document id keeps its source and is otherwise a short hash, since the rest can
-  name a mail folder. Any other string, such as a search query or an address, is
-  logged as its length, and a list as its size.
+  vocabulary (`label`, `domain`, `importance`, `who`, `waiting_on`, `order`,
+  `group_by`) or a list of them, or a date or duration. A document id keeps its
+  source and is otherwise a short hash, since the rest can name a mail folder.
+  Any other string, such as a search query or an address, is logged as its
+  length, and any other list as its size. A query spec is summarised field by
+  field, so the event states the filters and window a call read.
 - `rows` is the envelope's `count` (see [MCP results](mcp-results.md));
   `outcome` is `ok` or the exception type of a failed call.
 

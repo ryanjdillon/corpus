@@ -8,9 +8,10 @@ lifecycle.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
-from .embeddings import Embedder
+from .embeddings import embed_query
 from .store import DocumentStore
 
 
@@ -19,11 +20,8 @@ def semantic_search(
     query: str,
     top_k: int = 10,
     filters: dict[str, Any] | None = None,
+    *,
+    embed: Callable[[str], list[float]] = embed_query,
 ) -> list[dict[str, Any]]:
-    """Vector search with optional Haystack metadata filters."""
-    embedder = Embedder()
-    try:
-        qvec = embedder.embed_one(query)
-    finally:
-        embedder.close()
-    return documents.nearest(qvec, top_k, filters)
+    """Vector search with optional Haystack metadata filters; *embed* embeds *query*."""
+    return documents.nearest(embed(query), top_k, filters)

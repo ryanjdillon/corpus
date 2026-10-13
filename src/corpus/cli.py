@@ -1,7 +1,7 @@
 """Command-line entrypoints for the corpus service.
 
-Subcommands: api, mcp, index, ingest, scan, scan-gate, enrich, sync,
-audit-secrets, export.
+Subcommands: serve (sensitive | sanitized), ingest, scan, scan-gate, enrich, sync,
+audit-secrets, export. ``mcp`` and ``index`` are deprecated aliases of ``serve``.
 """
 
 from __future__ import annotations
@@ -9,10 +9,8 @@ from __future__ import annotations
 import logging
 
 import click
-import uvicorn
 
 from . import telemetry
-from .config import settings
 
 
 @click.group()
@@ -21,37 +19,46 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 
 
-@main.command()
-def api() -> None:
-    """Run the REST API server."""
-    telemetry.configure("corpus")
-    from .api import app
-
-    telemetry.instrument_fastapi(app)
-    telemetry.register_corpus_size_gauge()
-    uvicorn.run(app, host=settings.host, port=settings.port)
+@main.group()
+def serve() -> None:
+    """Serve a storage tier's MCP tools over streamable HTTP."""
 
 
-@main.command()
-def mcp() -> None:
-    """Run the MCP server (streamable-HTTP)."""
-    telemetry.configure("corpus-mcp")
-    from .mcp_server import run
+def _serve(tier: str) -> None:
+    from . import serving
 
-    run()
+    telemetry.configure(serving.tier_service(tier))
+    if tier == "sensitive":
+        telemetry.register_corpus_size_gauge()
+    serving.serve(tier)
 
 
-@main.command()
-def index() -> None:
-    """Run the corpus-index MCP server.
+@serve.command(name="sensitive")
+def serve_sensitive() -> None:
+    """Serve the full surface (corpus): raw mail, for trusted local callers."""
+    _serve("sensitive")
 
-    The sanitized surface a trust-downgraded consumer (Hermes) queries: summaries
-    and priority signal, never raw bodies.
+
+@serve.command(name="sanitized")
+def serve_sanitized() -> None:
+    """Serve the sanitized surface (corpus-index).
+
+    What a trust-downgraded consumer (Hermes) queries: summaries and priority
+    signal, never raw bodies.
     """
-    telemetry.configure("corpus-index")
-    from .index_server import run
+    _serve("sanitized")
 
-    run()
+
+@main.command(deprecated=True)
+def mcp() -> None:
+    """Alias of 'corpus serve sensitive', for one release."""
+    _serve("sensitive")
+
+
+@main.command(deprecated=True)
+def index() -> None:
+    """Alias of 'corpus serve sanitized', for one release."""
+    _serve("sanitized")
 
 
 @main.command()

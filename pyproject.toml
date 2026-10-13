@@ -17,8 +17,6 @@ dependencies = [
     "msgspec>=0.18",
     # Deterministic PII/secret detection (used pattern-only; no spaCy model loaded).
     "presidio-analyzer>=2.2",
-    "fastapi>=0.115",
-    "uvicorn[standard]>=0.32",
     # Pinned to the 1.x SDK: it ships FastMCP (mcp.server.fastmcp) with the
     # streamable-HTTP transport. 2.0 restructured the API and dropped that path.
     "mcp>=1.9,<2",
@@ -37,7 +35,6 @@ dependencies = [
     # OpenTelemetry: traces + metrics over OTLP to the cluster collector.
     "opentelemetry-sdk>=1.27",
     "opentelemetry-exporter-otlp-proto-grpc>=1.27",
-    "opentelemetry-instrumentation-fastapi>=0.48b0",
     "opentelemetry-instrumentation-httpx>=0.48b0",
 ]
 

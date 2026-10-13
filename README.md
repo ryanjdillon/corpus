@@ -37,7 +37,7 @@ same shape — see the [sources guide][sources].
 
 ## What you can ask
 
-corpus answers three kinds of question, over a REST API and an MCP server:
+corpus answers three kinds of question, over MCP:
 
 - **Find by meaning** — semantic search: vector similarity with optional metadata
   filters, so the right item surfaces even when you don't recall a keyword.
@@ -64,8 +64,8 @@ export CORPUS_OPENAI_API_BASE=https://…/v1     # embedding endpoint
 export CORPUS_OPENAI_API_KEY=…
 
 corpus ingest imap:example   # sync one source
-corpus api                   # REST API   (default :8000)
-corpus mcp                   # MCP server (default :9000)
+corpus serve sensitive       # MCP server, full surface   (default :9000)
+corpus serve sanitized       # MCP server, sanitized tier (corpus-index)
 ```
 
 Configuring a source takes a handful of env vars — [IMAP][imap], [Gmail][gmail].

@@ -32,4 +32,4 @@ RUN pip install --no-cache-dir -c /tmp/constraints.txt /tmp/*.whl \
  && rm -f /tmp/*.whl /tmp/constraints.txt
 USER corpus
 ENTRYPOINT ["corpus"]
-CMD ["api"]
+CMD ["serve", "sensitive"]

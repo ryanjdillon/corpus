@@ -24,11 +24,6 @@ def test_configure_noop_without_endpoint(monkeypatch):
     assert telemetry._configured is False
 
 
-def test_instrument_fastapi_noop_without_endpoint(monkeypatch):
-    monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
-    telemetry.instrument_fastapi(object())  # returns without touching the app
-
-
 def test_register_gauge_noop_without_endpoint(monkeypatch):
     monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
     telemetry.register_corpus_size_gauge()  # no-op, no error

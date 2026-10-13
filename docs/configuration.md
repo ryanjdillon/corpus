@@ -23,6 +23,36 @@ The embedding endpoint is any OpenAI-compatible API. Point it at a local model
 and nothing leaves your network; point it at a hosted provider and the pipeline
 is unchanged.
 
+## Serving
+
+`corpus serve <tier>` serves one storage tier's MCP tools over streamable HTTP,
+stateless (see [Query model](query.md#the-mcp-tools) for the tools):
+
+| Command | Serves as | Reads with |
+|---|---|---|
+| `corpus serve sensitive` | `corpus` | `CORPUS_DATABASE_URL` |
+| `corpus serve sanitized` | `CORPUS_INDEX_SERVER_NAME` (default `corpus-index`) | `CORPUS_INDEX_DATABASE_URL`, read-only |
+
+| Variable | Purpose |
+|---|---|
+| `CORPUS_HOST` | listen address (default `0.0.0.0`) |
+| `CORPUS_MCP_PORT` | listen port (default `9000`); the MCP endpoint is `/mcp` |
+
+Both tiers' `search` tool embeds its text, so a server needs the embedding
+settings above (`CORPUS_OPENAI_API_BASE`, `CORPUS_OPENAI_API_KEY`,
+`CORPUS_EMBEDDING_MODEL`), pointing at the model the tier's vectors came from.
+A query embedding makes one attempt within `CORPUS_EMBED_QUERY_TIMEOUT`
+seconds (default `15`), so a down embedder fails a search at once; batch
+embedding at ingest retries, each attempt within `CORPUS_EMBED_TIMEOUT`
+(default `300`).
+The sensitive server also reports the corpus-size gauge (see
+[Observability](observability.md)).
+
+`corpus mcp` and `corpus index` are deprecated aliases of `corpus serve
+sensitive` and `corpus serve sanitized`, kept for one release. The REST API
+(`corpus api`, port `8000`, `/health`) is gone: a readiness or liveness probe
+should open a TCP connection to the MCP port instead.
+
 ## Riding out a busy enrichment endpoint
 
 A model server saturated by a concurrent backfill sheds load as 5xx and drops
@@ -134,7 +164,8 @@ image and audio parts pass through byte-identical.
 
 `corpus sync` projects enriched documents into a separate, trust-downgraded
 database: summaries and the priority signal, never raw content, subject or
-sender. `corpus index` serves that database to cloud-side consumers over MCP.
+sender. `corpus serve sanitized` serves that database to cloud-side consumers over
+MCP.
 
 | Variable | Purpose |
 |---|---|

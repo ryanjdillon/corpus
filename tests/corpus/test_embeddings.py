@@ -5,13 +5,20 @@ endpoint fixture.
 """
 
 import json
+import time
 from unittest.mock import create_autospec
 
 import httpx
 import pytest
 
-from corpus import embeddings
-from corpus.embeddings import Embedder, EmbedInputError, EmbedUnavailableError
+from corpus.config import settings
+from corpus.embeddings import (
+    Embedder,
+    EmbedInputError,
+    EmbedUnavailableError,
+    embed_query,
+    query_embedder,
+)
 
 
 def _response(status: int, *, json_body=None, text: str | None = None) -> httpx.Response:
@@ -26,14 +33,19 @@ def client() -> httpx.Client:
     return mock
 
 
-def test_embed_retries_on_5xx_then_succeeds(client, monkeypatch):
-    monkeypatch.setattr(embeddings.time, "sleep", lambda *_: None)
+@pytest.fixture
+def sleep():
+    """A spec-bound ``time.sleep``: the backoff between attempts, recorded not slept."""
+    return create_autospec(time.sleep)
+
+
+def test_embed_retries_on_5xx_then_succeeds(client, sleep):
     client.post.side_effect = [
         _response(503, text="busy"),
         _response(200, json_body={"data": [{"embedding": [0.1, 0.2, 0.3, 0.4]}]}),
     ]
 
-    assert Embedder(client=client).embed_one("x") == [0.1, 0.2, 0.3, 0.4]
+    assert Embedder(client=client, sleep=sleep).embed_one("x") == [0.1, 0.2, 0.3, 0.4]
     assert client.post.call_count == 2  # retried once
 
 
@@ -46,31 +58,46 @@ def test_embed_fails_fast_on_4xx(client):
     assert client.post.call_count == 1  # no retry on client error
 
 
-def test_embed_gives_up_after_retries(client, monkeypatch):
-    monkeypatch.setattr(embeddings.time, "sleep", lambda *_: None)
+def test_embed_gives_up_after_retries(client, sleep):
     client.post.return_value = _response(503, text="busy")
 
     # Exhausted 5xx retries surface as EmbedUnavailableError (systemic).
     with pytest.raises(EmbedUnavailableError):
-        Embedder(client=client).embed_one("x")
+        Embedder(client=client, sleep=sleep).embed_one("x")
     assert client.post.call_count == 4
+    # Backoff between attempts, none after the last.
+    assert [c.args[0] for c in sleep.call_args_list] == [1, 2, 4]
 
 
-def test_embed_retries_transport_error(client, monkeypatch):
-    monkeypatch.setattr(embeddings.time, "sleep", lambda *_: None)
+def test_the_query_embedder_makes_one_attempt(client):
+    client.post.return_value = _response(503, text="busy")
+
+    with pytest.raises(EmbedUnavailableError):
+        embed_query("x", client=client)
+    assert client.post.call_count == 1
+
+
+def test_the_query_embedder_waits_less_than_a_batch():
+    embedder = query_embedder()
+    try:
+        assert embedder._client.timeout == httpx.Timeout(settings.embed_query_timeout)
+    finally:
+        embedder.close()
+    assert settings.embed_query_timeout < settings.embed_timeout
+
+
+def test_embed_retries_transport_error(client, sleep):
     request = httpx.Request("POST", "http://gw/v1/embeddings")
     client.post.side_effect = [
         httpx.ConnectError("boom", request=request),
         _response(200, json_body={"data": [{"embedding": [0.0, 0.0, 0.0, 0.0]}]}),
     ]
 
-    assert len(Embedder(client=client).embed_one("x")) == 4
+    assert len(Embedder(client=client, sleep=sleep).embed_one("x")) == 4
     assert client.post.call_count == 2  # retried after a transport error
 
 
 def test_embed_returns_vectors_of_configured_dimension(fake_embeddings):
-    from corpus.config import settings
-
     embedder = Embedder()
     try:
         vecs = embedder.embed(["hello", "world"])

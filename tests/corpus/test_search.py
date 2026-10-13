@@ -5,6 +5,7 @@ import pytest
 from corpus import query, search
 from corpus.embeddings import Embedder
 from corpus.models import Classification, Record
+from corpus.query import SENSITIVE_POLICY, QuerySpec, parse_spec
 from corpus.store import DocumentStore, to_document
 
 pytestmark = pytest.mark.integration
@@ -38,6 +39,10 @@ def _index(uid: str, subject: str, body: str, label: str, sent_at: str) -> None:
         store.write([doc])
 
 
+def _ids(store: DocumentStore, **spec) -> list[str]:
+    return [r["id"] for r in store.query_spec(parse_spec(spec), SENSITIVE_POLICY).rows]
+
+
 def test_semantic_search_finds_nearest(documents, fake_embeddings):
     _index("1", "kayak trip", "planning a kayak trip on the fjord", "personal", "2026-01-10")
     _index("2", "sale", "50% off winter jackets today only", "promotional", "2026-01-11")
@@ -50,24 +55,22 @@ def test_structured_query_filters_by_label_and_date(documents, fake_embeddings):
     _index("1", "old promo", "buy now", "promotional", "2026-01-01")
     _index("2", "new promo", "buy again", "promotional", "2026-02-20")
     _index("3", "note", "personal note", "personal", "2026-01-01")
-    results = documents.query(label="promotional", before="2026-02-01")
-    ids = {r["id"] for r in results}
-    assert ids == {"imap:test::1"}
+    ids = _ids(documents, filters={"label": "promotional", "sent_at": {"until": "2026-02-01"}})
+    assert set(ids) == {"imap:test::1"}
 
 
 def test_structured_query_filters_by_account(documents, fake_embeddings):
     _index("1", "note", "a note", "personal", "2026-01-01")
 
-    assert len(documents.query(account="me@x.org")) == 1
-    assert documents.query(account="other@x.org") == []
+    assert len(_ids(documents, filters={"account": "me@x.org"})) == 1
+    assert _ids(documents, filters={"account": "other@x.org"}) == []
 
 
 def test_structured_query_since_window(documents, fake_embeddings):
     now = datetime.now(UTC)
     _index("1", "recent", "recent mail", "personal", (now - timedelta(hours=2)).isoformat())
     _index("2", "old", "old mail", "personal", (now - timedelta(days=5)).isoformat())
-    results = documents.query(after=query.relative_cutoff("1d"))
-    assert {r["id"] for r in results} == {"imap:test::1"}
+    assert set(_ids(documents, filters={"sent_at": {"since": "1d"}})) == {"imap:test::1"}
 
 
 def test_relative_cutoff_parses_and_rejects():
@@ -109,13 +112,13 @@ def test_structured_query_keyset_pages_cover_every_row_once(documents, fake_embe
                          ("4", "2026-01-03"), ("5", "2026-01-04")]:
         _index(uid, f"mail {uid}", f"body {uid}", "personal", sent_at)
 
-    seen, older_than = [], None
+    seen, position = [], None
     while True:
-        page = documents.query(limit=2, older_than=older_than)
-        seen += [r["id"] for r in page]
-        if len(page) < 2:
+        page = documents.query_spec(QuerySpec(limit=2), SENSITIVE_POLICY, position)
+        seen += [r["id"] for r in page.rows]
+        if page.next_cursor is None:
             break
-        older_than = (page[-1]["sent_at"], page[-1]["id"])
+        position = page.next_cursor
 
     assert len(seen) == len(set(seen)) == 5
     assert seen[0] == "imap:test::5" and seen[-1] == "imap:test::1"
@@ -130,11 +133,11 @@ def test_structured_query_keyset_pages_reach_undated_rows_last(documents, fake_e
         [0.1] * 16,
     )])
 
-    first = documents.query(limit=1)
-    rest = documents.query(limit=5, older_than=(first[0]["sent_at"], first[0]["id"]))
+    first = documents.query_spec(QuerySpec(limit=1), SENSITIVE_POLICY)
+    rest = documents.query_spec(QuerySpec(limit=5), SENSITIVE_POLICY, first.next_cursor)
 
-    assert [r["id"] for r in first + rest] == ["imap:test::1", "imap:test::0"]
-    assert rest[0]["sent_at"] is None
+    assert [r["id"] for r in first.rows + rest.rows] == ["imap:test::1", "imap:test::0"]
+    assert rest.rows[0]["sent_at"] is None
 
 
 def test_search_ranks_past_the_pgvector_default_on_the_index_path(pg, fake_embeddings, monkeypatch):

@@ -122,15 +122,63 @@ none. `order` and `semantic` do not apply to a count and are refused with it.
  "group_by": ["month"]}
 ```
 
-## The index presets
+## The MCP tools
 
-`index_query`'s tools (`action_items`, `due_soon`, `waiting_on`, `by_domain`,
-`summary`, `stats`) are fixed specs over `SanitizedStore.query`, `aggregate` and
-`get`. The tier's SQL therefore lives in one place. They run under
-`index_query.PRESETS`: the sanitized policy plus the `due` filter and a count by
-`suggested_disposition`, which only these fixed queries use. Its row cap is
-`index_query.MAX_LIMIT + 1` (101): the MCP surface clamps a page to `MAX_LIMIT`
-and fetches one row beyond it to learn whether another page exists.
+`serving.build_mcp(tier)` builds one MCP server per tier (`corpus serve
+sensitive`, `corpus serve sanitized`). The tier fixes the server name, the store
+and the policy; no tool takes a policy from its caller. Every tier serves four
+generic tools over this query model:
+
+| Tool | Arguments | Returns |
+| --- | --- | --- |
+| `query` | `spec`: `filters`, `text`, `order`, `limit`, `cursor` | One page of rows. |
+| `search` | `text` (at most 2000 characters), and an optional `spec`: `filters`, `text`, `limit`, `cursor` | One page of rows ranked by meaning. The server embeds `text` with the model the tier's vectors came from, at most 50 rows per page and 200 in all. |
+| `aggregate` | `spec`: `filters`, `text`, `limit`; `group_by` | One row per group (see [Counting by group](#counting-by-group)), `total`, and `truncated`. |
+| `get` | `id` | 0 or 1 rows. |
+
+The `spec` argument's JSON Schema is the `QuerySpec` schema cut down to what the
+tier allows: only its filters, its orders, and its group-by dimensions are
+listed. A spec that uses anything else is still refused when called, before
+the store is opened. A field the tool does not take (`order` on `search`, a
+`cursor` on `aggregate`, a `semantic` vector anywhere) is refused too.
+
+Rows are the tier's projection: `sanitized_store.COLS` on the sanitized tier,
+and `id`, `subject`, `from_addr`, `sent_at` and `label` on the sensitive tier
+(`get` there returns the full `content` and `meta`).
+
+A relative bound (`"since": "14d"`) is resolved once, on the first page, and
+the resolved time travels in the cursor, so a window does not slide while a
+caller pages. A later page checks it against its own arguments: it must lie
+within an hour before the window's current start, or the cursor is refused
+(see [MCP results](mcp-results.md#paging)). A cursor is also bound to its tier:
+one from the sanitized tier's `query` is refused by the sensitive tier's.
+
+`search` refuses a `text` longer than `serving.SEARCH_TEXT_MAX` (2000
+characters) before embedding it; the input schema states it as `maxLength`.
+The embedding is a call the caller waits on, so it makes a single attempt
+within `CORPUS_EMBED_QUERY_TIMEOUT` (default 15 s) and an unavailable embedder
+fails the call at once. Ingest and the sanitized sync keep the batch policy:
+four attempts with backoff, each within `CORPUS_EMBED_TIMEOUT`.
+
+### Presets
+
+Each tier also keeps the fixed tools its consumers already call, with the same
+names, arguments and results as before:
+
+- **Sanitized** (`corpus-index`): `index_action_items`, `index_due_soon`,
+  `index_waiting_on`, `index_by_domain`, `index_summary`, `index_stats`. Each
+  is a fixed spec over `SanitizedStore.query`, `aggregate` and `get`. They run
+  under `serving.index_presets_policy`: the sanitized policy plus the `due`
+  filter and a count by `suggested_disposition`, which only these fixed
+  queries use. Its row cap is `serving.MAX_LIMIT` (100), the most a preset
+  page returns; the store fetches the one row beyond a page itself, to learn
+  whether another page exists.
+- **Sensitive** (`corpus`): `corpus_query` (a `newest` spec over
+  `DocumentStore.query_spec`, whose keyset position the cursor carries),
+  `corpus_search` (vector search, its `query` bounded like `search`'s `text`),
+  `corpus_get` and `corpus_stats`. `corpus_query`'s `after` and `before`, like
+  `since`, may be a duration before now; each is resolved on the first page
+  and frozen in the cursor, as the generic tools' relative bounds are.
 
 The index reads through `CORPUS_INDEX_DATABASE_URL` as a read-only role. It opens
 `SanitizedStore(..., read_only=True)`, which runs no DDL (even `CREATE ... IF NOT

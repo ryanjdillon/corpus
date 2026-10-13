@@ -3,12 +3,13 @@ ordering and group counts, on both tiers. Every row here is synthetic."""
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, date, datetime, timedelta, timezone
 
 import psycopg
 import pytest
 
-from corpus import index_query
+from corpus import serving
 from corpus.config import settings
 from corpus.models import Classification, Record
 from corpus.query import (
@@ -304,17 +305,23 @@ def test_get_returns_the_projection_or_none(reader):
 def test_the_presets_run_on_the_reader(reader_dsn, monkeypatch):
     monkeypatch.setattr(settings, "index_database_url", reader_dsn)
     monkeypatch.setattr(settings, "sanitized_db_schema", SCHEMA)
+    index = serving.build_mcp("sanitized")  # the default store: the index role, read-only
 
-    assert _ids(index_query.action_items()) == ["w1", "w2"]
-    assert _ids(index_query.action_items(limit=1, offset=1)) == ["w2"]
-    assert _ids(index_query.due_soon()) == ["t1", "w1", "w2", "b2", "b1", "t4"]
-    assert _ids(index_query.waiting_on(who="me")) == ["w1"]
-    assert _ids(index_query.by_domain("banking")) == ["b1", "b2"]
-    assert index_query.summary("t3")["action_summary"] == "Pay the ferry deposit"
-    assert index_query.stats() == {
-        "total": 12,
-        "by_domain": {"banking": 2, "other": 2, "travel": 6, "work": 2},
-        "by_disposition": {"keep": 12},
+    def call(tool: str, **args) -> dict:
+        return asyncio.run(index.call_tool(tool, args))[1]
+
+    first = call("index_action_items", limit=1)
+    assert _ids(first["rows"]) == ["w1"]
+    assert _ids(call("index_action_items", limit=1, cursor=first["next_cursor"])["rows"]) == ["w2"]
+    assert _ids(call("index_due_soon")["rows"]) == ["t1", "w1", "w2", "b2", "b1", "t4"]
+    assert _ids(call("index_waiting_on", who="me")["rows"]) == ["w1"]
+    assert _ids(call("index_by_domain", domain="banking")["rows"]) == ["b1", "b2"]
+    assert call("index_summary", id="t3")["rows"][0]["action_summary"] == "Pay the ferry deposit"
+    stats = call("index_stats")
+    assert stats["total"] == 12
+    assert {(r["dimension"], r["key"], r["count"]) for r in stats["rows"]} == {
+        ("domain", "banking", 2), ("domain", "other", 2), ("domain", "travel", 6),
+        ("domain", "work", 2), ("disposition", "keep", 12),
     }
 
 

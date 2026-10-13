@@ -3,7 +3,8 @@
 Every MCP tool, on both the full surface (`corpus`) and the sanitized one
 (`corpus-index`), returns one shape: `corpus.result/v1`. It carries the rows and
 tells the caller how far to trust each field in them. The shape is built in
-`corpus.envelope`.
+`corpus.envelope`, and `serving.build_mcp` applies it to every tool when it
+registers the tool, so no tool can return rows without it.
 
 ```json
 {
@@ -33,9 +34,10 @@ tells the caller how far to trust each field in them. The shape is built in
 | `untrusted_fields` | The row keys that hold third-party text. Fixed per tool, so a row that omits a key never shortens it. |
 | `notice` | A fixed sentence telling a model how to treat untrusted fields. |
 | `count` | Rows on this page, always `len(rows)`. |
-| `total` | Every match, when cheap to know (the stats tools); otherwise `null`. |
+| `total` | Every match, when cheap to know (`aggregate` and the stats tools); otherwise `null`. |
 | `next_cursor` | Opaque cursor for the next page; `null` on the last page (see [Paging](#paging)). |
-| `rows` | Always a list. A single-record tool (`corpus_get`, `index_summary`) returns 0 or 1 rows. Each row has `flags`. |
+| `truncated` | Only on `aggregate`: more groups exist than `limit`. Counts are not paged, so narrow the filters or raise `limit`. Absent on every other tool. |
+| `rows` | Always a list. A single-record tool (`get`, `corpus_get`, `index_summary`) returns 0 or 1 rows. Each row has `flags`. |
 
 A tool that fails returns an MCP error (`isError`) with a plain-text message,
 not an envelope.
@@ -45,34 +47,42 @@ not an envelope.
 Every tool that returns a list caps how many rows one call returns. A `limit`
 (or `top_k`) above the cap is clamped, not refused: `count` says how many rows
 came back, and `next_cursor` is set whenever more exist. To read on, call the
-same tool with the same arguments plus `cursor` set to that `next_cursor`; a
-different `limit` is fine. A cursor that is malformed, or that comes from a
+same tool with the same arguments plus `cursor` set to that `next_cursor` (for
+`query` and `search`, inside `spec`); a different `limit` is fine. A cursor that is malformed, or that comes from a
 call with different filters, is refused with an error rather than quietly
 skipping or repeating rows.
 
 | Tool | Most rows per call | Pages by | Paging stops after |
 | --- | --- | --- | --- |
 | `index_action_items`, `index_due_soon`, `index_waiting_on`, `index_by_domain` | 100 | offset in the priority order (ties broken by id) | 1000 rows |
+| `query` | 100 | keyset on `(sent_at, id)` for `newest`/`oldest`; otherwise offset | never (keyset); 1000 rows (offset) |
 | `corpus_query` | 100 | keyset on `(sent_at, id)`, newest first | never |
-| `corpus_search` | 50 | offset in the ranking (each page re-runs the search) | 200 rows, the most one vector search ranks (`store.HNSW_EF_SEARCH`) |
+| `search`, `corpus_search` | 50 | offset in the ranking (each page re-embeds and re-runs the search) | 200 rows, the most one vector search ranks (`query.SEMANTIC_DEPTH`) |
 
 At its ceiling a tool returns `next_cursor: null`, as on a last page; narrow
 the filters to read further.
 
-`corpus_query` pages are stable: mail that arrives while a caller pages cannot
-shift them, and a `since` window is resolved once, on the first page, so later
-pages share its lower bound. The offset-paged tools rank by fields that can
+Keyset pages (`corpus_query`, and `query` ordered `newest` or `oldest`) are
+stable: mail that arrives while a caller pages cannot shift them. A relative
+window (`corpus_query`'s `since`, or a duration given as its `after` or
+`before`, or a duration bound such as `"since": "14d"`
+in a `query` or `search` spec) is resolved once, on the first page, and later
+pages share that resolved bound. The offset-paged tools rank by fields that can
 change between calls (a new action item, a re-enrichment), so a row can move
 across a page boundary; read them in one pass.
 
 The cursor is opaque but not signed. It only positions a query whose filters
 are applied again on every page, and what it carries is checked against the
-call's own arguments: an offset must be below the tool's ceiling, and
-`corpus_query`'s frozen lower bound must equal `after`, or with `since` lie
-within an hour before the window's current start. A forged cursor therefore
-cannot read outside the window the call states, and the audit log records that
-window. A `since` cursor more than an hour old is refused; start again from the
-first page.
+call's own arguments: an offset must be below the tool's ceiling, a keyset
+position must be two strings, and each frozen bound must match the call.
+`corpus_query`'s bounds must equal a fixed `after` or `before`, or, for `since`
+or a duration, lie within an hour before that bound's current value; a frozen
+relative bound in a `query` or
+`search` spec must lie within that hour too, and a cursor may carry no bound the
+spec does not state. A forged cursor therefore cannot read outside the window
+the call states, and the audit log records that window. A cursor whose
+relative bound is more than an hour old is refused; start again from the first
+page.
 
 ## Why fields are marked untrusted
 
@@ -89,15 +99,17 @@ the data-class `label`) are trusted.
 The sanitized tier's untrusted columns are `sanitized_store.UNTRUSTED_COLS`,
 next to the projection itself; the full surface's row keys are
 `store.SEARCH_KEYS`, `QUERY_KEYS` and `GET_KEYS`. Tests require every column
-and key to be classified, so a new one cannot ship unmarked by accident. On the
-full surface each tool names its own:
+and key to be classified, so a new one cannot ship unmarked by accident. Each
+tool declares its untrusted fields when `serving.build_mcp` registers it:
 
 | Tool | Untrusted fields |
 | --- | --- |
+| sanitized row tools: `query`, `search`, `get`, `index_*` (not `index_stats`) | `UNTRUSTED_COLS` |
+| sanitized `aggregate` | `organization`, `sender_domain`: group keys read from mail headers or a model's extraction |
+| sensitive `query`, `search`, `corpus_query` | `from_addr`, `subject` |
 | `corpus_search` | `from_addr`, `snippet`, `subject` |
-| `corpus_query` | `from_addr`, `subject` |
-| `corpus_get` | `content`, `meta` |
-| `corpus_stats`, `index_stats` | none: group keys are labels or schema enums |
+| sensitive `get`, `corpus_get` | `content`, `meta` |
+| sensitive `aggregate`, `corpus_stats`, `index_stats` | none: group keys are labels, months, accounts or schema enums |
 
 The stats tools return one row per group (`label` and `count` on `corpus`;
 `dimension`, `key` and `count` on `corpus-index`), with the item count as
