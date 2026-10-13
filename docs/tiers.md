@@ -4,8 +4,8 @@ A storage tier is a store plus the policy around it: the MCP server that exposes
 it, the principals the gateway lets reach that server, the query policy the
 server enforces and, for a downgraded tier, the projection that derives its rows
 from a source tier. Each tier is defined once, in the **tiers file**, and
-`corpus serve <tier>` and `corpus sync [--tier <tier>]` take everything from it
-(`tiers.tier(name)`).
+`corpus serve <tier>`, `corpus sync [--tier <tier>]` and the sync stage of
+`corpus pipeline [--tier <tier>]` take everything from it (`tiers.tier(name)`).
 
 Set `CORPUS_TIERS_FILE` to the file's path. Without it, the [built-in
 default](#the-default) applies, which is the configuration corpus had before the

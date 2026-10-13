@@ -390,3 +390,19 @@ def tier(name: str) -> Tier:
 def tiers() -> Sequence[Tier]:
     """Every configured tier, most sensitive first."""
     return registry().tiers()
+
+
+def projected(name: str) -> tuple[Tier, Tier]:
+    """The projected tier *name* and its source tier: what ``sync`` reads and writes.
+
+    Raises:
+        ValueError: *name* is not defined, or is a source tier (nothing to sync into).
+        RuntimeError: Either tier's store DSN variable is unset.
+    """
+    dst = tier(name)
+    if dst.projection is None:
+        raise ValueError(f"tier {name!r} is a source tier, with no projection to sync into")
+    src = tier(dst.projection.source)
+    for t in (dst, src):
+        t.store_dsn()  # raises if its DSN variable is unset
+    return dst, src

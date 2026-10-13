@@ -19,7 +19,8 @@ just eval-enrich score outputs/qwen3-8b-*.jsonl outputs/gemma-3-12b-q4-*.jsonl \
 ```
 
 **What `run` sends, and where.** The model and the endpoint default to
-`CORPUS_ENRICH_MODEL` and `CORPUS_OPENAI_API_BASE`, so a stray environment would
+`CORPUS_ENRICH_MODEL` and the enrichment endpoint (`CORPUS_ENRICH_API_BASE`, else
+`CORPUS_OPENAI_API_BASE`; the key likewise), so a stray environment would
 otherwise decide where the fixtures and the bearer key go. `run` therefore prints
 the model, the audit model (`CORPUS_AUDIT_MODEL`, else the model), the API base,
 and the record count to stderr before its first request, and refuses any host

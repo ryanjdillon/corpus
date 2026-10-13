@@ -67,8 +67,8 @@ def audit_secrets(
     owns = client is None
     if client is None:
         client = httpx.Client(
-            base_url=settings.openai_api_base,
-            headers={"Authorization": f"Bearer {settings.openai_api_key}"},
+            base_url=settings.enrich_endpoint.base,
+            headers={"Authorization": f"Bearer {settings.enrich_endpoint.key}"},
             timeout=settings.enrich_timeout,
         )
     try:

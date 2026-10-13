@@ -790,8 +790,8 @@ def _generate(slots: list[dict], model: str, attempts: int) -> tuple[list[dict],
 
     kept, failed = [], []
     with httpx.Client(
-        base_url=settings.openai_api_base,
-        headers={"Authorization": f"Bearer {settings.openai_api_key}"},
+        base_url=settings.enrich_endpoint.base,
+        headers={"Authorization": f"Bearer {settings.enrich_endpoint.key}"},
         timeout=settings.enrich_timeout,
     ) as client:
         for slot in slots:

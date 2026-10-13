@@ -815,13 +815,13 @@ def cmd_run(args: argparse.Namespace) -> int:
         if not model:
             print("no model configured (set CORPUS_ENRICH_MODEL or --model)", file=sys.stderr)
             return 2
-        api_base = args.api_base or settings.openai_api_base
+        api_base = args.api_base or settings.enrich_endpoint.base
         if not is_local(api_base) and not args.allow_remote:
             print(
                 f"refusing to send {len(records)} fixtures and the API key to {api_base}: "
                 "not a loopback host. Pass --allow-remote if that endpoint is intended "
                 "(the model and base URL may have come from CORPUS_ENRICH_MODEL / "
-                "CORPUS_OPENAI_API_BASE in the environment).",
+                "CORPUS_ENRICH_API_BASE or CORPUS_OPENAI_API_BASE in the environment).",
                 file=sys.stderr,
             )
             return 2
@@ -844,7 +844,7 @@ def cmd_run(args: argparse.Namespace) -> int:
                       f"model {audit_model}", file=sys.stderr)
         client = httpx.Client(
             base_url=api_base,
-            headers={"Authorization": f"Bearer {settings.openai_api_key}"},
+            headers={"Authorization": f"Bearer {settings.enrich_endpoint.key}"},
             timeout=settings.enrich_timeout,
             event_hooks={"response": [meter.hook]},
         )

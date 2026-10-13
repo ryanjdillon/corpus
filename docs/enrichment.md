@@ -164,8 +164,9 @@ secret audit. The audit model defaults to the enrichment model. Set it apart whe
 enrichment runs on a remote endpoint. The audit reads the secrets that an egress
 gate redacts, so on a redacting route it would judge text with the secrets
 already removed, and on a non-redacting one it would send them off-prem. Both
-calls use the same `CORPUS_OPENAI_API_BASE`, so the audit is local only if the
-gateway serves the named model on-prem.
+calls use the same enrichment endpoint (`CORPUS_ENRICH_API_BASE`, else
+`CORPUS_OPENAI_API_BASE`; see [Configuration](configuration.md#endpoints-and-keys)),
+so the audit is local only if the gateway serves the named model on-prem.
 
 `CORPUS_MODEL_OPTIONS` tunes how each model is called, as JSON keyed by model
 name. A model with no entry is called exactly as before.

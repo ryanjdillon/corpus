@@ -50,6 +50,7 @@ nav:
   - Architecture: architecture.html
   - Configuration: configuration.md
   - Tiers: tiers.md
+  - Pipeline: pipeline.md
   - Sources:
       - Overview: fetchers/index.md
       - IMAP: fetchers/imap.md

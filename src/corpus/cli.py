@@ -1,6 +1,6 @@
 """Command-line entrypoints for the corpus service.
 
-Subcommands: serve <tier>, ingest, scan, scan-gate, enrich, sync,
+Subcommands: serve <tier>, pipeline, ingest, scan, scan-gate, enrich, sync,
 audit-secrets, export. ``mcp`` and ``index`` are deprecated aliases of ``serve``.
 """
 
@@ -11,6 +11,7 @@ import logging
 import click
 
 from . import telemetry
+from .pipeline import DEFAULT_STAGES, INGEST_BATCH_SIZE
 
 
 @click.group()
@@ -62,7 +63,7 @@ def index() -> None:
 
 @main.command()
 @click.argument("source")
-@click.option("--batch-size", default=50, show_default=True)
+@click.option("--batch-size", default=INGEST_BATCH_SIZE, show_default=True)
 def ingest(source: str, batch_size: int) -> None:
     """Ingest from a source id, e.g. 'imap:example'."""
     telemetry.configure("corpus-ingest")
@@ -142,15 +143,10 @@ def sync(source: str | None, limit: int, reproject: bool, tier_name: str) -> Non
     Its projection (source tier, columns, sensitivity gate) comes from the tiers
     file. Drops raw content/subject/sender; gates summaries by sensitivity.
     """
-    from .tiers import tier
+    from .tiers import projected
 
     try:
-        dst = tier(tier_name)
-        if dst.projection is None:
-            raise ValueError(
-                f"tier {tier_name!r} is a source tier, with no projection to sync into"
-            )
-        src = tier(dst.projection.source)
+        dst, src = projected(tier_name)
         dst_dsn, src_dsn = dst.store_dsn(), src.store_dsn()
     except (ValueError, RuntimeError) as exc:
         raise click.ClickException(str(exc)) from exc
@@ -169,6 +165,66 @@ def sync(source: str | None, limit: int, reproject: bool, tier_name: str) -> Non
         click.echo(f"synced {r['synced']}, skipped {r['skipped']} of {r['scanned']} scanned")
     finally:
         telemetry.shutdown()
+
+
+def _stage_names(ctx: click.Context, param: click.Parameter, value: str) -> tuple[str, ...]:
+    from .pipeline import select
+
+    names = tuple(n.strip() for n in value.split(",") if n.strip())
+    try:
+        return tuple(stage.name for stage in select(names))
+    except ValueError as exc:
+        raise click.BadParameter(str(exc), ctx=ctx, param=param) from exc
+
+
+@main.command()
+@click.argument("source")
+@click.option(
+    "--stages", default=",".join(DEFAULT_STAGES), show_default=True, callback=_stage_names,
+    help="comma-separated stages to run, in this order; a subset may skip stages",
+)
+@click.option(
+    "--limit", default=0, type=int,
+    help="enrich at most N documents and sync at most N rows (0 = all); ingest is not capped",
+)
+@click.option(
+    "--batch-size", default=INGEST_BATCH_SIZE, show_default=True, type=click.IntRange(min=1),
+    help="records ingest embeds per request",
+)
+@click.option(
+    "--tier", "tier_name", default="sanitized", show_default=True,
+    help="the projected tier sync writes",
+)
+def pipeline(
+    source: str, stages: tuple[str, ...], limit: int, batch_size: int, tier_name: str
+) -> None:
+    """Ingest, enrich and sync one SOURCE, e.g. 'imap:example', in that order.
+
+    Each stage resumes where the last run stopped, so after a failure the same
+    command picks up again. A run refused before any stage starts exits 2, as a
+    usage error; a stage that fails stops the run and exits 1.
+    """
+    from .pipeline import Options, StageFailedError, run
+
+    telemetry.configure("corpus-pipeline")
+    options = Options(limit=limit, batch_size=batch_size, tier=tier_name)
+    try:
+        counts = run(source, stages, options=options)
+    except StageFailedError as exc:
+        _echo_counts(exc.counts)
+        raise click.ClickException(f"{exc.stage} failed: {exc.__cause__}") from exc
+    except (ValueError, RuntimeError) as exc:
+        # Refused before any stage ran: the invocation, or the configuration it
+        # names, is wrong, so a scheduler can tell it apart from a failed stage.
+        raise click.UsageError(str(exc)) from exc
+    finally:
+        telemetry.shutdown()
+    _echo_counts(counts)
+
+
+def _echo_counts(counts: dict[str, dict[str, int]]) -> None:
+    for stage, c in counts.items():
+        click.echo(f"{stage}: " + ", ".join(f"{k} {v}" for k, v in c.items()))
 
 
 @main.command()
