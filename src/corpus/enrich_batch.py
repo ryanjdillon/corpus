@@ -8,15 +8,18 @@ falling on the small flagged subset rather than a second run over everything.
 run_audit re-runs only the secret confirmation over the flagged documents,
 without re-enriching -- for when the detectors or the model improve.
 
-Enrichment is gated on per-source policy (``fetchers.policy``), which is
-default-deny: a document whose source is not declared enrichable is passed over
-and counted, never sent to the model. The gate is applied here rather than in
+Enrichment is gated on each source's ``enrich`` (``sources.may_enrich``), which
+is default-deny: a document whose source is not declared enrichable is passed
+over and counted, never sent to the model. Those it passes over are counted in
+two parts: ``declined``, from a source declared ``enrich: false``, and
+``undeclared``, from a source with no entry at all, which is logged as a warning
+since it usually means the config file lacks an entry. The gate is applied here rather than in
 ``DocumentStore.iter`` because that reader is shared with export and audit, and
 enrichment policy has no business narrowing what they see.
 
 The caller owns both stores (opens and closes them); the LLM, the document store,
-and the audit call are injectable, so the orchestration can be exercised without
-I/O.
+the audit call and the source registry are injectable, so the orchestration can be
+exercised without I/O.
 """
 
 from __future__ import annotations
@@ -39,8 +42,8 @@ from .enrichment import (
     SCHEMA_VERSION,
 )
 from .envelope import flags
-from .fetchers.policy import enrichable_kinds, may_enrich
 from .secret_audit import audit_secrets, audit_texts, merge_audits
+from .sources import Registry, registry
 from .store import DocumentStore
 
 log = logging.getLogger("corpus.enrich")
@@ -67,16 +70,6 @@ def _audit_windowed(audit, text: str, content: str, candidates, model: str):
     return results[0] if len(results) == 1 else merge_audits(results)
 
 
-def require_enrichable(source: str) -> None:
-    """Raise ``ValueError`` naming the enrichable kinds if *source* may not be enriched."""
-    if not may_enrich(source):
-        raise ValueError(
-            f"source {source!r} is not declared enrichable; "
-            f"enrichable kinds are {', '.join(enrichable_kinds()) or '(none)'}. "
-            "Declare it in corpus.fetchers.policy.POLICIES to enable enrichment."
-        )
-
-
 def run_enrich(
     store,
     *,
@@ -91,6 +84,7 @@ def run_enrich(
     enricher: Enricher | None = None,
     audit=audit_secrets,
     concurrency: int | None = None,
+    sources: Registry | None = None,
 ) -> dict[str, int]:
     """Enrich stored documents; audit only those with secret candidates.
 
@@ -116,9 +110,16 @@ and ``documents`` an open DocumentStore, whose lifecycles the caller owns.
     batches them); the store writes stay single-threaded on the caller's one
     connection. A per-record ``EnrichError`` (a bad message) is skipped so it can't
     abort a long backfill; an ``EnrichUnavailableError`` still propagates.
+
+    ``sources`` decides which documents may be enriched; ``None`` uses the
+    process's (:func:`corpus.sources.registry`). Of the documents it refuses,
+    ``ineligible`` counts all, ``declined`` those whose source is declared
+    ``enrich: false`` and ``undeclared`` those whose source has no entry.
     """
+    if sources is None:
+        sources = registry()
     if source is not None:
-        require_enrichable(source)
+        sources.require_enrichable(source)
 
     concurrency = concurrency or settings.enrich_concurrency
     own = enricher is None
@@ -126,9 +127,10 @@ and ``documents`` an open DocumentStore, whose lifecycles the caller owns.
     audit_model = settings.audit_model or enricher.model
     counts = {
         "scanned": 0, "enriched": 0, "recovered": 0, "instruction_like": 0, "audited": 0,
-        "audit_failed": 0, "skipped": 0, "ineligible": 0,
+        "audit_failed": 0, "skipped": 0, "ineligible": 0, "declined": 0, "undeclared": 0,
     }
-    excluded: set[str] = set()
+    declined: set[str] = set()
+    undeclared: set[str] = set()
 
     def selected() -> Iterator[tuple]:
         if force:
@@ -148,11 +150,16 @@ and ``documents`` an open DocumentStore, whose lifecycles the caller owns.
                 # reach new mail.
                 counts["scanned"] += 1
                 doc_source = (meta or {}).get("source")
-                if not may_enrich(doc_source):
+                if not sources.may_enrich(doc_source):
                     # Counted apart from ``skipped``, which means a record that
                     # failed: a backfill that enriches nothing must say why.
                     counts["ineligible"] += 1
-                    excluded.add(doc_source or "<unset>")
+                    if sources.declares(doc_source):
+                        counts["declined"] += 1
+                        declined.add(doc_source)
+                    else:
+                        counts["undeclared"] += 1
+                        undeclared.add(doc_source or "<unset>")
                     continue
                 if doc_id not in seen:
                     queued += 1
@@ -233,14 +240,19 @@ and ``documents`` an open DocumentStore, whose lifecycles the caller owns.
             enricher.close()
     log.info(
         "enriched %d (%d recovered, %d instruction-like), audited %d (%d failed), skipped %d, "
-        "ineligible %d of %d scanned",
+        "ineligible %d (%d declined, %d undeclared) of %d scanned",
         counts["enriched"], counts["recovered"], counts["instruction_like"], counts["audited"],
-        counts["audit_failed"], counts["skipped"], counts["ineligible"], counts["scanned"],
+        counts["audit_failed"], counts["skipped"], counts["ineligible"], counts["declined"],
+        counts["undeclared"], counts["scanned"],
     )
-    if excluded:
-        log.info(
-            "not enrichable (no policy declaring enrich=True): %s",
-            ", ".join(sorted(excluded)),
+    # Source ids are config names, not message content, so naming them is safe.
+    if declined:
+        log.info("not enrichable (declared enrich: false): %s", ", ".join(sorted(declined)))
+    if undeclared:
+        log.warning(
+            "not enrichable (no source entry in the config file): %s; declare each under "
+            "sources: with enrich: true or false",
+            ", ".join(sorted(undeclared)),
         )
     return counts
 

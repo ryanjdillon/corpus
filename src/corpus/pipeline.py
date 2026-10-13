@@ -15,6 +15,10 @@ scheduled stage it would re-send the same documents to the model on every run.
 It stays a manual command (``corpus audit-secrets``) for when the detectors or
 the audit model change.
 
+A run is for one configured source (:mod:`corpus.sources`). Its entry's
+``pipeline`` options are the defaults for the run, and the caller's
+:class:`Options` override them one by one.
+
 Each stage opens and closes its own stores. The stages use different stores
 (ingest and enrich the source tier, sync a projected tier too), enrichment can
 run for hours, and a stage that fails releases its connections on the way out;
@@ -26,8 +30,15 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING
+
+from .sources import (
+    INGEST_BATCH_SIZE,  # noqa: F401 - re-exported: the shared ingest default
+    PipelineOptions,
+    Source,
+)
+from .sources import source as configured_source
 
 if TYPE_CHECKING:  # the stages import their modules when they run, keeping the CLI light
     from .enricher import Enricher
@@ -38,17 +49,14 @@ log = logging.getLogger("corpus.pipeline")
 #: A stage's result: the counts its batch function reports.
 Counts = dict[str, int]
 
-#: Ingest's default embed batch, the same as ``corpus ingest``'s.
-INGEST_BATCH_SIZE = 50
-
 
 @dataclass(frozen=True)
 class Options:
-    """What a run may vary per stage.
+    """What the caller overrides of the source's ``pipeline`` options.
 
-    The CLI builds this from its flags today; a per-source configuration will
-    supply it instead, so a stage reads its options from here and never from the
-    command line.
+    The CLI builds this from its flags. ``None`` keeps the source entry's value
+    (:class:`~corpus.sources.PipelineOptions`), so a stage reads its options from
+    the resolved entry and never from the command line.
 
     Attributes:
         limit: Passed to the stages that take one, with each one's meaning:
@@ -59,12 +67,16 @@ class Options:
             it commits its cursor. Smaller batches keep each request inside a
             slow embedder's or gateway's timeout.
         tier: The projected tier sync writes (one with a projection in the
-            tiers file).
+            config file).
     """
 
-    limit: int = 0
-    batch_size: int = INGEST_BATCH_SIZE
-    tier: str = "sanitized"
+    limit: int | None = None
+    batch_size: int | None = None
+    tier: str | None = None
+
+    def over(self, defaults: PipelineOptions) -> PipelineOptions:
+        """*defaults* with every option set here in its place (:meth:`PipelineOptions.override`)."""
+        return defaults.override(**asdict(self))
 
 
 @dataclass(frozen=True)
@@ -72,14 +84,14 @@ class Context:
     """Everything a stage receives.
 
     Attributes:
-        source: The source id, e.g. ``imap:example``; every stage is scoped to it.
-        options: The run's per-stage options.
+        source: The configured source; every stage is scoped to its id.
+        options: The run's per-stage options: the source's, overridden.
         fetcher: The fetcher ingest reads; ``None`` builds the one for ``source``.
         enricher: The enricher used; ``None`` builds one from the settings.
     """
 
-    source: str
-    options: Options
+    source: Source
+    options: PipelineOptions
     fetcher: Fetcher | None = None
     enricher: Enricher | None = None
 
@@ -108,12 +120,14 @@ class Stage:
 
 def _ingest(ctx: Context) -> Counts:
     from .ingest import ingest
+    from .sources import build_fetcher
 
-    return {"ingested": ingest(ctx.source, ctx.options.batch_size, fetcher=ctx.fetcher)}
+    fetcher = build_fetcher(ctx.source) if ctx.fetcher is None else ctx.fetcher
+    return {"ingested": ingest(ctx.source.id, ctx.options.batch_size, fetcher=fetcher)}
 
 
 def _check_enrich(ctx: Context) -> None:
-    from .enrich_batch import require_enrichable
+    from .sources import require_enrichable
 
     require_enrichable(ctx.source)
 
@@ -125,7 +139,7 @@ def _enrich(ctx: Context) -> Counts:
 
     with EnrichStore() as store, DocumentStore() as documents:
         return run_enrich(
-            store, documents=documents, source=ctx.source, limit=ctx.options.limit,
+            store, documents=documents, source=ctx.source.id, limit=ctx.options.limit,
             enricher=ctx.enricher,
         )
 
@@ -147,7 +161,7 @@ def _sync(ctx: Context) -> Counts:
     with SanitizedStore(dst.store_dsn(), dst.schema) as store, \
             DocumentStore(src.store_dsn(), src.schema) as documents:
         return run_sync(
-            store, documents=documents, source=ctx.source, limit=ctx.options.limit,
+            store, documents=documents, source=ctx.source.id, limit=ctx.options.limit,
             gate=dst.projection.sensitivity_gate, fields=dst.projection.fields,
         )
 
@@ -211,7 +225,7 @@ def select(names: Iterable[str]) -> tuple[Stage, ...]:
 
 
 def run(
-    source: str,
+    source: str | Source,
     stages: Iterable[str] = DEFAULT_STAGES,
     *,
     options: Options | None = None,
@@ -220,31 +234,37 @@ def run(
 ) -> dict[str, Counts]:
     """Run the selected *stages* for *source*, in order, and return each one's counts.
 
-    Every selected stage is checked before any runs. A stage that raises stops
-    the run: the counts so far are logged and :class:`StageFailedError` is
-    raised from the stage's exception. What the earlier stages committed stays
-    committed, and running again resumes.
+    *source* is a configured source's id, or an entry itself. Its ``pipeline``
+    options, with *options* over them, are the run's. Every selected stage is
+    checked before any runs. A stage that raises stops the run: the counts so
+    far are logged and :class:`StageFailedError` is raised from the stage's
+    exception. What the earlier stages committed stays committed, and running
+    again resumes.
 
     Raises:
-        ValueError: The selection is invalid, or a stage's check refused.
+        ValueError: The selection is invalid, the source is not configured, or a
+            stage's check refused.
         RuntimeError: A stage's check found its configuration missing.
         StageFailedError: A stage failed while running.
     """
     selected = select(stages)
-    ctx = Context(source, options or Options(), fetcher=fetcher, enricher=enricher)
+    entry = configured_source(source) if isinstance(source, str) else source
+    source_id = entry.id
+    resolved = (options or Options()).over(entry.pipeline)
+    ctx = Context(entry, resolved, fetcher=fetcher, enricher=enricher)
     for stage in selected:
         stage.check(ctx)
     counts: dict[str, Counts] = {}
     for stage in selected:
-        log.info("pipeline %s: %s", source, stage.name)
+        log.info("pipeline %s: %s", source_id, stage.name)
         try:
             counts[stage.name] = stage.run(ctx)
         except Exception as exc:
             log.error(
                 "pipeline %s: %s failed (%s: %s); completed: %s",
-                source, stage.name, type(exc).__name__, exc, counts or "none",
+                source_id, stage.name, type(exc).__name__, exc, counts or "none",
             )
             raise StageFailedError(stage.name, counts) from exc
-        log.info("pipeline %s: %s done: %s", source, stage.name, counts[stage.name])
-    log.info("pipeline %s complete: %s", source, counts)
+        log.info("pipeline %s: %s done: %s", source_id, stage.name, counts[stage.name])
+    log.info("pipeline %s complete: %s", source_id, counts)
     return counts

@@ -234,12 +234,12 @@ def test_an_unknown_tier_is_refused_naming_the_defined_ones():
     ],
 )
 def test_a_bad_file_is_refused_with_a_clear_error(tiers_file, edit, error):
-    with pytest.raises(tiers.TierConfigError, match=error):
+    with pytest.raises(tiers.ConfigError, match=error):
         registry(tiers_file(edit(FILE)))
 
 
 def test_an_unreadable_file_is_refused(tmp_path):
-    with pytest.raises(tiers.TierConfigError, match="tiers file .*missing.yaml"):
+    with pytest.raises(tiers.ConfigError, match="config file .*missing.yaml"):
         registry(str(tmp_path / "missing.yaml"))
 
 

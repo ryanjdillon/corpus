@@ -13,6 +13,16 @@ corpus pipeline imap:example --batch-size 16       # embed 16 records per reques
 corpus pipeline imap:example --tier partner        # sync into another projected tier
 ```
 
+The source must be configured (see [Source configuration](fetchers/config.md)).
+Its entry's `pipeline` block sets the defaults for the run, and a flag
+overrides its option:
+
+| Flag | Source option | Default |
+|---|---|---|
+| `--limit` | `pipeline.limit` | `0` (no limit) |
+| `--tier` | `pipeline.tier` | `sanitized` |
+| `--batch-size` (and `corpus ingest --batch-size`) | `pipeline.batch_size` | `50` |
+
 ## Stages
 
 The stages always run in this order, each scoped to the source:
@@ -23,9 +33,9 @@ The stages always run in this order, each scoped to the source:
 | `enrich` | `corpus enrich --source <source>`, including its [secret audit](enrichment.md) | at most N documents sent to the model |
 | `sync` | `corpus sync --source <source> --tier <tier>` | at most N rows projected |
 
-`--limit` does not cap ingest; `--batch-size` (default `50`, as for
-`corpus ingest`) sets how many records ingest embeds per request, and so how
-often it commits its cursor. Lower it when one batch would outlast the embedder's
+`--limit` does not cap ingest; `--batch-size` (the source's
+`pipeline.batch_size`, else `50`, the same as `corpus ingest`) sets how many
+records ingest embeds per request, and so how often it commits its cursor. Lower it when one batch would outlast the embedder's
 or the gateway's timeout, as a CPU embedder behind a gateway can.
 
 `--stages` selects a subset, written in that order: `ingest,sync` is fine, while
@@ -47,9 +57,10 @@ are unchanged.
 
 The run checks every selected stage's configuration before it starts:
 
-- a source whose kind may not be enriched (see the
+- a source that is not configured is refused;
+- a source whose entry says `enrich: false` (see the
   [enrichment policy](fetchers/policy.md)) is refused when `enrich` is selected;
-  run it with `--stages ingest` instead;
+  run it with `--stages ingest,sync` instead;
 - the sync tier must exist, must be a projected tier, and both its store and
   its source tier's store must have their DSN set.
 
@@ -84,16 +95,18 @@ idle connections for that long.
 
 Schedule one job per source, running `corpus pipeline <source>`, with the
 environment that `corpus ingest`, `corpus enrich` and `corpus sync` each needed:
-the source's fetcher settings, the database and embedding settings, the
-enrichment model, and the sanitized tier's DSN. A job that fails is retried by
-running it again.
+the config file, the source's credential variables, the database and embedding
+settings, the enrichment model, and the sanitized tier's DSN. A job that fails
+is retried by running it again.
 
 The job embeds (ingest and sync) and enriches in one process, so set each
 stage's key separately rather than giving it one key allowed to do both:
 `CORPUS_EMBED_API_KEY` for a gateway client that may only embed, and
 `CORPUS_ENRICH_API_KEY` for one that may enrich. Each falls back to
 `CORPUS_OPENAI_API_KEY` when unset; see
-[Endpoints and keys](configuration.md#endpoints-and-keys).
+[Endpoints and keys](configuration.md#endpoints-and-keys). These model keys are
+separate from the source's credential variables, which only the fetcher reads
+(see [Source configuration](fetchers/config.md#credentials-stay-in-the-environment)).
 
 A one-off backfill that only ingests — for example while the embedder is
 swapped onto a GPU — runs `corpus pipeline <source> --stages ingest`, with the

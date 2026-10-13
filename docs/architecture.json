@@ -83,8 +83,8 @@
     {
       "id": "fetchers",
       "type": "backend",
-      "label": "fetchers",
-      "sublabel": "build_fetcher → Record",
+      "label": "sources",
+      "sublabel": "entry → fetcher → Record",
       "pos": [
         280,
         320
@@ -95,8 +95,12 @@
       ],
       "sources": [
         {
-          "path": "src/corpus/fetchers/__init__.py",
-          "label": "build_fetcher"
+          "path": "src/corpus/sources/__init__.py",
+          "label": "Source entries, build_fetcher(source), may_enrich"
+        },
+        {
+          "path": "src/corpus/sources/rfc822.py",
+          "label": "record_from_rfc822: shared mail mapping"
         },
         {
           "path": "src/corpus/fetchers/gmail.py"
@@ -496,7 +500,7 @@
       "dot": "emerald",
       "title": "Ingest line",
       "items": [
-        "fetchers (IMAP / Gmail API) → classify → embeddings → pgvector store; ingest.py orchestrates, resumable via the sync_state cursor"
+        "sources (one config entry each; IMAP / Gmail API fetchers) → classify → embeddings → pgvector store; ingest.py orchestrates, resumable via the sync_state cursor"
       ]
     },
     {

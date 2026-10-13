@@ -1,8 +1,10 @@
 # Enrichment policy
 
-Enrichment is **opt-in per source kind**, and the default is deny. A source with
-no declaration in `corpus.fetchers.policy.POLICIES` is never enriched — not by
-`corpus enrich`, not with an explicit `--source`, not with `--force`.
+Enrichment is **opt-in per source**, and the default is deny. Each entry under
+`sources:` in the config file must say `enrich: true` or `enrich: false` (see
+[Source configuration](config.md)); a document whose source is not declared
+enrichable is never enriched — not by `corpus enrich`, not with an explicit
+`--source`, not with `--force`.
 
 ## Why it is default-deny
 
@@ -26,35 +28,43 @@ source must be a deliberate act, and forgetting to think about it must be safe.
 
 ## Declaring a source
 
-```python
-SourcePolicy(
-    kind="gmail",
-    enrich=True,
-    rationale="Personal correspondence -- the domain the enrichment schema was built for.",
-)
+```yaml
+sources:
+  - name: personal
+    kind: gmail
+    enrich: true    # personal correspondence: the domain the schema was built for
 ```
 
-`kind` is the prefix of a source id — `gmail:personal` and `gmail:work` share the
-kind `gmail`, so accounts do not each need a declaration. It is the same taxonomy
-`build_fetcher` dispatches on, which is why policy lives beside it: the set of
-known kinds is declared once rather than duplicated into a list that drifts.
+`enrich` has no default: every entry records the decision, and a review of the
+file sees it. Record why next to it, as a comment, when the answer is not
+obvious from the kind. The check is `sources.may_enrich`, which reads the
+entry's `enrich`; an id with no entry may not be enriched.
 
-`rationale` is required in practice (a test asserts every declaration has one).
-A policy decision without a recorded reason cannot be reviewed later.
+A config file without `sources:` keeps the decision from before sources were
+configured, made per kind: `gmail` and `imap` documents are enrichable and every
+other kind is not, whatever the name (see
+[Without `sources:`](config.md#without-sources-deprecated)).
 
 ## What enforcement looks like
 
 | Situation | Result |
 |---|---|
 | `corpus enrich`, mixed archive | Eligible documents enriched; ineligible counted, never sent to the model |
-| `corpus enrich --source youtube:@chan` (undeclared) | **Refused** with a message naming the enrichable kinds |
+| `corpus enrich --source youtube:@chan` (undeclared) | **Refused** with a message saying how to declare it |
+| `corpus pipeline imap:notices`, declared `enrich: false` | **Refused** before ingest; `--stages ingest,sync` runs it without enrichment |
 | `corpus enrich --force`, undeclared source | Still ineligible — `force` re-enriches, it does not grant permission |
 | Document with no `source` in its metadata | Ineligible |
 
 Ineligible documents are counted as `ineligible`, deliberately **separate from
 `skipped`**, which means a record that failed to enrich. Conflating the two would
-hide either one. A run that enriches nothing logs the excluded sources by name,
-so "it did nothing" is never a mystery.
+hide either one. `ineligible` is split in two, and each part logs its sources
+by name, so "it did nothing" is never a mystery:
+
+- `declined`: the source is declared with `enrich: false`. A deliberate
+  decision, logged at INFO.
+- `undeclared`: the source has no entry under `sources:` (or no `source` at
+  all). Usually a missing entry rather than a decision, so it is logged as a
+  WARNING. Source ids are config names, not message content.
 
 ## What is not gated
 

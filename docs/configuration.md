@@ -47,11 +47,18 @@ to do both.
 
 `corpus pipeline <source>` ingests, enriches and syncs one source in one
 resumable run; schedule one per source. It needs the settings of all three
-stages: the fetcher's, the database and embedding settings above, the enrichment
-model, and the sync tier's DSN (see [Sanitized tier](#sanitized-tier)). See
-[Pipeline](pipeline.md) for the stage order, `--stages`, `--limit`,
-`--batch-size` and how a failed run resumes. Its embedding and enrichment stages
-can present separate keys (see [Endpoints and keys](#endpoints-and-keys)). `corpus ingest`, `corpus enrich` and `corpus sync` still run
+stages: the source's entry in the config file (see
+[Source configuration](fetchers/config.md)) and its credential variables, the
+database and embedding settings above, the enrichment model, and the sync tier's
+DSN (see [Sanitized tier](#sanitized-tier)). See [Pipeline](pipeline.md) for the
+stage order, `--stages`, `--limit`, `--batch-size` and how a failed run resumes.
+
+Its embedding and enrichment stages can present separate keys (see
+[Endpoints and keys](#endpoints-and-keys)). Those are model-endpoint keys, and
+are unrelated to the source's credential variables (`<credentials_env_prefix>_*`),
+which are the fetcher's mailbox login (Gmail, IMAP): neither falls back to the
+other, and a source entry never names a model key. `corpus ingest`,
+`corpus enrich` and `corpus sync` still run
 one stage each.
 
 ## Serving
@@ -59,7 +66,7 @@ one stage each.
 `corpus serve <tier>` serves one storage tier's MCP tools over streamable HTTP,
 stateless (see [Query model](query.md#the-mcp-tools) for the tools). The server
 name, the store, the read-only reader and the query policy all come from the
-tier, defined in the tiers file (`CORPUS_TIERS_FILE`; see [Tiers](tiers.md)). By
+tier, defined in the config file (`CORPUS_CONFIG_FILE`; see [Tiers](tiers.md)). By
 default:
 
 | Command | Serves as | Reads with |
@@ -208,13 +215,13 @@ tier the file defines.
 
 | Variable | Purpose |
 |---|---|
-| `CORPUS_TIERS_FILE` | path of the tiers file; unset means the built-in default tiers |
+| `CORPUS_CONFIG_FILE` | path of the config file (`tiers:` and `sources:`); unset means the built-in default tiers and the deprecated pre-file sources. `CORPUS_TIERS_FILE` is its deprecated name |
 | `CORPUS_SANITIZED_DATABASE_URL` | DSN the sync writes to (the default tiers' `dsn_env`) |
 | `CORPUS_INDEX_DATABASE_URL` | DSN the index server reads with, a read-only role (the default tiers' `reader_dsn_env`) |
 
 `CORPUS_INDEX_SERVER_NAME`, `CORPUS_SANITIZED_DB_SCHEMA`,
 `CORPUS_INDEX_SENSITIVITY_GATE` and `CORPUS_TIER_ACCESS` still work, as
-deprecated overrides of the tiers file, for one release; see
+deprecated overrides of the config file's tiers, for one release; see
 [Tiers](tiers.md#environment-overrides-deprecated).
 
 Give the sanitized tier its own `store.schema` when several raw schemas feed one

@@ -64,7 +64,7 @@ def test_imap_parts_is_only_for_imap():
 
 @pytest.mark.parametrize("source", ["imap:Kbl", "imap:kbl.post", "gmail:" + "a" * 33])
 def test_a_source_name_outside_the_grammar_is_refused(source):
-    from corpus.fetchers import build_fetcher
+    from corpus.sources import Registry
 
     with pytest.raises(ValueError, match="invalid source name"):
-        build_fetcher(source)
+        Registry(None).source(source)

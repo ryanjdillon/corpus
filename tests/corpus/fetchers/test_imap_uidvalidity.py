@@ -7,6 +7,7 @@ import pytest
 from imapclient import IMAPClient
 
 from corpus.fetchers.imap import ImapFetcher
+from corpus.sources import ImapOptions, ImapSource
 
 
 def _raw(subject: str) -> bytes:
@@ -20,15 +21,14 @@ def _raw(subject: str) -> bytes:
 
 
 @pytest.fixture
-def env(monkeypatch):
+def env():
     settings = {
         "HOST": "mail.example.org",
         "USER": "box@example.org",
         "PASSWORD": "x",
         "FOLDERS": "INBOX",
     }
-    for key, value in settings.items():
-        monkeypatch.setenv(f"CORPUS_IMAP_UNIT_{key}", value)
+    return {f"CORPUS_IMAP_UNIT_{key}": value for key, value in settings.items()}
 
 
 @pytest.fixture
@@ -43,7 +43,8 @@ def client():
 
 @pytest.fixture
 def fetcher(env, client):
-    return ImapFetcher("unit", connect=lambda *_a, **_k: client)
+    source = ImapSource(name="unit", enrich=True)
+    return ImapFetcher(source, environ=env, connect=lambda *_a, **_k: client)
 
 
 def test_reused_uid_after_uidvalidity_change_gets_a_new_id(fetcher, client):
@@ -91,3 +92,33 @@ def test_known_uids_are_not_downloaded_but_advance_the_cursor(fetcher, client):
     assert [r.source_uid for r in records] == ["INBOX:7:2"]
     assert client.fetch.call_args.args[0] == [2]
     assert fetcher.next_cursor() == '{"INBOX": "7:3"}'
+
+
+def test_the_folders_option_wins_over_the_variable(env, client):
+    source = ImapSource(name="unit", enrich=True, options=ImapOptions(folders=["Archive"]))
+    fetcher = ImapFetcher(source, environ=env, connect=lambda *_a, **_k: client)
+    list(fetcher.fetch(None))
+    client.select_folder.assert_called_once_with("Archive", readonly=True)
+
+
+@pytest.mark.parametrize(("value", "folders"), [("all", None), ("*", None), ("", None),
+                                                ("INBOX, Sent", ["INBOX", "Sent"])])
+def test_the_folders_variable_is_parsed_as_before(env, client, value, folders):
+    environ = {**env, "CORPUS_IMAP_UNIT_FOLDERS": value}
+    fetcher = ImapFetcher(ImapSource(name="unit", enrich=True), environ=environ)
+    assert fetcher.folders == folders
+
+
+def test_the_connection_variables_reach_the_client(env, client):
+    environ = {**env, "CORPUS_IMAP_UNIT_PORT": "1143", "CORPUS_IMAP_UNIT_SSL": "false"}
+    connect = create_autospec(IMAPClient, return_value=client)
+    fetcher = ImapFetcher(ImapSource(name="unit", enrich=True), environ=environ, connect=connect)
+    list(fetcher.fetch(None))
+    connect.assert_called_once_with("mail.example.org", port=1143, ssl=False)
+    client.login.assert_called_once_with("box@example.org", "x")
+
+
+def test_missing_connection_variables_are_named(env):
+    environ = {k: v for k, v in env.items() if not k.endswith("_PASSWORD")}
+    with pytest.raises(ValueError, match="CORPUS_IMAP_UNIT_PASSWORD"):
+        ImapFetcher(ImapSource(name="unit", enrich=True), environ=environ)

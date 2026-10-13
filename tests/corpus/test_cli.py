@@ -314,6 +314,23 @@ def test_scan_command(runner, scan_archive, tmp_path, document_store_cls):
     assert '"us_ssn"' in out.read_text()
 
 
+def test_ingest_without_a_batch_size_takes_the_sources(runner, configure, shutdown, ingest_fn):
+    result = runner.invoke(cli.main, ["ingest", "imap:test"])
+    assert result.exit_code == 0, result.output
+    assert ingest_fn.call_args.kwargs == {"batch_size": None}
+
+
+def test_ingest_reports_an_unconfigured_source_without_a_traceback(
+    runner, configure, shutdown, ingest_fn
+):
+    ingest_fn.side_effect = ValueError("no source 'imap:other' in the config file's sources:")
+    result = runner.invoke(cli.main, ["ingest", "imap:other"])
+    assert result.exit_code == 1
+    assert "no source 'imap:other'" in result.output
+    assert "Traceback" not in result.output
+    shutdown.assert_called_once()
+
+
 def test_ingest_flushes_telemetry_on_error(runner, configure, shutdown, ingest_fn):
     ingest_fn.side_effect = RuntimeError("ingest failed")
     result = runner.invoke(cli.main, ["ingest", "imap:test"])
@@ -346,10 +363,15 @@ def test_enrich_command_passes_redo_recovered(
 def test_enrich_command_reports_ineligible_documents(
     runner, configure, shutdown, enrich_store_cls, run_enrich, document_store_cls
 ):
-    run_enrich.return_value = {"scanned": 5, "enriched": 1, "audited": 0, "ineligible": 4}
+    run_enrich.return_value = {
+        "scanned": 5, "enriched": 1, "audited": 0, "ineligible": 4, "declined": 3, "undeclared": 1,
+    }
     result = runner.invoke(cli.main, ["enrich"])
     assert result.exit_code == 0, result.output
-    assert "4 not enrichable by source policy" in result.output
+    assert (
+        "4 not enrichable by source policy: 3 declared enrich: false, "
+        "1 from sources with no entry"
+    ) in result.output
 
 
 def test_enrich_command_reports_a_policy_refusal_without_a_traceback(
@@ -457,6 +479,28 @@ def test_serve_refuses_a_tier_the_file_does_not_define(runner, serve, three_tier
     result = runner.invoke(cli.main, ["serve", "raw"])
     assert result.exit_code != 0
     assert "no tier named 'raw'" in result.output
+    serve.assert_not_called()
+
+
+def test_serve_refuses_a_file_declaring_a_source_twice(
+    runner, serve, monkeypatch, tmp_path
+):
+    # serve reads only the tiers, but the whole file must still be valid.
+    path = tmp_path / "corpus.yaml"
+    path.write_text(textwrap.dedent("""
+        sources:
+          - {name: club, kind: imap, enrich: true}
+          - {name: club, kind: imap, enrich: false}
+    """))
+    monkeypatch.setattr(settings, "config_file", str(path))
+    monkeypatch.setattr(settings, "tiers_file", "")
+    tiers.registry.cache_clear()
+    try:
+        result = runner.invoke(cli.main, ["serve", "sensitive"])
+    finally:
+        tiers.registry.cache_clear()
+    assert result.exit_code != 0
+    assert "source 'imap:club' is declared twice" in result.output
     serve.assert_not_called()
 
 

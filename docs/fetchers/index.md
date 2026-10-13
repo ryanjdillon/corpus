@@ -4,7 +4,8 @@ A *source* is anything that yields `Record`s. Because the rest of the pipeline
 (classify → embed → store → search) only sees `Record`s, adding a source — a new
 mailbox protocol, a document store, a chat export — is self-contained: implement
 one small protocol and register it. Email ships today over [IMAP](imap.md) and
-[Gmail](gmail.md); the same shape covers documents.
+[Gmail](gmail.md); the same shape covers documents. Each configured source is
+one entry in the config file (see [Source configuration](config.md)).
 
 ## The protocol
 
@@ -41,20 +42,44 @@ class Fetcher(Protocol):
 
 ## Register it
 
-Dispatch is by the `source` id's prefix in `fetchers/build_fetcher`:
+The kinds are a closed set, declared once in `corpus.sources`: one `Source`
+subclass per kind, tagged by `kind`, with that kind's `options`. Adding a kind
+adds a subclass, puts it in `SourceEntry`, and adds a case to
+`sources.build_fetcher`:
 
 ```python
-def build_fetcher(source: str) -> Fetcher:
-    kind, _, name = source.partition(":")
-    if kind == "files":
-        from .files import FilesFetcher
-        return FilesFetcher(name or "default")
-    ...
+class FilesOptions(_Strict):
+    root: str | None = None
+
+
+class FilesSource(Source, tag="files"):
+    kind: ClassVar[str] = "files"
+    options: FilesOptions = FilesOptions()
+
+
+def build_fetcher(source: Source, *, environ=os.environ) -> Fetcher:
+    match source:
+        case FilesSource():
+            from ..fetchers.files import FilesFetcher
+            return FilesFetcher(source, environ=environ)
+        ...
 ```
 
-Then `corpus ingest files:notes` routes to your fetcher. Namespacing config by
-the fetcher `name` (as the existing fetchers do, e.g. `CORPUS_IMAP_<NAME>_*`)
-lets several instances of one source type coexist.
+The fetcher takes its `Source` and reads any secret from `environ` through
+`source.env_name(KEY)`, under the source's `credentials_env_prefix`, never from a
+name it composes itself. Then a `files:notes` entry in the config file routes
+`corpus ingest files:notes` to your fetcher, and several sources of one kind
+coexist, each with its own prefix. Message ids of a new kind also need a uid
+grammar in `models.parse_id` (see [Message ids](../message-ids.md)).
+
+A mail fetcher maps each raw RFC 822 message with
+`sources.rfc822.record_from_rfc822`, passing only what the provider knows (its
+id, thread, labels, folder, link), so every mail source reads subjects, dates,
+addresses and bodies the same way.
+
+`corpus.fetchers.build_fetcher("<kind>:<name>")`, the older entry point by id,
+still works for one release and warns; it resolves the id through the configured
+sources.
 
 ## Guidelines
 

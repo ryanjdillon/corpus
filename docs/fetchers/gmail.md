@@ -1,13 +1,25 @@
 # Gmail
 
 Gmail is ingested through the Gmail API (OAuth) rather than IMAP, so message
-**labels** are captured. Configure per fetcher name; for `corpus ingest gmail:personal`:
+**labels** are captured. Declare the source in the config file (see
+[Source configuration](config.md)):
+
+```yaml
+sources:
+  - name: personal
+    kind: gmail
+    enrich: true
+    options: {labels: [INBOX, Receipts]}   # optional; unset = all mail
+```
+
+The credentials are read from the variables under the source's prefix, by
+default `CORPUS_GMAIL_<NAME>`; for `gmail:personal`:
 
 ```
 CORPUS_GMAIL_PERSONAL_CLIENT_ID=...
 CORPUS_GMAIL_PERSONAL_CLIENT_SECRET=...
 CORPUS_GMAIL_PERSONAL_REFRESH_TOKEN=...        # see scripts/gmail_oauth.py
-CORPUS_GMAIL_PERSONAL_LABELS=INBOX,Receipts    # optional; empty = all mail
+CORPUS_GMAIL_PERSONAL_LABELS=INBOX,Receipts    # optional; used when options.labels is unset
 ```
 
 ## Getting a refresh token

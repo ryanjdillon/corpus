@@ -27,7 +27,7 @@ def _serve(tier: str) -> None:
     try:
         t = configured_tier(tier)
         service = serving.tier_service(tier)
-    except ValueError as exc:  # a bad tiers file, or a tier it does not define
+    except ValueError as exc:  # a bad config file, or a tier it does not define
         raise click.ClickException(str(exc)) from exc
     telemetry.configure(service)
     # The gauge counts the documents table, which only a source tier serves.
@@ -41,7 +41,7 @@ def _serve(tier: str) -> None:
 def serve(tier: str) -> None:
     """Serve a storage tier's MCP tools over streamable HTTP.
 
-    TIER is any tier in the tiers file. By default: 'sensitive' (corpus), the
+    TIER is any tier in the config file. By default: 'sensitive' (corpus), the
     full surface with raw mail, for trusted local callers; and 'sanitized'
     (corpus-index), what a trust-downgraded consumer (Hermes) queries: summaries
     and priority signal, never raw bodies.
@@ -63,15 +63,21 @@ def index() -> None:
 
 @main.command()
 @click.argument("source")
-@click.option("--batch-size", default=INGEST_BATCH_SIZE, show_default=True)
-def ingest(source: str, batch_size: int) -> None:
-    """Ingest from a source id, e.g. 'imap:example'."""
+@click.option(
+    "--batch-size", default=None, type=click.IntRange(min=1),
+    help="records ingest embeds per request  "
+    f"[default: the source's pipeline.batch_size, else {INGEST_BATCH_SIZE}]",
+)
+def ingest(source: str, batch_size: int | None) -> None:
+    """Ingest from a configured source id, e.g. 'imap:example'."""
     telemetry.configure("corpus-ingest")
     from .ingest import ingest as run_ingest
 
     try:
         count = run_ingest(source, batch_size=batch_size)
         click.echo(f"ingested {count} documents from {source}")
+    except ValueError as exc:  # an unconfigured source, or missing credentials
+        raise click.ClickException(str(exc)) from exc
     finally:
         telemetry.shutdown()  # flush metrics/traces before the process exits
 
@@ -115,7 +121,10 @@ def enrich(
             )
         msg = f"enriched {r['enriched']}, audited {r['audited']} of {r['scanned']} scanned"
         if r["ineligible"]:
-            msg += f" ({r['ineligible']} not enrichable by source policy)"
+            msg += (
+                f" ({r['ineligible']} not enrichable by source policy: {r['declined']} declared "
+                f"enrich: false, {r['undeclared']} from sources with no entry)"
+            )
         click.echo(msg)
     except ValueError as exc:
         # Policy refusal: a clear message beats a traceback.
@@ -134,7 +143,7 @@ def enrich(
 )
 @click.option(
     "--tier", "tier_name", default="sanitized", show_default=True,
-    help="the projected tier to sync into (one with a projection in the tiers file)",
+    help="the projected tier to sync into (one with a projection in the config file)",
 )
 def sync(source: str | None, limit: int, reproject: bool, tier_name: str) -> None:
     """Project enriched documents into a projected tier (default: sanitized).
@@ -184,25 +193,33 @@ def _stage_names(ctx: click.Context, param: click.Parameter, value: str) -> tupl
     help="comma-separated stages to run, in this order; a subset may skip stages",
 )
 @click.option(
-    "--limit", default=0, type=int,
-    help="enrich at most N documents and sync at most N rows (0 = all); ingest is not capped",
+    "--limit", default=None, type=click.IntRange(min=0),
+    help="enrich at most N documents and sync at most N rows (0 = all); ingest is uncapped  "
+    "[default: the source's pipeline.limit, else 0]",
 )
 @click.option(
-    "--batch-size", default=INGEST_BATCH_SIZE, show_default=True, type=click.IntRange(min=1),
-    help="records ingest embeds per request",
+    "--batch-size", default=None, type=click.IntRange(min=1),
+    help="records ingest embeds per request  "
+    f"[default: the source's pipeline.batch_size, else {INGEST_BATCH_SIZE}]",
 )
 @click.option(
-    "--tier", "tier_name", default="sanitized", show_default=True,
-    help="the projected tier sync writes",
+    "--tier", "tier_name", default=None,
+    help="the projected tier sync writes  [default: the source's pipeline.tier, else sanitized]",
 )
 def pipeline(
-    source: str, stages: tuple[str, ...], limit: int, batch_size: int, tier_name: str
+    source: str,
+    stages: tuple[str, ...],
+    limit: int | None,
+    batch_size: int | None,
+    tier_name: str | None,
 ) -> None:
-    """Ingest, enrich and sync one SOURCE, e.g. 'imap:example', in that order.
+    """Ingest, enrich and sync one configured SOURCE, e.g. 'imap:example', in that order.
 
     Each stage resumes where the last run stopped, so after a failure the same
     command picks up again. A run refused before any stage starts exits 2, as a
-    usage error; a stage that fails stops the run and exits 1.
+    usage error; a stage that fails stops the run and exits 1. Options the
+    source entry sets in the config file are the defaults; a flag overrides its
+    option.
     """
     from .pipeline import Options, StageFailedError, run
 

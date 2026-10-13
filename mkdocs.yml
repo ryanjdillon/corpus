@@ -53,6 +53,7 @@ nav:
   - Pipeline: pipeline.md
   - Sources:
       - Overview: fetchers/index.md
+      - Configuration: fetchers/config.md
       - IMAP: fetchers/imap.md
       - Gmail: fetchers/gmail.md
       - Enrichment policy: fetchers/policy.md

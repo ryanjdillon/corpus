@@ -25,6 +25,7 @@ from corpus.enrichment import (
     ReferenceKind,
     SecretAudit,
 )
+from corpus.sources import GmailSource, ImapSource, Registry
 from corpus.store import DocumentStore
 
 # Stored documents always carry meta["source"] (store.py sets it from
@@ -150,7 +151,7 @@ def test_ordinary_enrichment_is_not_flagged(store, enricher, audit, documents, c
 def test_enriches_all_audits_only_flagged(store, enricher, audit, documents, key_doc, clean_doc):
     r = run_enrich(store, documents=documents(key_doc, clean_doc), enricher=enricher, audit=audit)
 
-    assert r == {"scanned": 2, "enriched": 2, "recovered": 0, "instruction_like": 0, "audited": 1, "audit_failed": 0, "skipped": 0, "ineligible": 0}
+    assert r == {"scanned": 2, "enriched": 2, "recovered": 0, "instruction_like": 0, "audited": 1, "audit_failed": 0, "skipped": 0, "ineligible": 0, "declined": 0, "undeclared": 0}
     assert store.save_enrichment.call_count == 2
     assert {c.args[0] for c in store.save_audit.call_args_list} == {"d1"}
     assert "aws_access_key" in store.save_audit.call_args.args[1]
@@ -351,7 +352,7 @@ def test_skips_already_enriched(store, enricher, documents, key_doc):
 
     r = run_enrich(store, documents=documents(key_doc), enricher=enricher)
 
-    assert r == {"scanned": 1, "enriched": 0, "recovered": 0, "instruction_like": 0, "audited": 0, "audit_failed": 0, "skipped": 0, "ineligible": 0}
+    assert r == {"scanned": 1, "enriched": 0, "recovered": 0, "instruction_like": 0, "audited": 0, "audit_failed": 0, "skipped": 0, "ineligible": 0, "declined": 0, "undeclared": 0}
     store.save_enrichment.assert_not_called()
 
 
@@ -361,7 +362,7 @@ def test_bad_record_is_skipped_not_fatal(store, enricher, documents, key_doc, cl
 
     r = run_enrich(store, documents=documents(key_doc, clean_doc), enricher=enricher)
 
-    assert r == {"scanned": 2, "enriched": 0, "recovered": 0, "instruction_like": 0, "audited": 0, "audit_failed": 0, "skipped": 2, "ineligible": 0}
+    assert r == {"scanned": 2, "enriched": 0, "recovered": 0, "instruction_like": 0, "audited": 0, "audit_failed": 0, "skipped": 2, "ineligible": 0, "declined": 0, "undeclared": 0}
     store.save_enrichment.assert_not_called()
 
 
@@ -430,7 +431,7 @@ def test_undeclared_source_is_never_enriched(store, enricher, audit, documents, 
     # though no filter was passed.
     r = run_enrich(store, documents=documents(video_doc), enricher=enricher, audit=audit)
 
-    assert r == {"scanned": 1, "enriched": 0, "recovered": 0, "instruction_like": 0, "audited": 0, "audit_failed": 0, "skipped": 0, "ineligible": 1}
+    assert r == {"scanned": 1, "enriched": 0, "recovered": 0, "instruction_like": 0, "audited": 0, "audit_failed": 0, "skipped": 0, "ineligible": 1, "declined": 0, "undeclared": 1}
     enricher.enrich_reporting.assert_not_called()
     store.save_enrichment.assert_not_called()
 
@@ -461,6 +462,49 @@ def test_ineligible_is_counted_apart_from_skipped(store, enricher, documents, ke
 
     assert r["skipped"] == 1
     assert r["ineligible"] == 1
+
+
+# Sources as a config file declares them: one enrichable, one declared not.
+DECLARED = Registry([
+    GmailSource(name="personal", enrich=True),
+    ImapSource(name="notices", enrich=False),
+])
+NOTICE = ("d4", "your parcel is on its way", {"source": "imap:notices"})
+UNLISTED = ("d5", "minutes of the last meeting", {"source": "imap:club"})
+
+
+def test_a_source_declared_not_enrichable_is_counted_as_declined(
+    store, enricher, audit, documents, key_doc, caplog
+):
+    with caplog.at_level("INFO", logger="corpus.enrich"):
+        r = run_enrich(
+            store, documents=documents(key_doc, NOTICE), enricher=enricher, audit=audit,
+            sources=DECLARED,
+        )
+
+    assert (r["enriched"], r["ineligible"], r["declined"], r["undeclared"]) == (1, 1, 1, 0)
+    [record] = [x for x in caplog.records if "declared enrich: false" in x.getMessage()]
+    assert record.levelname == "INFO"
+    assert "imap:notices" in record.getMessage()
+    assert not [x for x in caplog.records if x.levelname == "WARNING"]
+
+
+def test_a_source_missing_from_the_file_is_warned_about_by_id(
+    store, enricher, audit, documents, key_doc, caplog
+):
+    # Easy to mistake for a deliberate enrich: false, so it is said louder.
+    with caplog.at_level("INFO", logger="corpus.enrich"):
+        r = run_enrich(
+            store, documents=documents(key_doc, UNLISTED, NOTICE), enricher=enricher,
+            audit=audit, sources=DECLARED,
+        )
+
+    assert (r["enriched"], r["ineligible"], r["declined"], r["undeclared"]) == (1, 2, 1, 1)
+    [record] = [x for x in caplog.records if "no source entry" in x.getMessage()]
+    assert record.levelname == "WARNING"
+    assert "imap:club" in record.getMessage()
+    assert "imap:notices" not in record.getMessage()
+    enricher.enrich_reporting.assert_called_once()
 
 
 def test_explicit_ineligible_source_refuses(store, enricher, documents, video_doc):
