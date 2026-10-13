@@ -51,6 +51,28 @@ commitlint BASE="origin/main":
 helm-check:
     bash deploy/helm/scripts/check.sh
 
+# Check that the image refuses a Betterleaks tarball whose sha256 does not match
+# the pin: builds only the Dockerfile's `leaks` stage with a wrong checksum and
+# fails unless sha256sum rejected it. Needs Docker and network, so it is a local
+# check, not part of `check` or CI.
+verify-dockerfile-checksum:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    log=$(mktemp)
+    trap 'rm -f "$log"' EXIT
+    if docker build --progress=plain --target leaks \
+        --build-arg BETTERLEAKS_SHA256="$(printf '0%.0s' {1..64})" \
+        -f deploy/Dockerfile . >"$log" 2>&1; then
+        echo "FAIL: the leaks stage built with a wrong checksum" >&2
+        exit 1
+    fi
+    if ! grep -q "computed checksum did NOT match" "$log"; then
+        tail -n 20 "$log" >&2
+        echo "FAIL: the build failed, but not on the checksum (see above)" >&2
+        exit 1
+    fi
+    echo "ok: a wrong Betterleaks checksum fails the build"
+
 # All pre-PR checks, mirroring CI. Run this (and fix any failures) before pushing.
 check: lint cov arch commitlint helm-check
 
