@@ -44,8 +44,14 @@ arch BASE="origin/main":
 commitlint BASE="origin/main":
     commitlint --from {{BASE}} --to HEAD
 
+# Lint the Helm chart, render it with each example and test values file, check
+# that rendered numbers are exact, and check that the invalid values under
+# deploy/helm/tests/invalid are refused (deploy/helm/scripts/check.sh, as CI).
+helm-check:
+    bash deploy/helm/scripts/check.sh
+
 # All pre-PR checks, mirroring CI. Run this (and fix any failures) before pushing.
-check: lint cov arch commitlint
+check: lint cov arch commitlint helm-check
 
 # Evaluate an enrichment model (docs/evaluation.md). Run, then score one or more outputs:
 #   just eval-enrich run [--allow-remote] [--limit N] [--only hard_case=TAG]
