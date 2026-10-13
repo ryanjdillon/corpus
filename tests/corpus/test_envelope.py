@@ -226,34 +226,65 @@ def test_a_missing_field_is_not_flagged():
     assert flags({"id": "a"}, ["one_line"]) == []
 
 
-_MB = 1_000_000
+#: The sizes adversarial text is timed at, 16x apart. A linear scan grows ~16x
+#: between them, or up to ~40x when the larger text no longer fits a CPU cache;
+#: a quadratic one grows ~256x. A ratio, unlike a wall-clock bound, holds on a
+#: loaded machine, since load slows both sizes alike.
+_SMALL, _LARGE = 64_000, 1_000_000
+_MAX_GROWTH = 100
+#: A backstop on the large size only: its scan takes well under a second, and a
+#: quadratic one takes minutes.
+_CEILING = 3.0
+
+
+def _adversarial(prefix, unit, size):
+    """*prefix* then *unit* repeated to about *size* characters."""
+    return prefix + unit * (size // len(unit))
+
+
+def _flag(text):
+    flags({"content": text, "meta": {"subject": text[:300]}}, ["content", "meta"])
+
+
+def _best_of(scan, text, runs=3, ceiling=_CEILING):
+    """The fastest of *runs* timings of ``scan(text)``, so noise only adds.
+
+    A run past *ceiling* ends the timing there, so a regression fails after one
+    slow scan rather than *runs* of them.
+    """
+    timings = []
+    for _ in range(runs):
+        start = time.perf_counter()
+        scan(text)
+        timings.append(time.perf_counter() - start)
+        if timings[-1] > ceiling:
+            break
+    return min(timings)
 
 
 @pytest.mark.parametrize(
-    "text",
+    ("prefix", "unit"),
     [
-        "https://" * (_MB // 8),
-        '{"function":' * (_MB // 12),
-        "> " * (_MB // 2),
-        "a" * _MB,
-        "https://a:" + "b:" * (_MB // 2),
-        "https://example.org/?api_key=" * (_MB // 29),
-        "https:// " * (_MB // 9),
-        "til KI-assistent " * (_MB // 17),
+        ("", "https://"),
+        ("", '{"function":'),
+        ("", "> "),
+        ("", "a"),
+        ("https://a:", "b:"),
+        ("", "https://example.org/?api_key="),
+        ("", "https:// "),
+        ("", "til KI-assistent "),
     ],
     ids=["urls", "tool-call-keys", "quote-markers", "no-whitespace", "userinfo", "query",
          "spaced-urls", "norwegian"],
 )
-def test_adversarial_text_is_flagged_in_linear_time(text):
+def test_adversarial_text_is_flagged_in_linear_time(prefix, unit):
     # A sender chooses the text and it is scanned on every read, so a megabyte
-    # crafted to backtrack must not stall a tool call. Linear scans take a
-    # fraction of the bound; a quadratic one takes minutes.
-    row = {"content": text, "meta": {"subject": text[:300]}}
+    # crafted to backtrack must not stall a tool call.
+    small = _best_of(_flag, _adversarial(prefix, unit, _SMALL))
+    large = _best_of(_flag, _adversarial(prefix, unit, _LARGE))
 
-    start = time.perf_counter()
-    flags(row, ["content", "meta"])
-
-    assert time.perf_counter() - start < 1.0
+    assert large / small < _MAX_GROWTH, f"{small:.4f}s -> {large:.4f}s grows faster than linear"
+    assert large < _CEILING
 
 
 def test_a_long_body_is_scanned_in_linear_time():
