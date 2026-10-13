@@ -52,6 +52,9 @@ jobs:
       # integration tier alongside the unit tests in one coverage run.
       - name: Tests with coverage (unit + integration)
         run: coverage run --source=corpus -m pytest -o addopts= tests
+        # A native crash prints its C-level Python stack instead of a bare exit 139.
+        env:
+          PYTHONFAULTHANDLER: "1"
 
       - name: Coverage report
         run: coverage report --precision=2
