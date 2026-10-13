@@ -11,7 +11,8 @@ from unittest.mock import create_autospec
 
 import pytest
 
-from corpus import secret_audit
+from corpus import secret_audit, telemetry
+from corpus.config import settings
 from corpus.enrich_batch import run_audit, run_enrich
 from corpus.enrich_store import EnrichStore
 from corpus.enricher import Enricher, EnrichError
@@ -88,6 +89,34 @@ def audit():
     m = create_autospec(secret_audit.audit_secrets)
     m.return_value = SecretAudit(contains_secret=True)
     return m
+
+
+@pytest.fixture
+def on_scanner():
+    """A spec-bound stand-in for the default ``telemetry.record_leaks_scanner``."""
+    return create_autospec(telemetry.record_leaks_scanner)
+
+
+def test_enrich_reports_the_credential_scanner_per_audit_scan(
+    store, enricher, audit, documents, key_doc, clean_doc, on_scanner
+):
+    run_enrich(
+        store, documents=documents(key_doc, clean_doc), enricher=enricher, audit=audit,
+        on_scanner=on_scanner,
+    )
+
+    assert on_scanner.call_count == 2  # every scanned document, flagged or not
+    assert {c.args[0] for c in on_scanner.call_args_list} <= {"betterleaks", "local"}
+
+
+def test_run_audit_reports_the_credential_scanner(
+    store, audit, documents, key_doc, on_scanner, monkeypatch
+):
+    monkeypatch.setattr(settings, "audit_model", "audit-model")
+
+    run_audit(store, documents=documents(key_doc), audit=audit, on_scanner=on_scanner)
+
+    on_scanner.assert_called_once()
 
 
 def test_recovered_enrichment_is_stored_as_stale(

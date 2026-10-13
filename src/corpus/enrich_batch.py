@@ -25,12 +25,13 @@ exercised without I/O.
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from contextlib import closing
 from itertools import islice
 
 import msgspec
+from corpus_detect.leaks import Scanner
 
 from . import scan, telemetry
 from .config import settings
@@ -85,6 +86,7 @@ def run_enrich(
     audit=audit_secrets,
     concurrency: int | None = None,
     sources: Registry | None = None,
+    on_scanner: Callable[[Scanner], None] = telemetry.record_leaks_scanner,
 ) -> dict[str, int]:
     """Enrich stored documents; audit only those with secret candidates.
 
@@ -115,6 +117,9 @@ and ``documents`` an open DocumentStore, whose lifecycles the caller owns.
     process's (:func:`corpus.sources.registry`). Of the documents it refuses,
     ``ineligible`` counts all, ``declined`` those whose source is declared
     ``enrich: false`` and ``undeclared`` those whose source has no entry.
+
+    ``on_scanner`` is told which credential scanner each audit scan ran; the
+    default counts it as ``corpus.detect.leaks_scanner``.
     """
     if sources is None:
         sources = registry()
@@ -175,7 +180,7 @@ and ``documents`` an open DocumentStore, whose lifecycles the caller owns.
         except EnrichError as exc:
             log.warning("skipping %s: %s", doc_id, exc)
             return doc_id, None, False, None, str(exc)
-        candidates = scan.audit_candidates(content)
+        candidates = scan.audit_candidates(content, on_scanner=on_scanner)
         # The audit gets the full text even when the enricher caps its own input: a
         # secret can sit past the cap, and the candidates came from a full-body scan.
         result = None
@@ -266,6 +271,7 @@ def run_audit(
     limit: int = 0,
     audit=audit_secrets,
     model: str | None = None,
+    on_scanner: Callable[[Scanner], None] = telemetry.record_leaks_scanner,
 ) -> dict[str, int]:
     """Re-run only the LLM secret confirmation over documents with candidates.
 
@@ -276,6 +282,7 @@ def run_audit(
     narrowing it to enrichable sources would create blind spots exactly where
     nobody is looking. It already runs the model only on documents the
     deterministic detectors flagged, so the cost of the wider net is small.
+    ``on_scanner`` is as for :func:`run_enrich`.
     """
     model = model or settings.audit_model or settings.enrich_model
     if not model:
@@ -286,7 +293,7 @@ def run_audit(
             if limit and scanned >= limit:
                 break
             scanned += 1
-            candidates = scan.audit_candidates(content)
+            candidates = scan.audit_candidates(content, on_scanner=on_scanner)
             if not candidates:
                 continue
             text = _model_text(meta, content)

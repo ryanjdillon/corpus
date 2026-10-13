@@ -4,16 +4,32 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from unittest.mock import create_autospec
 
 import corpus_detect
 import pytest
 from corpus_detect import ENTITY_TYPES, detect, detect_spans, fingerprint_parts
+from corpus_detect.leaks import LeaksSettings
 
 
 def test_detect_merges_pii_and_leaks():
     counts = detect("My SSN is 900-12-3456 and deploy key AKIAIOSFODNN7EXAMPLE")
     assert "us_ssn" in counts  # from pii
     assert "aws_access_key" in counts  # from leaks
+
+
+def test_detect_reports_the_credential_scanner():
+    def callback(scanner: str) -> None: ...
+
+    on_scanner = create_autospec(callback)
+
+    detect(
+        "deploy key AKIAIOSFODNN7EXAMPLE",
+        on_scanner=on_scanner,
+        leaks_config=LeaksSettings(bin=""),
+    )
+
+    on_scanner.assert_called_once_with("local")
 
 
 def test_detect_empty():

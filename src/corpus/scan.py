@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Callable
 from contextlib import closing
 from typing import Any
 
 from corpus_detect import Span, detect, detect_spans, fingerprint_parts
+from corpus_detect.leaks import Scanner
 
 from .store import DocumentStore
 
@@ -61,15 +63,18 @@ def candidate_spans(content: str | None) -> list[Span]:
     return sorted(spans, key=lambda s: s.start)
 
 
-def audit_candidates(content: str | None) -> list[str]:
+def audit_candidates(
+    content: str | None, *, on_scanner: Callable[[Scanner], None] | None = None
+) -> list[str]:
     """Return the secret types worth an LLM confirmation for this document.
 
     The deterministic hits plus ``recovery_code`` when recovery wording is present.
-    Empty means the message is not worth auditing.
+    Empty means the message is not worth auditing. ``on_scanner`` is told which
+    credential scanner ran (``corpus_detect.leaks.scan``).
     """
     if not content:
         return []
-    candidates = sorted(detect(content))
+    candidates = sorted(detect(content, on_scanner=on_scanner))
     if _RECOVERY_HINT.search(content) and "recovery_code" not in candidates:
         candidates.append("recovery_code")
     return candidates

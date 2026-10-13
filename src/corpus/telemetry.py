@@ -2,8 +2,8 @@
 
 No-op unless OTEL_EXPORTER_OTLP_ENDPOINT is set, so local runs and tests do not
 export. Traces cover outgoing httpx calls; metrics add ingest counters and
-histograms, MCP tool-call counts, a corpus-size gauge, and each sync's backlog
-(:class:`SyncMetrics`). Heavy SDK/exporter imports are deferred to configure()
+histograms, MCP tool-call counts, the credential scanner each enrich audit ran,
+a corpus-size gauge, and each sync's backlog (:class:`SyncMetrics`). Heavy SDK/exporter imports are deferred to configure()
 so importing this module (for the metric instruments) stays cheap.
 """
 
@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Any
 from opentelemetry import metrics
 
 if TYPE_CHECKING:
-    from opentelemetry.metrics import Meter
+    from opentelemetry.metrics import Counter, Meter
 
     from .tiers import Tier
 
@@ -174,6 +174,12 @@ enrich_instruction_like = _meter.create_counter(
     unit="{document}",
     description="Enrichments whose free text reads like instructions to an AI, by model.",
 )
+leaks_scanner = _meter.create_counter(
+    "corpus.detect.leaks_scanner",
+    unit="{scan}",
+    description="Credential scans in the enrich secret audit, by the scanner that ran "
+    "(betterleaks, or local when unconfigured or fallen back).",
+)
 mcp_calls = _meter.create_counter(
     "corpus.mcp.calls",
     unit="{call}",
@@ -191,6 +197,12 @@ mcp_duration = _meter.create_histogram(
     unit="ms",
     description="MCP tool call latency, by server, tier and tool.",
 )
+
+
+def record_leaks_scanner(scanner: str, *, counter: Counter = leaks_scanner) -> None:
+    """Count one credential scan under the *scanner* that ran (``leaks.scan``'s
+    ``on_scanner`` callback)."""
+    counter.add(1, {"scanner": scanner})
 
 
 class SyncMetrics:

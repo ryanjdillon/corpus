@@ -10,8 +10,9 @@ sanitized`) unless `OTEL_SERVICE_NAME` says otherwise.
   embed latency, batch size), a corpus-size gauge by data-class (from the
   sensitive server), MCP tool calls by principal (see below), and enrichments
   whose free text reads like instructions to an AI
-  (`corpus.enrich.instruction_like`, by model), and each sync's backlog (see
-  below).
+  (`corpus.enrich.instruction_like`, by model), the credential scanner each
+  enrich audit ran (`corpus.detect.leaks_scanner`, see below), and each sync's
+  backlog (see below).
 
 It is a no-op when the endpoint is unset. Heavy SDK imports are deferred until
 telemetry is configured, and a one-shot process (an ingest run) flushes the
@@ -150,6 +151,36 @@ Pick the `embed_stale` window from the backlog a policy change creates: at the
 default 500 rows a run, it takes as many syncs as the changed rows divided by
 500, unless drained with `--reembed-limit 0` (see
 [Rolling out a policy change](tiers.md#rolling-out-a-policy-change)).
+
+## Credential scanner fallback
+
+The secret audit (`corpus enrich`, `corpus audit-secrets`, the pipeline's enrich
+stage) counts every document it scans in `corpus.detect.leaks_scanner`, with
+attribute `scanner`:
+
+- `betterleaks`: [Betterleaks](detect.md#settings) ran and its report was read,
+  unioned with the local rules.
+- `local`: only the local rules ran, because `CORPUS_LEAKS_BIN` is unset or
+  because the binary was missing, failed or timed out.
+
+A fallback narrows the audit to the local rules without failing it, so the
+counter is the only signal besides a single warning per process from
+`corpus_detect.leaks` (`betterleaks is configured but unavailable (missing |
+failed | timeout)`), which names the reason and never the content. Later
+fallbacks in the same process log at debug.
+
+The image sets `CORPUS_LEAKS_BIN=betterleaks`, so any `scanner="local"` from a
+job running it is a fallback. Each enrich or audit run is a one-shot process
+that exports its counter about once, under its own `service.instance.id`, so
+alert on any series being non-zero in the window rather than on a rate:
+
+```promql
+# The enrich audit fell back to the local rules while Betterleaks is configured.
+max by (job) (max_over_time(corpus_detect_leaks_scanner_total{scanner="local"}[1d])) > 0
+```
+
+Scope the selector (by `job` or `service_name`) to deployments that run the
+image or otherwise set `CORPUS_LEAKS_BIN`; elsewhere `local` is expected.
 
 ## Diagnosing a shedding enrichment endpoint
 

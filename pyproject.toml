@@ -18,7 +18,7 @@ dependencies = [
     # Deterministic PII/secret detection: packages/detect, released with corpus.
     # Development resolves it to the workspace member (tool.uv.sources); the image
     # installs both wheels in one pip install.
-    "corpus-detect>=0.1,<0.2",
+    "corpus-detect>=0.1.2,<0.2",
     # Pinned to the 1.x SDK: it ships FastMCP (mcp.server.fastmcp) with the
     # streamable-HTTP transport. 2.0 restructured the API and dropped that path.
     "mcp>=1.9,<2",

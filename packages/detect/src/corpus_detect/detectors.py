@@ -8,6 +8,7 @@ so a consumer can version what it stores by the detection logic that produced it
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from . import leaks, pii
@@ -18,13 +19,22 @@ from .span import Span
 ENTITY_TYPES = pii.ENTITY_TYPES | leaks.ENTITY_TYPES
 
 
-def detect(content: str | None) -> dict[str, int]:
+def detect(
+    content: str | None,
+    *,
+    on_scanner: Callable[[leaks.Scanner], None] | None = None,
+    leaks_config: leaks.LeaksSettings | None = None,
+) -> dict[str, int]:
     """Merge the identity and credential detectors' counts.
 
-    Returns a single ``{secret_type: count}`` map for one text.
+    Returns a single ``{secret_type: count}`` map for one text. ``on_scanner`` and
+    ``leaks_config`` are passed to :func:`leaks.scan`, which reports the credential
+    scanner that ran and defaults its settings to the environment's.
     """
     counts = dict(pii.scan(content).secret_counts)
-    for name, count in leaks.scan(content).items():
+    for name, count in leaks.scan(
+        content, config=leaks_config, on_scanner=on_scanner
+    ).items():
         counts[name] = counts.get(name, 0) + count
     return counts
 
