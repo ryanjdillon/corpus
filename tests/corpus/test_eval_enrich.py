@@ -121,8 +121,8 @@ def test_committed_fixtures_are_valid_and_stratified():
 
     assert len(records) >= 300
     assert ev.coverage_gaps(records) == []
-    # The generated hard cases come 15 apiece; the hand-written reference set is smaller.
-    minimum = {"references": 8}
+    # The generated hard cases come 15 apiece; the hand-written sets are smaller.
+    minimum = {"references": 8, "redteam": 10}
     for tag in ev.HARD_CASES:
         assert sum(r["hard_case"] == tag for r in records) >= minimum.get(tag, 15), tag
     bulky = sum(r["labels"]["category"] in ("promotional", "newsletter") for r in records)

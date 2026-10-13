@@ -64,35 +64,93 @@ class Flag(StrEnum):
 # is normalised first (see ``_normalise``), so the patterns see single spaces
 # and plain Latin letters.
 _OVERRIDE = "(?:previous|prior|above|earlier|preceding|existing|original)"
-_PATTERNS = (
+# Every pattern is linear in the text: no lazy or nested unbounded quantifier,
+# since a row is scanned at read time and its sender chooses its content. URLs
+# are tokenised once instead (see ``_url_carries_credentials``).
+#
+# Phrases, each starting at a word boundary; the boundary is checked once for
+# all of them, which halves the scan.
+_PHRASES = (
+    # A reminder that ends "if you have already renewed" addresses a person.
     (
-        r"\b(?:ignore|disregard|forget|override)\s(?:all\s)?(?:of\s)?"
+        r"(?:ignore|disregard|forget|override)\s(?:all\s)?(?:of\s)?"
         r"(?:the\s|your\s|any\s)?" + _OVERRIDE + r"\s"
         r"(?:instructions?|prompts?|directions|guidelines|rules)\b"
+        r"(?!\sif\syou\s(?:have|'ve)\salready\b)"
     ),
-    r"\b(?:reveal|print|show|repeat|ignore|override)\s(?:the\s|your\s)?system\sprompt\b",
-    r"\byou\sare\snow\s(?:an?\s)?(?:ai|llm|language\smodel|chatbot|assistant)\b",
+    r"(?:reveal|print|show|repeat|ignore|override)\s(?:the\s|your\s)?system\sprompt\b",
+    r"you\sare\snow\s(?:an?\s)?(?:ai|llm|language\smodel|chatbot|assistant)\b",
     # Without "now", only a bare "you are an AI", so "if you are an AI researcher"
     # or "an assistant professor" stays clear.
-    r"\byou\sare\s(?:an?\s)?(?:ai|llm|language\smodel|chatbot)(?:[\s-](?:assistant|agent))?(?![\s-]?\w)",
-    r"\bto\s(?:any|the)\s(?:ai|llm|assistant|agent)s?\s(?:reading|processing|summari[sz]ing)\b",
+    r"you\sare\s(?:an?\s)?(?:ai|llm|language\smodel|chatbot)(?:[\s-](?:assistant|agent))?(?![\s-]?\w)",
+    r"to\s(?:any|the)\s(?:ai|llm|assistant|agent)s?\s(?:reading|processing|summari[sz]ing)\b",
     # The lookahead ends the clause at the noun, so "for the assistant manager"
     # or "for the AI course" stays clear.
-    r"\b(?:new|updated|additional)\sinstructions?\sfor\s(?:the\s|any\s|an?\s)?(?:ai|llm|assistant|agent)s?(?![\s-]?\w)",
+    r"(?:new|updated|additional)\sinstructions?\sfor\s(?:the\s|any\s|an?\s)?(?:ai|llm|assistant|agent)s?(?![\s-]?\w)",
     (
-        r"\b(?:ignorer|se\sbort\sfr[aå]|glem)\s(?:alle\s|alt\s)?(?:de\s)?"
+        r"(?:ignorer|se\sbort\sfr[aå]|glem)\s(?:alle\s|alt\s)?(?:de\s)?"
         r"(?:tidligere|forrige|ovenst[aå]ende|eksisterande|eksisterende)\s"
         r"(?:instruksjon(?:er|ar|ene|ane)?|retningslinjer|reglar|regler)\b"
     ),
-    r"\b(?:du|De)\ser\s(?:n[aå]\s|no\s)?(?:en\s|ein\s)?(?:ai|ki)-?(?:assistent|agent)\b",
-    r"\b(?:vis|gjenta|ignorer)\s(?:din\s)?systemprompt(?:en)?\b",
+    r"(?:du|De)\ser\s(?:n[aå]\s|no\s)?(?:en\s|ein\s)?(?:ai|ki)-?(?:assistent|agent)\b",
+    # "Til KI-assistenten som leser dette": the Norwegian address to an AI reader.
+    # It names an assistant, an agent or "the AI" (KI-en), so a bare "fram til KI
+    # som leser bedre" stays clear, and "velkommen til" or "invitasjon til" is
+    # marketing, not an address.
+    (
+        r"til\s(?<!velkommen\stil\s)(?<!velkomen\stil\s)(?<!invitasjon\stil\s)"
+        r"(?:alle\s|den\s|en\s|ein\s)?(?:ai|ki)"
+        r"(?:-?(?:assistent|agent)(?:en|er|ar|ene|ane)?|-en)\s(?:som\s)?"
+        r"(?:leser|les|behandler|handsamar|oppsummerer|samanfattar)\b"
+    ),
+    r"(?:vis|gjenta|ignorer)\s(?:din\s)?systemprompt(?:en)?\b",
+)
+# Chat-template, tool-call and token syntax, which needs no word boundary.
+_SYNTAX = (
     r"<\|?(?:im_start|im_end|system|tool_call|function_call)\|?>",
     r"</?tool_call>",
     r"\[/?inst\]|<</?sys>>",
     r"\"(?:tool_calls?|function_call)\"\s?:",
-    r"\bhttps?://[^\s/:@]+:[^\s/@]+@",
+    # OpenAI's tool-call item ({"function": {"name": ...}}) and XML function-call
+    # markup; a bare "name" or "arguments" key is ordinary JSON and stays clear.
+    r"\"function\"\s?:\s?\{\s?\"name\"\s?:",
+    r"</?function_calls>|<invoke\sname=",
+    # A GitHub token in its exact shape, anywhere: a path or slug that merely
+    # starts "ghs_" or "github_pat_" has underscores or the wrong length.
+    r"(?-i:(?<![A-Za-z0-9_])gh[pousr]_[A-Za-z0-9]{36}(?![A-Za-z0-9_]))",
+    r"(?-i:(?<![A-Za-z0-9_])github_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59}(?![A-Za-z0-9_]))",
 )
-_INSTRUCTION_LIKE = re.compile("|".join(_PATTERNS), re.IGNORECASE)
+_INSTRUCTION_LIKE = re.compile(
+    r"\b(?:" + "|".join(_PHRASES) + ")|" + "|".join(_SYNTAX), re.IGNORECASE
+)
+
+# URLs are matched greedily, once each, and then checked piecewise: a lazy scan
+# from every "https://" to a later marker is quadratic in a run without spaces.
+_URL = re.compile(r"\bhttps?://\S+", re.IGNORECASE)
+# User and password before a host; "//" bounds each try, so a scan stays linear.
+_URL_USERINFO = re.compile(r"https?://[^/:@]+:[^/@]+@", re.IGNORECASE)
+# A credential in the query string. A bare ``token=`` is a password-reset or
+# unsubscribe link and stays clear.
+_URL_SECRET = re.compile(
+    r"[?&](?:access_token|api_?key|client_secret|password|passwd)=([^&#]+)", re.IGNORECASE
+)
+# A documentation placeholder rather than a value: YOUR_API_KEY_HERE, {api_key},
+# ${TOKEN}, <your-key>. Trailing markdown or sentence punctuation is ignored.
+_PLACEHOLDER = re.compile(r"[A-Z_]+|\$?\{+[^{}]*\}+|<[^<>]*>")
+_TRAILING = ")].,;:!?'\""
+
+
+def _url_carries_credentials(text: str) -> bool:
+    """Whether a URL in *text* carries a user and password or a query credential."""
+    for url in _URL.findall(text):
+        if _URL_USERINFO.search(url):
+            return True
+        for m in _URL_SECRET.finditer(url):
+            value = m.group(1).rstrip(_TRAILING)
+            if len(value) >= 8 and not _PLACEHOLDER.fullmatch(value):
+                return True
+    return False
+
 
 # Cyrillic and Greek letters that render like Latin ones, so a homoglyph swap
 # ("Ignоre" with a Cyrillic o) cannot slip past the Latin patterns.
@@ -103,11 +161,21 @@ _CONFUSABLES = str.maketrans(
 _SPACE = re.compile(r"\s+")
 
 
+# Reply-quote markers at the start of a line ("> ", "> > "), which would
+# otherwise sit inside a phrase a quoted reply wraps across lines.
+_QUOTE_MARKERS = re.compile(r"^[ \t]*(?:>[ \t]?)+", re.MULTILINE)
+
+
 def _normalise(text: str) -> str:
     """Fold *text* to what the patterns expect: NFKC, entities decoded, invisible
-    format characters removed, homoglyphs mapped to Latin, whitespace single."""
+    format characters removed, reply-quote markers dropped, homoglyphs mapped to
+    Latin, whitespace single."""
     text = unicodedata.normalize("NFKC", html.unescape(text))
-    text = "".join(c for c in text if unicodedata.category(c) != "Cf")
+    # Classify each distinct character once, so a long text costs C-speed passes.
+    invisible = {ord(c): None for c in set(text) if unicodedata.category(c) == "Cf"}
+    if invisible:
+        text = text.translate(invisible)
+    text = _QUOTE_MARKERS.sub("", text)
     return _SPACE.sub(" ", text.translate(_CONFUSABLES))
 
 
@@ -125,14 +193,55 @@ def _texts(value: Any) -> Iterable[str]:
 
 def instruction_like(text: str) -> bool:
     """Whether *text* reads like instructions addressed to an AI."""
-    return _INSTRUCTION_LIKE.search(_normalise(text)) is not None
+    text = _normalise(text)
+    return _INSTRUCTION_LIKE.search(text) is not None or _url_carries_credentials(text)
+
+
+#: Characters kept from each side of a field boundary when checking for a phrase
+#: split across two fields; longer than any pattern's match.
+_SEAM = 256
+
+
+def _split_across(values: list[str]) -> bool:
+    """Whether a phrase split across two fields (a subject that ends "ignore all
+    previous", a body that starts "instructions") reads like instructions. Only
+    the seam is scanned, in both orders, since a row's field order is arbitrary.
+    The sides are joined by a line break, so a reply-quote marker opening the
+    second side is still a line start and is dropped."""
+    return any(
+        instruction_like(a[-_SEAM:] + "\n" + b[:_SEAM])
+        for i, a in enumerate(values) for j, b in enumerate(values) if i != j
+    )
 
 
 def flags(row: Mapping[str, Any], untrusted_fields: Iterable[str]) -> list[str]:
     """The flags for one row, from its untrusted fields only."""
-    if any(instruction_like(t) for f in untrusted_fields for t in _texts(row.get(f))):
+    fields = list(untrusted_fields)
+    if any(instruction_like(t) for f in fields for t in _texts(row.get(f))):
+        return [Flag.instruction_like.value]
+    if _split_across(list(_seam_texts(row, fields))):
         return [Flag.instruction_like.value]
     return []
+
+
+def _seam_texts(row: Mapping[str, Any], fields: Iterable[str]) -> Iterable[str]:
+    """The strings a split phrase can span: each untrusted field's own string, and
+    the strings of its mappings at any depth (a fetched message's subject sits in
+    ``meta`` beside its ``content``). Unlike ``_texts``, list items are left out:
+    they are model-written entities, each phrase whole in itself, and pairing
+    every item with every other would cost quadratic time in a long list."""
+    for f in fields:
+        yield from _mapping_strings(row.get(f))
+
+
+def _mapping_strings(value: Any) -> Iterable[str]:
+    """The non-empty strings in *value*, walking mappings but not lists."""
+    if isinstance(value, str):
+        if value:
+            yield value
+    elif isinstance(value, Mapping):
+        for v in value.values():
+            yield from _mapping_strings(v)
 
 
 def wrap(
