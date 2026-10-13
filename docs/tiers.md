@@ -381,8 +381,9 @@ The digest covers `facts` only through `fields`, and `place_name` only when
 keeps its digest and is not re-projected. A tier on
 the default `fields` gains the column, so its digest changes and every row is
 stale after the upgrade. Its `one_line`s do not change, so re-projecting embeds
-nothing: run `corpus sync --reproject` once after the upgrade rather than wait
-for the capped daily syncs (see [Rolling out a policy change](#rolling-out-a-policy-change)).
+nothing: run `corpus sync --reproject` once per source store after the
+upgrade, rather than serve placeholders until the next scheduled sync (see
+[Rolling out a policy change](#rolling-out-a-policy-change)).
 
 ## The message link: `uri`
 
@@ -574,7 +575,15 @@ upgrade from a release before `policy_hash`:
    and `search` returns nothing.
 2. **Run `corpus sync --reproject`** (or wait for the scheduled sync, which
    re-projects every stale row too). The text phase replaces every placeholder
-   in one run, in minutes, with no embedding calls.
+   from its source store in one run, in minutes, with no embedding calls. It
+   reads the documents from the source store the sync is configured with
+   (`CORPUS_DATABASE_URL` and `CORPUS_DB_SCHEMA`), so a sanitized tier fed from
+   several source stores (one database or schema per mailbox, say) needs one
+   run per source store, each with that store's settings: run each mailbox's
+   own sync job with `corpus sync --reproject`. A run against one store
+   re-projects only that store's rows. Leave out `--limit`, which caps a
+   `--reproject` run too. The embedding phase, by contrast, covers the whole
+   tier, so the drain in step 3 runs once per tier.
 3. **Let the embeddings catch up.** Each sync, and each `corpus pipeline` sync
    stage, re-embeds up to `CORPUS_SYNC_REEMBED_LIMIT` rows; at 500 a run, the
    rows of a 50,000-row archive whose summaries changed take up to 100 syncs.
