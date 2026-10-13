@@ -198,3 +198,93 @@ def test_a_digest_that_is_not_hex_is_refused(monkeypatch, conn):
     policy.digest.return_value = "x' OR true --"
     with pytest.raises(ValueError, match="not a policy digest"):
         sanitized_store.SanitizedStore(dsn=DSN, schema="corpus", projection=policy)
+
+
+# --- the re-embed lock --------------------------------------------------------
+
+
+def _lock_calls(cursor):
+    """The advisory-lock statements run, as (function, key)."""
+    return [
+        (c.args[0].split("(")[0].removeprefix("SELECT "), c.args[1][0])
+        for c in cursor.execute.call_args_list
+        if "advisory" in c.args[0]
+    ]
+
+
+def test_the_re_embed_lock_is_keyed_on_the_table_and_released_after(store, cursor):
+    cursor.execute.reset_mock()
+    cursor.fetchall.return_value = [(True,)]
+
+    with store.reembed_lock() as held:
+        assert held is True
+        assert _lock_calls(cursor) == [("pg_try_advisory_lock", "corpus.messages reembed")]
+
+    assert _lock_calls(cursor)[1:] == [("pg_advisory_unlock", "corpus.messages reembed")]
+
+
+def test_a_re_embed_lock_held_elsewhere_is_not_released(store, cursor):
+    cursor.execute.reset_mock()
+    cursor.fetchall.return_value = [(False,)]
+
+    with store.reembed_lock() as held:
+        assert held is False
+
+    assert [f for f, _ in _lock_calls(cursor)] == ["pg_try_advisory_lock"]
+
+
+def test_the_re_embed_lock_is_released_on_error(store, cursor):
+    cursor.execute.reset_mock()
+    cursor.fetchall.return_value = [(True,)]
+
+    with pytest.raises(RuntimeError, match="embedder down"), store.reembed_lock():
+        raise RuntimeError("embedder down")
+
+    assert [f for f, _ in _lock_calls(cursor)] == ["pg_try_advisory_lock", "pg_advisory_unlock"]
+
+
+def test_a_lost_connection_does_not_mask_the_error(store, cursor):
+    # The session's locks went with the connection, so the unlock may fail.
+    cursor.fetchall.return_value = [(True,)]
+
+    with pytest.raises(RuntimeError, match="embedder down"), store.reembed_lock():
+        cursor.execute.side_effect = psycopg.OperationalError("connection lost")
+        raise RuntimeError("embedder down")
+
+
+def test_a_waiting_re_embed_lock_blocks_on_one_held_elsewhere(store, cursor):
+    cursor.execute.reset_mock()
+    cursor.fetchall.side_effect = [[(False,)], [("",)], [(True,)]]
+    on_wait = create_autospec(lambda: None)
+
+    with store.reembed_lock(wait=True, on_wait=on_wait) as held:
+        assert held is True
+        on_wait.assert_called_once_with()
+
+    assert _lock_calls(cursor) == [
+        ("pg_try_advisory_lock", "corpus.messages reembed"),
+        ("pg_advisory_lock", "corpus.messages reembed"),
+        ("pg_advisory_unlock", "corpus.messages reembed"),
+    ]
+
+
+def test_a_waiting_re_embed_lock_free_at_once_does_not_block(store, cursor):
+    cursor.execute.reset_mock()
+    cursor.fetchall.return_value = [(True,)]
+    on_wait = create_autospec(lambda: None)
+
+    with store.reembed_lock(wait=True, on_wait=on_wait) as held:
+        assert held is True
+
+    on_wait.assert_not_called()
+    assert [f for f, _ in _lock_calls(cursor)] == ["pg_try_advisory_lock", "pg_advisory_unlock"]
+
+
+def test_a_waiting_re_embed_lock_is_released_on_error(store, cursor):
+    cursor.execute.reset_mock()
+    cursor.fetchall.side_effect = [[(False,)], [("",)], [(True,)]]
+
+    with pytest.raises(RuntimeError, match="embedder down"), store.reembed_lock(wait=True):
+        raise RuntimeError("embedder down")
+
+    assert [f for f, _ in _lock_calls(cursor)][-1] == "pg_advisory_unlock"

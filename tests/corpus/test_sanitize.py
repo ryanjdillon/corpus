@@ -6,9 +6,11 @@ sync. It writes a real sanitized store, so those tests run in the Docker tier.
 
 from __future__ import annotations
 
+import threading
 from datetime import UTC, datetime
 from unittest.mock import create_autospec
 
+import psycopg
 import pytest
 
 from corpus import envelope, sanitize, tiers
@@ -18,7 +20,7 @@ from corpus.enrichment import SensitivityLevel
 from corpus.envelope import instruction_like
 from corpus.models import Classification, Record
 from corpus.sanitize import Policy, Redaction
-from corpus.sanitized_store import COLS, PENDING, UNTRUSTED_COLS, SanitizedStore
+from corpus.sanitized_store import COLS, PENDING, UNTRUSTED_COLS, Backlog, SanitizedStore
 from corpus.store import DocumentStore, to_document
 
 DIM = 16  # the pg fixture's embedding dimension (conftest.TEST_DIM)
@@ -1161,3 +1163,133 @@ def test_rows_hashed_before_the_column_keep_their_vectors(pg, embedder, document
 
     assert r == _counts(scanned=1, skipped=1)
     embedder.embed.assert_not_called()
+
+
+# --- one re-embedding sync per tier ------------------------------------------------
+
+
+@pytest.fixture
+def locked_store():
+    """A spec-bound SanitizedStore with nothing to sync, whose re-embed lock is taken."""
+    sanitized = create_autospec(SanitizedStore, instance=True)
+    sanitized.synced_state.return_value = {}
+    sanitized.backlog.return_value = Backlog(0, 3)
+    sanitized.stale_embeddings.return_value = [("d1", "a"), ("d2", "b")]
+    sanitized.save_embeddings.side_effect = lambda digest, rows: len(rows)
+    sanitized.reembed_lock.return_value.__enter__.return_value = True
+    return sanitized
+
+
+def test_a_tier_another_sync_is_re_embedding_is_skipped(locked_store, embedder, documents):
+    locked_store.reembed_lock.return_value.__enter__.return_value = False
+
+    r = sanitize.run_sync(locked_store, documents=documents(), embedder=embedder,
+                          reembed_limit=0)
+
+    assert r == {**_counts(embed_stale=3), "reembed_skipped": 1}
+    embedder.embed.assert_not_called()
+    locked_store.stale_embeddings.assert_not_called()
+
+
+def test_the_re_embed_lock_is_held_across_the_phase(locked_store, embedder, documents):
+    r = sanitize.run_sync(locked_store, documents=documents(), embedder=embedder,
+                          reembed_limit=0)
+
+    assert r == _counts(embedded=2, embed_stale=3)
+    lock = locked_store.reembed_lock.return_value
+    lock.__exit__.assert_called_once_with(None, None, None)
+
+
+def test_the_re_embed_lock_is_released_when_the_embedder_fails(
+    locked_store, embedder, documents
+):
+    embedder.embed.side_effect = RuntimeError("embedder down")
+
+    with pytest.raises(RuntimeError, match="embedder down"):
+        sanitize.run_sync(locked_store, documents=documents(), embedder=embedder,
+                          reembed_limit=0)
+
+    (exc_type, _, _), _ = locked_store.reembed_lock.return_value.__exit__.call_args
+    assert exc_type is RuntimeError
+
+
+@pytest.mark.parametrize("wait", [False, True])
+def test_the_re_embed_lock_waits_only_when_asked(locked_store, embedder, documents, wait):
+    on_wait = create_autospec(lambda: None)
+
+    sanitize.run_sync(locked_store, documents=documents(), embedder=embedder,
+                      reembed_limit=0, reembed_wait=wait, on_reembed_wait=on_wait)
+
+    locked_store.reembed_lock.assert_called_once_with(wait=wait, on_wait=on_wait)
+
+
+def test_no_embedding_phase_takes_no_lock(locked_store, embedder, documents):
+    sanitize.run_sync(locked_store, documents=documents(), embedder=embedder)
+
+    locked_store.reembed_lock.assert_not_called()
+
+
+@pytest.mark.integration
+def test_concurrent_syncs_of_a_tier_embed_each_row_once(pg, store, embedder, documents):
+    docs = [_people(i) for i in range(4)]
+    _stale(store, embedder, documents, docs)
+    other = create_autospec(Embedder, instance=True)
+    other.embed.side_effect = lambda texts: [[0.2] * DIM for _ in texts]
+    nested = []
+
+    with SanitizedStore(dsn=pg, schema="corpus") as second:
+
+        def embed_and_race(texts):
+            # The second sync runs while the first is in its embedding phase.
+            if not nested:
+                nested.append(sanitize.run_sync(second, documents=documents(*docs),
+                                                embedder=other, reembed_limit=0))
+            return [[0.1] * DIM for _ in texts]
+
+        embedder.embed.side_effect = embed_and_race
+        first = sanitize.run_sync(store, documents=documents(*docs), embedder=embedder,
+                                  reembed_limit=2)
+
+        # Its text phase ran; only its re-embedding was skipped.
+        assert nested == [{**_counts(scanned=4, skipped=4, embed_stale=4), "reembed_skipped": 1}]
+        other.embed.assert_not_called()
+        assert first == _counts(scanned=4, synced=4, reprojected=4, embedded=2, embed_stale=2)
+
+        # The lock went with the first sync's phase, so the next one proceeds.
+        after = sanitize.run_sync(second, documents=documents(*docs), embedder=other,
+                                  reembed_limit=0)
+
+    assert after == _counts(scanned=4, skipped=4, embedded=2)
+    embedded = [text for m in (embedder, other) for c in m.embed.call_args_list
+                for text in c.args[0]]
+    assert sorted(embedded) == [f"a friend asks about item {i}" for i in range(4)]
+
+
+@pytest.mark.integration
+def test_a_waiting_sync_embeds_once_the_lock_is_released(pg, store, embedder, documents):
+    docs = [_people(i) for i in range(4)]
+    _stale(store, embedder, documents, docs)
+    waiting, result = threading.Event(), []
+
+    with psycopg.connect(pg, autocommit=True) as holder:
+        holder.execute("SELECT pg_advisory_lock(hashtext('corpus.messages reembed'))")
+
+        def drain():
+            result.append(sanitize.run_sync(
+                store, documents=documents(*docs), embedder=embedder, reembed_limit=0,
+                reembed_wait=True, on_reembed_wait=waiting.set,
+            ))
+
+        # Daemon, so a lock that is never granted fails the test instead of hanging it.
+        sync = threading.Thread(target=drain, daemon=True)
+        sync.start()
+        assert waiting.wait(timeout=10), "the sync never reached the held lock"
+        sync.join(timeout=0.5)
+        assert sync.is_alive(), "the sync did not wait for the lock"
+        embedder.embed.assert_not_called()
+
+        holder.execute("SELECT pg_advisory_unlock(hashtext('corpus.messages reembed'))")
+        sync.join(timeout=10)
+
+    assert not sync.is_alive(), "the sync did not resume once the lock was released"
+    assert result == [_counts(scanned=4, synced=4, reprojected=4, embedded=4)]

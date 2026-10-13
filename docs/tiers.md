@@ -419,6 +419,25 @@ It takes the tier's embed-stale rows whatever `--source` says: a policy change
 makes every source's rows stale at once, and the cap bounds the embedder's
 load per run either way.
 
+One sync re-embeds a tier at a time. Several syncs can share a tier (one per
+source, scheduled together), and each would otherwise take the same newest
+embed-stale rows and embed them, with all but one write discarded. The
+embedding phase first takes a session-level advisory lock keyed on the tier's
+table (`pg_try_advisory_lock(hashtext('<schema>.messages reembed'))`, on the
+sync's own connection). A sync that finds it held skips the phase rather than
+wait: it embeds nothing, its counts carry `reembed_skipped 1`, and `corpus
+sync` and `corpus pipeline` print `re-embedding skipped: another sync of this
+tier holds the re-embed lock`. Its rows are left for the next sync. A
+scheduled sync that skips still exits 0, but a `corpus sync` given an explicit
+`--reembed-limit` exits 1 when its phase is skipped, so a requested drain never
+fails silently. `corpus sync --reembed-wait` waits for the lock instead (a
+blocking `pg_advisory_lock` on the same key), first printing `waiting for the
+re-embed lock held by another sync of this tier…`, and is never skipped. The
+lock is released when the phase ends, on error too, and with the connection should
+the sync die. The text phase takes no lock, so it never waits on an embedder,
+and the compare-and-set on each stored vector still guards a re-projection
+that races a re-embedding.
+
 The text phase is cheap. Projecting a row is the `pii` scan and the entity
 matching on three short enrichment fields, about half a millisecond, so an
 archive of 50,000 rows is re-projected in well under a minute of CPU plus one
@@ -506,9 +525,11 @@ upgrade from a release before `policy_hash`:
    rows of a 50,000-row archive whose summaries changed take up to 100 syncs.
    Until a row is reached, it is served with its current text but left out of
    `search` (it stays reachable by keyword and filter), so drain the backlog
-   promptly: run `corpus sync --reembed-limit 0` in a window when a GPU
-   embedder is available, rather than letting the capped runs spread it over
-   days.
+   promptly: run `corpus sync --reembed-limit 0 --reembed-wait` in a window
+   when a GPU embedder is available, rather than letting the capped runs
+   spread it over days. `--reembed-wait` makes the drain wait for a scheduled
+   sync that is re-embedding at the time instead of skipping; without it, a
+   drain that finds the lock held exits 1.
 
 A table from before `embedded_policy_hash` gains the column the first time a
 sync opens it, set to each row's `policy_hash`: every vector the earlier code
