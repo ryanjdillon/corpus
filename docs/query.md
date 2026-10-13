@@ -6,6 +6,15 @@ spec into SQL from a fixed table of expressions. The spec is a `msgspec` struct,
 so its JSON Schema (`msgspec.json.schema(QuerySpec)`) can serve as a tool's input
 schema, and `query.parse_spec` validates decoded JSON into it.
 
+A field typed as a union of a `pattern`-constrained string and a list (the
+country filters, which take one code or a list) cannot carry the pattern as a
+`msgspec.Meta` constraint: msgspec up to 0.22.0 frees such a type wrongly,
+corrupting the heap, which surfaces as a segfault at interpreter exit. Those
+fields check the code in `Filters.__post_init__` and put the pattern in the
+schema only, through `extra_json_schema`, adding no length keyword, so the tool
+schema is unchanged. `tests/corpus/test_struct_types.py` refuses the shape in
+any struct.
+
 ```json
 {
   "filters": {

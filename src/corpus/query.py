@@ -52,8 +52,16 @@ _Short = Annotated[str, msgspec.Meta(min_length=1, max_length=200)]
 #: The most values a list filter takes. Checked here rather than as the schema's
 #: ``maxItems``, which the query model's tool schema does not otherwise use.
 MAX_ANY_OF = 50
-#: An ISO 3166-1 alpha-2 country code, in either case ("US", "no").
-_Country = Annotated[str, msgspec.Meta(pattern=r"^[A-Za-z]{2}$")]
+#: An ISO 3166-1 alpha-2 country code, in either case ("US", "no"). The code is
+#: checked in ``Filters.__post_init__`` and the pattern only advertised in the
+#: schema: msgspec (through 0.22.0) corrupts the heap when it frees a union that
+#: holds both a ``pattern`` str and a list, as ``_Country | list[_Country]`` does.
+#: No length keyword either, so the tool schema stays the pattern alone; ``type``
+#: is repeated so the merged schema keeps its usual key order.
+_COUNTRY_RE = re.compile(r"[A-Za-z]{2}")
+_Country = Annotated[
+    str, msgspec.Meta(extra_json_schema={"type": "string", "pattern": r"^[A-Za-z]{2}$"})
+]
 _DURATION_RE = re.compile(r"^\s*(\d+)\s*([smhdw])\s*$")
 _UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
 
@@ -191,6 +199,11 @@ class Filters(msgspec.Struct, forbid_unknown_fields=True, frozen=True, kw_only=T
                 raise ValueError(
                     f"filter {name!r} lists {len(value)} values; at most {MAX_ANY_OF}"
                 )
+        for name in _COUNTRIES:
+            value = self.get(name)
+            codes = value if isinstance(value, list) else [] if value is None else [value]
+            if bad := [c for c in codes if not _COUNTRY_RE.fullmatch(c)]:
+                raise ValueError(f"filter {name!r}: {bad[0]!r} is not a two-letter country code")
 
     def get(self, name: str) -> Any:
         """The value of the filter named *name* (as a spec writes it)."""

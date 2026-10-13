@@ -171,7 +171,9 @@ def test_a_policy_cannot_reach_a_dimension_the_store_lacks():
         ({"group_by": ["month", "month"]}, "names a dimension twice"),
         ({"group_by": ["sender"]}, "Invalid enum value 'sender'"),
         ({"text": ""}, "length >= 1"),
-        ({"filters": {"facts.travel.destination_country": "USA"}}, "matching regex"),
+        ({"filters": {"facts.travel.destination_country": "USA"}}, "'USA' is not a two-letter"),
+        ({"filters": {"facts.travel.destination_country": "U1"}}, "'U1' is not a two-letter"),
+        ({"filters": {"facts.travel.origin_country": ["NO", "1x"]}}, "'1x' is not a two-letter"),
         ({"filters": {"facts.travel.destination_country": []}}, "is an empty list"),
         ({"filters": {"facts.travel.start": {"since": "spring"}}}, "invalid date"),
         ({"filters": {"facts.travel.price": 3}}, "unknown field `facts.travel.price`"),
@@ -206,6 +208,46 @@ def test_the_spec_has_a_json_schema_for_tool_input():
     schema = msgspec.json.schema(QuerySpec)
     filters = schema["$defs"]["Filters"]["properties"]
     assert set(filters) == set(FILTER_VALUES)
+
+
+#: A country filter's schema, exactly as the tool has always advertised it: the
+#: pattern alone, with no length keyword for a model provider to trip on.
+_COUNTRY_SCHEMA = (
+    b'{"anyOf":[{"type":"string","pattern":"^[A-Za-z]{2}$"},'
+    b'{"type":"array","items":{"type":"string","pattern":"^[A-Za-z]{2}$"}},'
+    b'{"type":"null"}],"default":null}'
+)
+
+
+@pytest.mark.parametrize("name", ["facts.travel.origin_country",
+                                  "facts.travel.destination_country"])
+def test_a_country_filter_advertises_only_the_pattern(name):
+    filters = msgspec.json.schema(QuerySpec)["$defs"]["Filters"]["properties"]
+    assert msgspec.json.encode(filters[name]) == _COUNTRY_SCHEMA
+
+
+def _converted(country):
+    return parse_spec({"filters": {"facts.travel.destination_country": country}})
+
+
+def _decoded(country):
+    raw = msgspec.json.encode({"filters": {"facts.travel.destination_country": country}})
+    return msgspec.json.decode(raw, type=QuerySpec)
+
+
+@pytest.mark.parametrize("load", [_converted, _decoded], ids=["convert", "decode"])
+@pytest.mark.parametrize(
+    "country", ["NO\n", "N", "NOR", "N1", "", "\u00c5L", ["no", "NO\n"], ["US", "1x"]]
+)
+def test_a_country_code_is_two_ascii_letters(load, country):
+    with pytest.raises(msgspec.ValidationError, match="is not a two-letter country code"):
+        load(country)
+
+
+@pytest.mark.parametrize("load", [_converted, _decoded], ids=["convert", "decode"])
+@pytest.mark.parametrize("country", ["us", "No", "NO", ["no", "SE"]])
+def test_a_country_code_is_taken_in_either_case(load, country):
+    assert load(country).filters.travel_destination_country == country
 
 
 @pytest.mark.parametrize(
