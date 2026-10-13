@@ -1,6 +1,6 @@
 """Command-line entrypoints for the corpus service.
 
-Subcommands: serve <tier>, pipeline, ingest, scan, scan-gate, enrich, sync,
+Subcommands: serve <tier>, pipeline, ingest, scan, enrich, sync,
 audit-secrets, export. ``mcp`` and ``index`` are deprecated aliases of ``serve``.
 """
 
@@ -384,24 +384,6 @@ def scan(source: str | None, account: str | None, limit: int, json_out: str | No
 
         Path(json_out).write_text(json.dumps(report, indent=2))
         click.echo(f"wrote {json_out}")
-
-
-@main.command(name="scan-gate")
-def scan_gate_cmd() -> None:
-    """Run the egress gate behind the configured gateway adapter.
-
-    The gateway sends LLM request bodies here on the way to model providers. The
-    gate redacts PII/secrets (redact-by-default), refuses the highest-confidence
-    classes and oversized batch bodies, and passes local models unscanned.
-    Reports types + counts, never values.
-    """
-    telemetry.configure("corpus-scan-gate")
-    from .scan_gate import serve
-
-    try:
-        serve()
-    finally:
-        telemetry.shutdown()
 
 
 if __name__ == "__main__":

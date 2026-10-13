@@ -28,8 +28,9 @@ other than `localhost`, `127.0.0.1`, or `::1` unless `--allow-remote` is passed
 (exit 2). Going through the gateway or any other machine needs the flag.
 `--fake` never touches the network.
 
-**Through the gateway.** The gateway's scan gate rejects bodies containing a
-`private_key` with a 403 (`scan_gate_block_types`). Those fixtures (`syn-0082`,
+**Through the gateway.** The gateway's
+[scan-gate](https://github.com/ryanjdillon/scan-gate) rejects bodies containing a
+`private_key` with a 403 (its block types). Those fixtures (`syn-0082`,
 `syn-0089`, and the like) therefore show up as `EnrichError` failures in the
 output, and the run measures the gate plus the model rather than the model alone.
 Run against the model server directly, or expect those failures and compare runs
@@ -289,4 +290,5 @@ configuration (no gitleaks or Betterleaks config, no GitHub secret-scanning
 config, and no scanner step in CI; Betterleaks only runs inside the service as
 a detector), so there is no allowlist to extend. If a scanner is added, allowlist
 that one path rather than loosening the rules, and do not relax the
-gateway's `scan_gate.py` or the detectors (`corpus_detect`) to make it pass.
+gateway's [scan-gate](https://github.com/ryanjdillon/scan-gate) or the detectors
+(`corpus_detect`) to make it pass.

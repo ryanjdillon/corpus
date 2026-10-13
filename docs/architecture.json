@@ -7,7 +7,7 @@
     "quality_profile": "showcase",
     "repository": {
       "url": "https://github.com/ryanjdillon/corpus",
-      "revision": "aea7eb13d235b32c84ef1fcc4f407a7d785fd6a9"
+      "revision": "076f13481723fbd9ab0f46564d02595298954628"
     },
     "viewBox": [
       1320,
@@ -31,7 +31,7 @@
       "sources": [
         {
           "path": "src/corpus/cli.py",
-          "label": "serve <tier>|pipeline|ingest|scan|scan-gate|enrich|sync"
+          "label": "serve <tier>|pipeline|ingest|scan|enrich|sync"
         },
         {
           "path": "src/corpus/pipeline.py",
@@ -263,38 +263,10 @@
         {
           "path": "packages/detect/src/corpus_detect/span.py",
           "label": "Span / resolve_overlaps"
-        }
-      ]
-    },
-    {
-      "id": "egress-gate",
-      "type": "backend",
-      "label": "scan-gate",
-      "sublabel": "egress policy + gateway adapter",
-      "pos": [
-        280,
-        470
-      ],
-      "size": [
-        200,
-        68
-      ],
-      "sources": [
-        {
-          "path": "src/corpus/scan_gate.py",
-          "label": "adapter selection"
-        },
-        {
-          "path": "src/corpus/egress/policy.py",
-          "label": "inspect → pass / mask / refuse"
-        },
-        {
-          "path": "src/corpus/egress/envoy.py",
-          "label": "Envoy ext_proc adapter"
         },
         {
           "path": "packages/detect/src/corpus_detect/redaction.py",
-          "label": "corpus-detect: detect_spans → masked text"
+          "label": "corpus-detect: redact → [REDACTED:<type>]"
         }
       ]
     },
@@ -464,27 +436,6 @@
       ]
     },
     {
-      "id": "gate-detectors",
-      "from": "egress-gate",
-      "to": "scanning",
-      "label": "reuses corpus-detect redaction",
-      "variant": "dashed",
-      "labelDy": -46
-    },
-    {
-      "id": "gate-gw",
-      "from": "egress-gate",
-      "to": "gateway",
-      "label": "redacted body → untrusted provider",
-      "variant": "emphasis",
-      "fromSide": "bottom",
-      "toSide": "left",
-      "labelAt": [
-        380,
-        585
-      ]
-    },
-    {
       "id": "cli-ingest",
       "from": "cli",
       "to": "fetchers",
@@ -516,15 +467,14 @@
       "title": "Derived branches",
       "items": [
         "enrichment reads documents, calls the model (guided JSON), upserts a derived enrichments table in the same store",
-        "secret scan = deterministic pii + leaks (Betterleaks), packaged alone as corpus-detect (packages/detect); enrich_batch has the model confirm flagged candidates",
-        "scan-gate applies a gateway-neutral egress policy (the same pii + leaks detectors) behind a gateway adapter (Envoy ext_proc today), redacting or refusing request bodies before they reach a model provider; local models pass unscanned"
+        "secret scan = deterministic pii + leaks (Betterleaks), packaged alone as corpus-detect (packages/detect); enrich_batch has the model confirm flagged candidates"
       ]
     },
     {
       "dot": "violet",
       "title": "Query + entrypoints",
       "items": [
-        "search (HNSW + SQL) behind serving, which builds one MCP server per tier; cli runs serve <tier>, ingest, scan, scan-gate, enrich, sync, audit-secrets"
+        "search (HNSW + SQL) behind serving, which builds one MCP server per tier; cli runs serve <tier>, ingest, scan, enrich, sync, audit-secrets"
       ]
     }
   ]
