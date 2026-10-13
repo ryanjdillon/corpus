@@ -10,11 +10,12 @@ The config file (``CORPUS_CONFIG_FILE``, YAML; ``CORPUS_TIERS_FILE`` is its
 deprecated name) holds the layer's configuration: ``tiers:`` here and
 ``sources:`` (see :mod:`corpus.sources`). This module reads it, since it held the
 tiers first. It is validated at startup into typed structs: an unknown key, a
-missing query policy or a projection from an unknown tier is an error, never
-ignored. Without a file, or a file without ``tiers:``, the built-in
-:data:`DEFAULT` applies, which is the configuration corpus had before the file
-existed, with the sanitized tier's default redaction policy
-(``sanitize.DEFAULT_POLICY``). The file never holds a DSN: each store names the
+new tier's missing query policy or a projection from an unknown tier is an
+error, never ignored. A declared tier named like a built-in one takes each key it
+leaves out from that built-in tier (see :func:`read`). Without a file, or a file
+without ``tiers:``, the built-in :data:`DEFAULT` applies, which is the
+configuration corpus had before the file existed, with the sanitized tier's
+default redaction policy (``sanitize.DEFAULT_POLICY``). The file never holds a DSN: each store names the
 environment variable that does, so secrets keep their injection path.
 
 ``serve`` and ``sync`` need nothing but :func:`tier`. A few older environment
@@ -28,8 +29,9 @@ import logging
 import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import date, datetime
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import msgspec
 
@@ -118,7 +120,12 @@ class ServeConfig(_Strict):
 
 
 class TierConfig(_Strict):
-    """One tier as written in the config file. ``query`` is required: no default policy."""
+    """One tier as written in the config file.
+
+    ``query`` is required: there is no default policy. A tier named like one of
+    :data:`DEFAULT`'s gets the missing keys from it before decoding (see
+    :func:`read`), so only a new tier must write its policy out.
+    """
 
     name: _Name
     store: StoreConfig
@@ -255,8 +262,42 @@ def config_path(conf: Settings = settings) -> str | None:
     return new or old or None
 
 
+def _merge(base: Any, over: Any) -> Any:
+    """*over* laid onto *base*: mappings merge key by key, anything else replaces.
+
+    A list replaces rather than extends, and an explicit ``null`` or empty value
+    is kept, so only a key that is absent takes the base's value.
+    """
+    if isinstance(base, dict) and isinstance(over, dict):
+        return {**base, **{k: _merge(base.get(k), v) for k, v in over.items()}}
+    return over
+
+
+def _with_builtins(raw: Any) -> Any:
+    """The decoded file with each tier named like a built-in one laid onto it.
+
+    Anything malformed is passed through untouched for the schema to refuse.
+    """
+    if not isinstance(raw, dict) or not isinstance(raw.get("tiers"), list):
+        return raw
+    builtin = {t.name: msgspec.to_builtins(t) for t in DEFAULT.tiers or ()}
+    tiers = [
+        _merge(builtin[t["name"]], t)
+        if isinstance(t, dict) and isinstance(t.get("name"), str) and t["name"] in builtin
+        else t
+        for t in raw["tiers"]
+    ]
+    return {**raw, "tiers": tiers}
+
+
 def read(path: str) -> ConfigFile:
     """Decode the config file at *path* against its schema (each part's own checks aside).
+
+    A tier named like one of :data:`DEFAULT`'s takes every key it leaves out from
+    that tier, recursively (a ``query`` that sets only ``max_limit`` keeps the
+    built-in filters); a list or an explicit value, ``null`` and ``[]`` included,
+    replaces the built-in's. A tier with any other name must be complete. The
+    merged tiers are then decoded as strictly as a complete file.
 
     Raises:
         ConfigError: The file cannot be read, is not YAML, or does not match.
@@ -266,7 +307,9 @@ def read(path: str) -> ConfigFile:
     except OSError as exc:
         raise ConfigError(f"config file {path}: {exc.strerror or exc}") from None
     try:
-        return msgspec.yaml.decode(raw, type=ConfigFile)
+        merged = _with_builtins(msgspec.yaml.decode(raw))
+        # As msgspec.yaml.decode converts: YAML's own dates stay dates.
+        return msgspec.convert(merged, ConfigFile, builtin_types=(datetime, date))
     except msgspec.ValidationError as exc:
         raise ConfigError(f"config file {path}: {exc}") from None
     except msgspec.DecodeError as exc:

@@ -19,23 +19,27 @@ setting it and `CORPUS_CONFIG_FILE` to different paths is an error.
 
 ## The file
 
+A deployment writes only what it changes from the [built-in tiers](#the-default):
+
 ```yaml
 tiers:
   - name: sensitive
-    store: {dsn_env: CORPUS_DATABASE_URL}
-    serve: {server_name: corpus, access: [pi-local]}
-    query:
-      max_limit: 100
-      filterable: [label, account, source, sent_at]
-      aggregatable: [label, month, account]
-      orders: [newest, oldest]
-      text: true
-      semantic: true
+    serve: {access: [pi-local]}
   - name: sanitized
-    store:
-      dsn_env: CORPUS_SANITIZED_DATABASE_URL
-      reader_dsn_env: CORPUS_INDEX_DATABASE_URL
-      schema: corpus
+    store: {schema: corpus}
+    serve: {server_name: corpus-index-kbl, access: [orchestrator, pi]}
+    projection:
+      redact: {person_name: initial}
+```
+
+Here both tiers keep the built-in stores, query policies and projection: the
+sanitized tier redacts by the [default policy](#the-default-policy) except that a
+person's name becomes initials. A tier with a [new name](#adding-a-tier) is
+written out in full:
+
+```yaml
+  - name: archive
+    store: {dsn_env: CORPUS_ARCHIVE_DATABASE_URL}
     projection:
       from: sensitive
       redact:
@@ -48,7 +52,7 @@ tiers:
         place_name: drop
       sensitivity_gate: high
       gate_action: redact
-    serve: {server_name: corpus-index, access: [orchestrator, pi]}
+    serve: {server_name: corpus-archive, access: [orchestrator]}
     query:
       max_limit: 100
       search_depth: 200
@@ -76,6 +80,46 @@ Tiers are listed most sensitive first.
 | `serve.access` | The principals the gateway lets reach the server. See [Access](#access). |
 | `query` | The tier's `QueryPolicy` (see [Query model](query.md#what-each-tier-allows)): `max_limit`, `filterable`, `aggregatable`, `orders`, `text`, `semantic`, and optionally `search_depth`. |
 
+### Built-in tiers fill what is left out
+
+A declared tier named like a built-in one (`sensitive` or `sanitized`) takes
+every key it leaves out from that built-in tier, at every depth: a `query` that
+sets only `max_limit` keeps the built-in filters, orders and search depth, and a
+`projection.redact` that sets only `phone` keeps the other classes' built-in
+actions. Only a key that is **absent** is filled in:
+
+- a list replaces the built-in list rather than extending it, so
+  `orders: [newest]` allows only `newest`;
+- an explicit empty value stays empty: `access: []` admits no principal, and
+  `aggregatable: []` allows no grouping;
+- an explicit `null` removes a built-in value: `reader_dsn_env: null` makes the
+  sanitized server read with its store's DSN, and `projection: null` makes the
+  tier a source tier;
+- a partial `store:` merges per key, so a newly declared `dsn_env` is paired
+  with the built-in tier's `reader_dsn_env` unless the file declares that too.
+  On `sanitized`, `store: {dsn_env: ARCHIVE_URL}` writes with `ARCHIVE_URL` but
+  still reads with `CORPUS_INDEX_DATABASE_URL`; add `reader_dsn_env: null` to
+  read with `ARCHIVE_URL`.
+
+A file that writes a tier out in full therefore loads exactly as before, and a
+deployment that writes only its own settings picks up a changed built-in policy
+with the release that changes it (a changed projection policy re-projects the
+tier on the next sync, see [Re-projecting](#re-projecting)).
+The merged tier is validated as strictly as a complete one.
+
+#### Upgrading
+
+A `sanitized` tier declared before this merge without `reader_dsn_env` now
+inherits the built-in's `CORPUS_INDEX_DATABASE_URL` and reads with it, where it
+used to read with its own `dsn_env`. Declare `reader_dsn_env: null` to keep the
+old behaviour.
+
+A `tiers:` block lists exactly the tiers there are: a built-in tier the file
+does not name does not exist. A file that defines only `sensitive` serves no
+sanitized tier, and one that keeps both but changes nothing in `sensitive` still
+lists it, as `- name: sensitive`. A tier with any other name has no built-in to
+fill from, so it needs its `store`, `serve` and complete `query`.
+
 `query.search_depth` is the deepest a vector-ordered query pages (default and
 maximum 200, `query.SEMANTIC_DEPTH`). That is how many rows one HNSW index scan is
 set to rank, so a tier can lower the depth but not raise it.
@@ -101,7 +145,8 @@ problem. Nothing is ignored:
 
 - an unknown key, at any level, is an error;
 - every tier needs a complete `query` policy, since a tier without one would
-  otherwise be permissive;
+  otherwise be permissive (a built-in tier's is completed from the built-in
+  policy, a new tier's must be written out);
 - a filter, `group_by` dimension or order that the query model does not know is
   an error, and so is a `search_depth` outside 1–200;
 - `projection.from` must name another tier in the file, and that tier must be a
@@ -128,8 +173,11 @@ Without a file, the tiers are:
 | Query policy | `query.SENSITIVE_POLICY` | `query.SANITIZED_POLICY` |
 | Projection | (source tier) | from `sensitive`, every column, the [default redaction](#the-default-policy), gate `high`, `gate_action: redact` |
 
-`tiers.DEFAULT` is itself a valid config file. To start a file from it, encode it
-as YAML: `python -c "import msgspec, corpus.tiers as t;
+A file need not copy these: a declared `sensitive` or `sanitized` tier takes
+whatever it leaves out from the column above (see
+[Built-in tiers fill what is left out](#built-in-tiers-fill-what-is-left-out)).
+`tiers.DEFAULT` is itself a valid config file. To see it in full, encode it as
+YAML: `python -c "import msgspec, corpus.tiers as t;
 print(msgspec.yaml.encode(t.DEFAULT).decode())"`.
 
 ## Environment overrides (deprecated)
@@ -152,7 +200,8 @@ variables for a projected tier.
 
 ## Adding a tier
 
-A new tier is configuration, not code. Add it to the file, then `corpus sync
+A new tier is configuration, not code. Add it to the file, written out in full
+(a new name has no built-in tier to fill from), then `corpus sync
 --tier <name>` fills it (when it has a `projection`) and `corpus serve <name>`
 serves it. `sync --tier` refuses a source tier, and both commands refuse a name
 the file does not define.

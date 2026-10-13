@@ -248,7 +248,7 @@ def test_a_tiers_repr_holds_no_dsn():
 
 
 def test_a_tier_without_a_reader_serves_with_its_store_dsn(tiers_file):
-    text = FILE.replace(", reader_dsn_env: CORPUS_INDEX_DATABASE_URL", "")
+    text = FILE.replace("reader_dsn_env: CORPUS_INDEX_DATABASE_URL", "reader_dsn_env: null")
     assert registry(tiers_file(text)).tier("sanitized").serving_dsn() == SANITIZED_DSN
 
 
@@ -264,10 +264,18 @@ def test_an_unknown_tier_is_refused_naming_the_defined_ones():
          r"unknown field `colour`"),
         (lambda f: f.replace("max_limit: 20", "max_limit: 20\n      max_rows: 5"),
          r"unknown field `max_rows`"),
-        (lambda f: f[:f.index("    query:\n      max_limit: 20")],
-         r"missing required field `query`"),
-        (lambda f: f.replace("      text: true\n      semantic: false\n", ""),
-         r"missing required field `text`"),
+        (lambda f: f[:f.index("    query:\n      max_limit: 20")].replace("name: sanitized", "name: archive"),
+         r"missing required field `query` - at `\$.tiers\[1\]`"),
+        (lambda f: f.replace("      text: true\n      semantic: false\n", "").replace("name: sensitive", "name: raw"),
+         r"missing required field `text` - at `\$.tiers\[0\].query`"),
+        (lambda f: f.replace("name: sanitized", "name: archive").replace("    store: {dsn_env: CORPUS_SANITIZED_DATABASE_URL", "    other: {dsn_env: X"),
+         r"unknown field `other`"),
+        (lambda f: f.replace("schema: kbl}", "schema: kbl, colour: red}"),
+         r"unknown field `colour` - at `\$.tiers\[1\].store`"),
+        (lambda f: "- tiers\n", r"Expected `object`, got `array`"),
+        (lambda f: "tiers: {name: sensitive}\n", r"Expected `array \| null`, got `object` - at `\$.tiers`"),
+        (lambda f: "tiers: [sensitive]\n", r"Expected `object`, got `str` - at `\$.tiers\[0\]`"),
+        (lambda f: "tiers: [{name: 5}]\n", r"Expected `str`, got `int` - at `\$.tiers\[0\].name`"),
         (lambda f: f.replace("from: sensitive", "from: raw"),
          r"projection.from names unknown tier 'raw'"),
         (lambda f: f.replace("from: sensitive", "from: sanitized"),
@@ -324,3 +332,144 @@ def test_the_default_round_trips_through_the_file_schema(tiers_file):
     # The default is itself a valid file: what a deployment writes to start from.
     text = msgspec.yaml.encode(tiers.DEFAULT).decode()
     assert registry(tiers_file(text)).tiers() == registry().tiers()
+
+
+# --- a declared tier named like a built-in one ---------------------------------------
+
+MINIMAL = """\
+tiers:
+  - name: sensitive
+  - name: sanitized
+    serve: {server_name: corpus-index-kbl, access: [orchestrator, pi]}
+"""
+
+#: A complete file equal to the built-in default: every key written out,
+#: defaults included, as a deployment that copied the policies has it.
+COMPLETE_DEFAULT = """\
+tiers:
+  - name: sensitive
+    store: {dsn_env: CORPUS_DATABASE_URL}
+    serve: {server_name: corpus, access: []}
+    query:
+      max_limit: 100
+      search_depth: 200
+      filterable: [account, label, sent_at, source]
+      aggregatable: [account, label, month]
+      orders: [newest, oldest]
+      text: true
+      semantic: true
+  - name: sanitized
+    store:
+      dsn_env: CORPUS_SANITIZED_DATABASE_URL
+      reader_dsn_env: CORPUS_INDEX_DATABASE_URL
+    serve: {server_name: corpus-index, access: []}
+    projection:
+      from: sensitive
+      fields: [id, source, account, thread_id, sent_at, sender_domain, domain, category,
+               transactional_type, importance, requires_action, action_type, action_summary,
+               deadline, waiting_on, time_sensitive, suggested_disposition, sensitivity_level,
+               one_line, organizations, enriched_at, uri, facts]
+      sensitivity_gate: high
+      gate_action: redact
+      redact:
+        organization: keep
+        person_name: role
+        reference_id: mask
+        financial_id: mask
+        email_address: drop
+        phone: drop
+        place_name: drop
+    query:
+      max_limit: 100
+      search_depth: 200
+      filterable: [account, action_type, category, deadline, domain, facts.travel,
+                   facts.travel.carrier, facts.travel.destination_country, facts.travel.end,
+                   facts.travel.origin_country, facts.travel.start, importance,
+                   max_sensitivity, organization, requires_action, sender_domain, sent_at,
+                   source, suggested_disposition, time_sensitive, transactional_type,
+                   waiting_on]
+      aggregatable: [category, domain, facts.travel.destination_country,
+                     facts.travel.origin_country, facts.travel.start_year, importance, month,
+                     organization, sender_domain]
+      orders: [deadline, newest, oldest, priority]
+      text: true
+      semantic: true
+"""
+
+
+def test_a_minimal_built_in_tier_keeps_its_policies_and_digest(tiers_file):
+    # Only what the deployment changes is written; the policies, store and
+    # projection are the built-in ones, so the synced rows stay current.
+    default = registry().tier("sanitized")
+    sensitive, sanitized = registry(tiers_file(MINIMAL)).tiers()
+
+    assert (sanitized.server_name, sanitized.access) == ("corpus-index-kbl", ("orchestrator", "pi"))
+    assert sanitized.policy == SANITIZED_POLICY
+    assert sanitized.projection == default.projection
+    assert sanitized.projection.policy.digest() == DEFAULT_POLICY.digest()
+    assert (sanitized.dsn_env, sanitized.reader_dsn_env, sanitized.schema) == (
+        default.dsn_env, default.reader_dsn_env, default.schema
+    )
+    assert sensitive == registry().tier("sensitive")
+
+
+def test_a_complete_file_equal_to_the_default_loads_as_the_default(tiers_file):
+    path = tiers_file(COMPLETE_DEFAULT)
+
+    assert tiers.load(path, settings()) == tiers.load(None, settings())
+    assert registry(path).tiers() == registry().tiers()
+    assert (
+        registry(path).tier("sanitized").projection.policy.digest()
+        == registry().tier("sanitized").projection.policy.digest()
+    )
+
+
+def test_a_complete_file_loads_as_written(tiers_file):
+    # Nothing a complete file sets is changed by the built-in tiers.
+    assert tiers.read(tiers_file(FILE)) == msgspec.yaml.decode(FILE, type=tiers.ConfigFile)
+
+
+def test_a_built_in_tier_merges_nested_keys_and_replaces_lists(tiers_file):
+    text = MINIMAL + "    query: {max_limit: 10, orders: [newest], aggregatable: []}\n"
+    policy = registry(tiers_file(text)).tier("sanitized").policy
+
+    assert (policy.max_limit, policy.orders, policy.aggregatable) == (10, {"newest"}, frozenset())
+    assert policy.filterable == SANITIZED_POLICY.filterable
+    assert (policy.text, policy.semantic, policy.search_depth) == (True, True, SEMANTIC_DEPTH)
+
+
+def test_a_built_in_projection_merges_its_redaction(tiers_file):
+    text = MINIMAL + "    projection: {sensitivity_gate: medium, redact: {phone: keep}}\n"
+    projection = registry(tiers_file(text)).tier("sanitized").projection
+
+    assert projection.source == "sensitive"
+    assert projection.policy == Policy(
+        sensitivity_gate=SensitivityLevel.medium, redact=Redaction(phone="keep")
+    )
+
+
+def test_an_explicit_empty_value_is_not_filled_in(tiers_file):
+    text = MINIMAL.replace("access: [orchestrator, pi]", "access: []")
+    assert registry(tiers_file(text)).tier("sanitized").access == ()
+
+
+def test_an_explicit_null_drops_a_built_in_value(tiers_file):
+    # projection: null makes the built-in sanitized tier a source tier, which
+    # then fails the source tier's store rule rather than keeping the projection.
+    with pytest.raises(tiers.TierConfigError, match="source tier's store.dsn_env"):
+        registry(tiers_file(MINIMAL + "    projection: null\n"))
+
+
+def test_a_built_in_tier_left_out_of_the_file_does_not_exist(tiers_file):
+    # A declared tiers: block lists exactly the tiers there are.
+    reg = registry(tiers_file("tiers:\n  - name: sensitive\n"))
+
+    assert reg.names() == ("sensitive",)
+    with pytest.raises(ValueError, match="no tier named 'sanitized'"):
+        reg.tier("sanitized")
+
+
+def test_a_new_tier_named_like_no_built_in_must_be_complete(tiers_file):
+    text = MINIMAL + "  - name: archive\n    serve: {server_name: corpus-archive}\n"
+    with pytest.raises(tiers.ConfigError, match=r"missing required field `store` - at `\$.tiers\[2\]`"):
+        registry(tiers_file(text))
