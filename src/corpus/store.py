@@ -12,6 +12,7 @@ manage its table there.
 from __future__ import annotations
 
 from collections.abc import Iterator
+from contextlib import closing
 from typing import Any
 
 import psycopg
@@ -24,6 +25,7 @@ from haystack_integrations.components.retrievers.pgvector import (
 from haystack_integrations.document_stores.pgvector import PgvectorDocumentStore
 
 from .config import settings
+from .enrichment import upgrade
 from .query import (
     SEMANTIC_DEPTH,
     Aggregate,
@@ -195,9 +197,13 @@ class DocumentStore(Store):
     def iter_enriched(self, source: str | None = None) -> Iterator[tuple[str, dict, dict, Any]]:
         """Stream (id, meta, enrichment, enriched_at) for enriched documents, newest first.
 
-        A source that has never stored a document has no tables yet (the vector
-        store creates them on first insert), which reads as no documents rather
-        than an error.
+        Each enrichment is brought to the current shape (``enrichment.upgrade``)
+        here, where stored rows are read, so every consumer of the raw dict --
+        the sanitized projection and whatever reads its rows -- sees one shape
+        whatever schema a record was written under, with no per-reader fallback
+        to forget. A source that has never stored a document has no tables yet
+        (the vector store creates them on first insert), which reads as no
+        documents rather than an error.
         """
         enrichments = f"{self._schema}.enrichments"
         where = "WHERE e.enrichment IS NOT NULL"
@@ -210,7 +216,11 @@ class DocumentStore(Store):
             f"JOIN {enrichments} e ON e.doc_id = d.id {where} "
             "ORDER BY d.meta->>'sent_at' DESC NULLS LAST, d.id"
         )
-        yield from self._stream("corpus_sync_scan", sql, params, self._table, enrichments)
+        rows = self._stream("corpus_sync_scan", sql, params, self._table, enrichments)
+        # Closing this generator early must close the server-side cursor too.
+        with closing(rows):
+            for doc_id, meta, enr, enriched_at in rows:
+                yield doc_id, meta, upgrade(enr), enriched_at
 
     def query_spec(
         self, spec: QuerySpec, policy: QueryPolicy, position: Position | None = None

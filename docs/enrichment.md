@@ -88,13 +88,74 @@ per-request field is ignored.)
 Anyone can send the mailbox an email, and a model summarising an email that
 addresses an AI ("ignore previous instructions and …") can repeat the request in
 its summary. After each enrichment, its free-text fields
-(`enrichment.FREE_TEXT_FIELDS`: the summaries, key points, action summary, and
-entity names) are checked with the same detector the MCP result envelope uses
+(`enrichment.FREE_TEXT_FIELDS`: the summaries, key points, action summary,
+entity names, and reference values) are checked with the same detector the MCP result envelope uses
 (see [MCP results](mcp-results.md#flags)). A match is kept, not rejected, since
 the owner should see that the email arrived; it is counted as `instruction_like`
 in the run log and in the `corpus.enrich.instruction_like` metric (by model), and
 logged as a warning with the document id. Envelopes flag the row again each time
 it is read, so a pattern added later covers records enriched before it.
+
+## People, references, and role-based summaries
+
+The summaries name people by role and quote no identifiers, so a tier that must
+not show names or reference numbers can drop two fields instead of guessing
+names out of prose:
+
+- `people` is a list of `{role, name}`. `role` is required: a short noun for
+  how the person relates to the owner or the message ("friend", "mechanic",
+  "landlord", "colleague"). `name` is the name as written, or null when the
+  message gives none.
+- `references` is a list of `{kind, value}`: the identifiers the message
+  quotes. `kind` is one of `booking`, `order`, `case`, `invoice`, `ticket`,
+  `parking`, `membership`, `tracking`, `account` (a customer number with a
+  company), or `other`; `value` is the identifier as written. It has the same
+  bounds as the other entity lists (12 items, 120 characters each). A
+  reference is never a secret: card and bank account numbers, passwords, and
+  one-time codes stay with the secret audit.
+- `one_line`, `abstract`, and `action_summary` refer to people by role and
+  quote no reference values ("a friend proposes a weekend trip", not "Zoe
+  proposes a weekend trip"). Organizations may still be named. Of these,
+  `one_line` and `action_summary` reach the sanitized tier.
+
+A `role` and a reference `value` must not be blank, and a person or reference
+with a key outside the struct is refused. Both are checked when the reply is
+decoded (the structs' `__post_init__` and `forbid_unknown_fields`), not in the
+guided schema: `json_schema()` uses no `minLength` and drops
+`additionalProperties`, so a provider constraining generation never sees a
+keyword the schema did not already use, and one that rejects an unfamiliar
+keyword cannot fail every request. A reply that breaks either rule is
+unparseable, whether complete or recovered from a stall.
+
+The prompt asks for this; nothing enforces it, since guided decoding constrains
+the shape of the output, not what its strings say. The eval measures how often
+a model gets it wrong (see the name/reference leak rate in
+[Enrichment evaluation](evaluation.md#metrics)). A reference value is copied
+from untrusted mail, so it is free text like the summaries: it is in
+`FREE_TEXT_FIELDS` and is checked for instruction-like text.
+
+Which tier sees `people` names and `references` values is decided by the
+projection, not here; this change only makes the structure available. Typed
+facts (such as travel itineraries) are a later change, as they also touch the
+query model.
+
+Dropping `people` and `references` does not remove every name. The prompt asks
+only the three summaries to speak in roles, so a name can still appear in
+`key_points`, `appointments[].who`, `topics`, and `locations`. A tier policy
+that must not show names has to redact or exclude those fields too.
+
+**Older records.** The change to `people` and the new `references` field change
+`SCHEMA_VERSION`, so only newly enriched mail gets the new shape. A stored
+record keeps the shape it was written in. `enrichment.upgrade` gives a person
+without a role the role `unknown` and a record without `references` an empty
+list. It is applied where stored enrichments are read, so every reader sees the
+current shape: `DocumentStore.iter_enriched` upgrades each row before the
+sanitized projection receives it, and `enrichment.decode` upgrades before it
+decodes. Applying it in the store rather than in `sanitize.project` keeps the
+fallback in one place for any reader of stored rows, and keeps the projection a
+policy over one shape. Bringing the archive to the new shape is
+a separate backfill with `--upgrade-stale`, run as a local GPU job. Do not run
+it in bulk against a shared remote endpoint.
 
 ## Models
 

@@ -13,8 +13,10 @@ import pytest
 
 from corpus import sanitize
 from corpus.embeddings import Embedder
+from corpus.enrich_store import EnrichStore
+from corpus.models import Classification, Record
 from corpus.sanitized_store import COLS, SanitizedStore
-from corpus.store import DocumentStore
+from corpus.store import DocumentStore, to_document
 
 DIM = 16  # the pg fixture's embedding dimension (conftest.TEST_DIM)
 V1 = datetime(2026, 1, 1, tzinfo=UTC)
@@ -337,3 +339,29 @@ def test_an_interrupted_reproject_resumes_without_redoing_finished_rows(
     embedded = [text for c in embedder.embed.call_args_list for text in c.args[0]]
     assert embedded == [store.get("d2")["one_line"], store.get("d3")["one_line"]]
     assert all(store.get(f"d{i}")["one_line"].startswith("[sensitive]") for i in range(4))
+
+
+@pytest.mark.integration
+def test_run_sync_projects_a_record_from_before_roles_in_the_current_shape(pg, store, embedder):
+    # A row enriched before people had roles and before references existed reaches
+    # the projection with the "unknown" role and an empty references list, read
+    # from the real enrichments table, not a hand-built dict.
+    record = Record(source="imap:test", source_uid="1", kind="email", account="me@example.org",
+                    subject="class notes", body_text="notes attached")
+    old = {"one_line": "a classmate shares notes", "category": "personal",
+           "sensitivity_level": "low", "people": [{"name": "Pat Example", "role": None}]}
+    projector = create_autospec(sanitize.project, side_effect=sanitize.project)
+    with DocumentStore() as documents:
+        documents.write([to_document(record, Classification(label="personal", confidence=0.5),
+                                     [0.1] * DIM)])
+        with EnrichStore() as enrichments:
+            enrichments.save_enrichment("imap:test::1", old, "local", "sv0")
+
+        r = sanitize.run_sync(store, documents=documents, embedder=embedder, projector=projector)
+
+    assert r["synced"] == 1
+    doc_id, _, enr = projector.call_args.args[:3]
+    assert doc_id == "imap:test::1"
+    assert enr["people"] == [{"name": "Pat Example", "role": "unknown"}]
+    assert enr["references"] == []
+    assert store.get("imap:test::1")["one_line"] == "a classmate shares notes"

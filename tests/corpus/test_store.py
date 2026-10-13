@@ -142,9 +142,38 @@ def test_iter_enriched_joins_documents_and_enrichments(documents):
 
     rows = list(documents.iter_enriched(source="imap:test"))
 
-    assert [(r[0], r[1]["source"], r[2]) for r in rows] == [
-        ("imap:test::2", "imap:test", {"one_line": "imap:test::2"}),
-        ("imap:test::1", "imap:test", {"one_line": "imap:test::1"}),
+    assert [(r[0], r[1]["source"], r[2]["one_line"]) for r in rows] == [
+        ("imap:test::2", "imap:test", "imap:test::2"),
+        ("imap:test::1", "imap:test", "imap:test::1"),
     ]
     assert all(r[3] is not None for r in rows)  # enriched_at, the sync's version
     assert len(list(documents.iter_enriched())) == 3
+
+
+def test_iter_enriched_reads_a_record_from_before_roles_in_the_current_shape(documents):
+    documents.write([_doc("1")])
+    old = {"one_line": "notes from a classmate", "category": "personal",
+           "people": [{"name": "Pat Example", "role": None}, {"name": "Kim Example"}]}
+    with EnrichStore() as enrichments:
+        enrichments.save_enrichment("imap:test::1", old, "local", "sv0")
+
+    [(_, _, enr, _)] = documents.iter_enriched()
+
+    assert enr["people"] == [{"name": "Pat Example", "role": "unknown"},
+                             {"name": "Kim Example", "role": "unknown"}]
+    assert enr["references"] == []
+    assert enr["one_line"] == "notes from a classmate"
+
+
+def test_iter_enriched_closed_early_releases_its_cursor(documents):
+    documents.write([_doc("1"), _doc("2")])
+    with EnrichStore() as enrichments:
+        for uid in ("imap:test::1", "imap:test::2"):
+            enrichments.save_enrichment(uid, {"one_line": uid}, "local", "sv1")
+
+    rows = documents.iter_enriched()
+    next(rows)
+    rows.close()
+
+    # The server-side cursor and its transaction are gone: the connection reads again.
+    assert len(list(documents.iter_enriched())) == 2
