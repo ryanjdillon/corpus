@@ -13,9 +13,11 @@ from unittest.mock import create_autospec
 
 import pytest
 
-from corpus import serving
+from corpus import serving, tiers
+from corpus.config import settings
 from corpus.embeddings import embed_query
 from corpus.models import Classification, Record
+from corpus.sanitize import DEFAULT_POLICY
 from corpus.sanitized_store import COLS, SanitizedStore
 from corpus.store import DocumentStore, to_document
 
@@ -106,6 +108,81 @@ def test_search_ranks_by_the_embedded_text(index, embed):
     embed.assert_called_once_with("a synthetic trip")
     assert [r["id"] for r in out["rows"]] == ["t1", "t2"]
     assert out["next_cursor"] is not None
+
+
+#: Synthetic rows under three digests: the served policy's, another policy's,
+#: and none (synced before the digest existed). Only "cur" is served as stored.
+STALE = "0123456789abcdef"
+PROJECTED = {
+    "cur": (DEFAULT_POLICY.digest(), "travel", "a friend booked the ferry", "Pay the deposit",
+            ["Fjordline"]),
+    "old": (STALE, "travel", "Kari Nordmann booked the ferry", "Call Kari Nordmann",
+            ["Nordmann Holding AS"]),
+    "pre": (None, "banking", "Bjørn Ås sent card 4111 1111 1111 1111", "Reply to Bjørn Ås",
+            ["Ås Regnskap AS"]),
+}
+
+
+@pytest.fixture
+def projected_index(pg, embed):
+    """The sanitized tier's server as configured, over ``PROJECTED``.
+
+    Built with the tier's own opener, so the store knows its projection policy
+    the way a deployed index does.
+    """
+    with SanitizedStore(dsn=pg, schema=SCHEMA) as store:
+        for i, (id_, (digest, domain, one_line, action, orgs)) in enumerate(PROJECTED.items()):
+            row = {c: None for c in COLS} | {
+                "id": id_, "domain": domain, "sent_at": _at(f"2025-0{i + 1}-01T09:00"),
+                "importance": "low", "requires_action": True, "time_sensitive": False,
+                "sensitivity_level": "low", "one_line": one_line, "action_summary": action,
+                "organizations": orgs, "policy_hash": digest,
+            }
+            store.save_message(row, _vec(1.0, i / 10))
+    environ = {"CORPUS_SANITIZED_DATABASE_URL": pg, "CORPUS_INDEX_DATABASE_URL": pg}
+    tier = tiers.Registry(tiers.DEFAULT, settings, environ).tier("sanitized")
+    return serving.build_mcp("sanitized", config=tier, embed=embed)
+
+
+def _free_text(row: dict) -> tuple:
+    return row["one_line"], row["action_summary"], row["organizations"]
+
+
+SERVED = {
+    "cur": ("a friend booked the ferry", "Pay the deposit", ["Fjordline"]),
+    "old": ("[pending redaction] travel item", None, None),
+    "pre": ("[pending redaction] banking item", None, None),
+}
+
+
+def test_a_row_under_another_policy_is_served_degraded_by_query(projected_index):
+    out = call(projected_index, "query", spec={"order": "newest"})
+
+    assert {r["id"]: _free_text(r) for r in out["rows"]} == SERVED
+
+
+def test_a_row_under_another_policy_is_served_degraded_by_search(projected_index, embed):
+    out = call(projected_index, "search", text="the ferry")
+
+    assert {r["id"]: _free_text(r) for r in out["rows"]} == SERVED
+
+
+def test_a_row_under_another_policy_is_served_degraded_by_get(projected_index):
+    for id_, expected in SERVED.items():
+        (row,) = call(projected_index, "get", id=id_)["rows"]
+        assert _free_text(row) == expected
+
+
+def test_no_filter_or_group_reaches_a_stale_rows_stored_text(projected_index):
+    def ids(**spec) -> list[str]:
+        return [r["id"] for r in call(projected_index, "query", spec=spec)["rows"]]
+
+    assert ids(text="Nordmann") == ids(text="4111") == []
+    assert ids(text="ferry") == ["cur"]
+    assert ids(text="pending redaction", order="newest") == ["pre", "old"]
+    assert ids(filters={"organization": "Nordmann"}) == []
+    groups = call(projected_index, "aggregate", spec={}, group_by=["organization"])["rows"]
+    assert [(g["organization"], g["count"]) for g in groups] == [("Fjordline", 1), (None, 2)]
 
 
 def _document(uid: str, sent_at: str, label: str = "personal"):

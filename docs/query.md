@@ -138,8 +138,18 @@ generic tools over this query model:
 | --- | --- | --- |
 | `query` | `spec`: `filters`, `text`, `order`, `limit`, `cursor` | One page of rows. |
 | `search` | `text` (at most 2000 characters), and an optional `spec`: `filters`, `text`, `limit`, `cursor` | One page of rows ranked by meaning. The server embeds `text` with the model the tier's vectors came from, at most 50 rows per page and 200 in all. |
-| `aggregate` | `spec`: `filters`, `text`, `limit`; `group_by` | One row per group (see [Counting by group](#counting-by-group)), `total`, and `truncated`. |
+| `aggregate` | `spec`: `filters`, `text`, `limit`; and `group_by`, a top-level argument beside `spec` | One row per group (see [Counting by group](#counting-by-group)), `total`, and `truncated`. |
 | `get` | `id` | 0 or 1 rows. |
+
+`aggregate` takes the dimensions as its own `group_by` argument, not inside
+`spec`. A `group_by` inside `spec` is refused, as it is on `query` and
+`search`. The travel count from [Counting by group](#counting-by-group), as
+`aggregate` arguments:
+
+```json
+{"spec": {"filters": {"domain": "travel", "sent_at": {"since": "2025-01-01", "until": "2026-01-01"}}},
+ "group_by": ["month"]}
+```
 
 The `spec` argument's JSON Schema is the `QuerySpec` schema cut down to what the
 tier allows: only its filters, its orders, and its group-by dimensions are
@@ -148,8 +158,9 @@ the store is opened. A field the tool does not take (`order` on `search`, a
 `cursor` on `aggregate`, a `semantic` vector anywhere) is refused too.
 
 Rows are the tier's projection: `sanitized_store.COLS` on the sanitized tier
-(including `uri`, an https link to the message, or null; see
-[Tiers](tiers.md#the-message-link-uri)),
+(with `one_line`, `action_summary` and `organizations` redacted, see
+[Tiers](tiers.md#redaction); and `uri`, an https link to the message, or null,
+see [Tiers](tiers.md#the-message-link-uri)),
 and `id`, `subject`, `from_addr`, `sent_at` and `label` on the sensitive tier
 (`get` there returns the full `content` and `meta`).
 

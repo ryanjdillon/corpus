@@ -13,7 +13,9 @@ import pytest
 
 from corpus import tiers
 from corpus.config import Settings
+from corpus.enrichment import SensitivityLevel
 from corpus.query import SANITIZED_POLICY, SEMANTIC_DEPTH, SENSITIVE_POLICY
+from corpus.sanitize import DEFAULT_POLICY, KEEP_ALL, STUB_POLICY, Policy, Redaction
 from corpus.sanitized_store import COLS
 
 RAW_DSN = "postgresql://raw-placeholder@db.example.com/ai"
@@ -73,7 +75,7 @@ def tiers_file(tmp_path):
 
 def test_the_default_tiers_are_the_configuration_before_the_file():
     # The same names, servers, stores, policies, gate and (no) access as before
-    # the tiers file existed, so a deployment without one is unchanged.
+    # the tiers file existed; only the sanitized tier's redaction is new.
     sensitive, sanitized = registry().tiers()
 
     assert (sensitive.name, sensitive.server_name, sensitive.policy) == (
@@ -90,7 +92,7 @@ def test_the_default_tiers_are_the_configuration_before_the_file():
     assert (sanitized.dsn, sanitized.reader_dsn, sanitized.schema) == (
         SANITIZED_DSN, READER_DSN, "corpus"
     )
-    assert sanitized.projection == tiers.Projection("sensitive", COLS, "high")
+    assert sanitized.projection == tiers.Projection("sensitive", DEFAULT_POLICY)
     assert sanitized.access == ()
     assert SANITIZED_POLICY.search_depth == SENSITIVE_POLICY.search_depth == SEMANTIC_DEPTH
 
@@ -119,7 +121,7 @@ def test_the_deprecated_variables_override_the_default(caplog):
     sanitized = reg.tier("sanitized")
 
     assert (sanitized.server_name, sanitized.schema) == ("corpus-index-kbl", "kbl")
-    assert sanitized.projection.sensitivity_gate == "medium"
+    assert sanitized.projection.policy.sensitivity_gate is SensitivityLevel.medium
     assert (sanitized.access, reg.tier("sensitive").access) == (("orchestrator",), ())
     assert "deprecated" in caplog.text and "CORPUS_INDEX_SERVER_NAME" in caplog.text
 
@@ -160,7 +162,68 @@ def test_a_file_defines_every_part_of_a_tier(tiers_file):
     assert sensitive.policy.orders == {"newest"} and sensitive.policy.semantic is False
     assert (sanitized.server_name, sanitized.schema) == ("corpus-index-example", "kbl")
     assert (sanitized.policy.max_limit, sanitized.policy.search_depth) == (20, 100)
-    assert sanitized.projection == tiers.Projection("sensitive", ("one_line", "domain"), "medium")
+    assert sanitized.projection == tiers.Projection(
+        "sensitive", Policy(fields=("one_line", "domain"), sensitivity_gate=SensitivityLevel.medium)
+    )
+
+
+def test_the_default_policy_keeps_context_and_hides_identifiers():
+    # The sanitized tier's default, as the docs state it.
+    policy = registry().tier("sanitized").projection.policy
+
+    assert (policy.fields, policy.sensitivity_gate, policy.gate_action) == (
+        COLS, SensitivityLevel.high, "redact"
+    )
+    assert msgspec.structs.asdict(policy.redact) == {
+        "organization": "keep", "person_name": "role", "reference_id": "mask",
+        "financial_id": "mask", "email_address": "drop", "phone": "drop",
+    }
+
+
+REDACTING = FILE.replace(
+    "projection: {from: sensitive, fields: [one_line, domain], sensitivity_gate: medium}",
+    """projection:
+      from: sensitive
+      sensitivity_gate: medium
+      gate_action: redact
+      redact:
+        organization: drop
+        person_name: initial
+        reference_id: drop
+        financial_id: keep
+        email_address: keep
+        phone: drop""",
+)
+
+
+def test_a_file_sets_the_redaction_per_entity_class(tiers_file):
+    policy = registry(tiers_file(REDACTING)).tier("sanitized").projection.policy
+
+    assert policy.redact == Redaction(
+        organization="drop", person_name="initial", reference_id="drop",
+        financial_id="keep", email_address="keep", phone="drop",
+    )
+    assert (policy.sensitivity_gate, policy.gate_action) == (SensitivityLevel.medium, "redact")
+
+
+def test_a_redaction_key_left_out_takes_its_default(tiers_file):
+    text = FILE.replace("sensitivity_gate: medium}", "redact: {phone: keep}}")
+    redact = registry(tiers_file(text)).tier("sanitized").projection.policy.redact
+
+    assert redact == Redaction(phone="keep")
+
+
+def test_the_stub_projection_is_reachable_from_the_file(tiers_file):
+    # gate_action stub and keep for every class is the projection before policies.
+    keep = ", ".join(f"{name}: keep" for name in Redaction.__struct_fields__)
+    text = FILE.replace(
+        "fields: [one_line, domain], sensitivity_gate: medium}",
+        f"gate_action: stub, redact: {{{keep}}}}}",
+    )
+    policy = registry(tiers_file(text)).tier("sanitized").projection.policy
+
+    assert policy == STUB_POLICY
+    assert policy.redact == KEEP_ALL
 
 
 def test_dsns_resolve_lazily_and_fail_naming_their_variable():
@@ -219,6 +282,20 @@ def test_an_unknown_tier_is_refused_naming_the_defined_ones():
          r"unknown column\(s\) subject"),
         (lambda f: f.replace("sensitivity_gate: medium", "sensitivity_gate: extreme"),
          r"sensitivity_gate"),
+        (lambda f: f.replace("sensitivity_gate: medium", "gate_action: hide"),
+         r"Invalid enum value 'hide' - at `\$.tiers\[1\].projection.gate_action`"),
+        (lambda f: f.replace("sensitivity_gate: medium", "redact: {person_name: mask}"),
+         r"Invalid enum value 'mask' - at `\$.tiers\[1\].projection.redact.person_name`"),
+        (lambda f: f.replace("sensitivity_gate: medium", "redact: {organization: mask}"),
+         r"Invalid enum value 'mask' - at `\$.tiers\[1\].projection.redact.organization`"),
+        (lambda f: f.replace("sensitivity_gate: medium", "redact: {email_address: initial}"),
+         r"Invalid enum value 'initial'"),
+        (lambda f: f.replace("sensitivity_gate: medium", "redact: {reference_id: role}"),
+         r"Invalid enum value 'role'"),
+        (lambda f: f.replace("sensitivity_gate: medium", "redact: {address: drop}"),
+         r"unknown field `address` - at `\$.tiers\[1\].projection.redact`"),
+        (lambda f: f.replace("sensitivity_gate: medium", "redact: drop"),
+         r"Expected `object`, got `str` - at `\$.tiers\[1\].projection.redact`"),
         (lambda f: f.replace("server_name: corpus-index-example", "server_name: corpus-local"),
          r"server_name 'corpus-local' is used by two tiers"),
         (lambda f: f.replace("name: sanitized", "name: sensitive"),

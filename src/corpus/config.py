@@ -129,6 +129,10 @@ class Settings(BaseSettings):
     # Deprecated name of ``config_file``, from when it held only tiers.
     tiers_file: str = ""
 
+    # Most rows one sync re-projects only because the projection policy changed
+    # (0: no cap). New and re-enriched rows are never capped; see docs/tiers.md.
+    sync_reproject_limit: int = 500
+
     # Deprecated: overrides over the config file's tiers, kept for one release (see
     # ``tiers.OVERRIDES``). Each applies only when set in the environment.
     # The sanitized tier's server name (serve.server_name).

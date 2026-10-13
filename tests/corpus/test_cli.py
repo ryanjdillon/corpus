@@ -145,7 +145,7 @@ def sanitized_store_cls(monkeypatch):
 def run_sync(monkeypatch):
     """Autospec ``sanitize.run_sync`` with a neutral default result."""
     mock = create_autospec(
-        sanitize.run_sync, return_value={"synced": 0, "skipped": 0, "scanned": 0}
+        sanitize.run_sync, return_value={"synced": 0, "skipped": 0, "scanned": 0, "deferred": 0}
     )
     monkeypatch.setattr(sanitize, "run_sync", mock)
     return mock
@@ -231,20 +231,31 @@ def sanitized_dsn(monkeypatch):
 def test_sync_command(
     runner, configure, shutdown, sanitized_store_cls, run_sync, document_store_cls, sanitized_dsn
 ):
-    run_sync.return_value = {"synced": 3, "skipped": 1, "scanned": 4}
+    run_sync.return_value = {"synced": 3, "skipped": 1, "scanned": 4, "deferred": 0}
     result = runner.invoke(cli.main, ["sync"])
     assert result.exit_code == 0, result.output
     assert configure.call_args.args == ("corpus-sync",)
     assert "synced 3" in result.output
     # Everything comes from the sanitized tier: its store, its projection's
-    # source tier, gate and columns.
+    # source tier and policy.
     dst = tier("sanitized")
     src = tier(dst.projection.source)
     assert sanitized_store_cls.call_args.args == (SANITIZED_DSN, dst.schema)
     assert document_store_cls.call_args.args == (src.dsn, src.schema)
     kwargs = run_sync.call_args.kwargs
     assert (kwargs["source"], kwargs["force"]) == (None, False)
-    assert (kwargs["gate"], kwargs["fields"]) == ("high", dst.projection.fields)
+    assert kwargs["policy"] == dst.projection.policy
+    assert kwargs["reproject_limit"] == settings.sync_reproject_limit == 500
+    assert "older policy" not in result.output
+
+
+def test_sync_reports_rows_left_under_an_older_policy(
+    runner, configure, shutdown, sanitized_store_cls, run_sync, document_store_cls, sanitized_dsn
+):
+    run_sync.return_value = {"synced": 500, "skipped": 0, "scanned": 1700, "deferred": 1200}
+    result = runner.invoke(cli.main, ["sync"])
+    assert result.exit_code == 0, result.output
+    assert "1200 rows still projected under an older policy" in result.output
 
 
 @pytest.mark.parametrize("flag", ["--reproject", "--force"])
@@ -255,6 +266,7 @@ def test_sync_reproject_re_projects_every_row(
     result = runner.invoke(cli.main, ["sync", flag])
     assert result.exit_code == 0, result.output
     assert run_sync.call_args.kwargs["force"] is True
+    assert run_sync.call_args.kwargs["reproject_limit"] == 0  # an explicit full run
 
 
 def test_sync_without_the_sanitized_dsn_fails_naming_it(
@@ -421,7 +433,12 @@ tiers:
     query: {max_limit: 100, filterable: [domain], aggregatable: [domain], orders: [priority], text: true, semantic: true}
   - name: partner
     store: {dsn_env: PARTNER_DATABASE_URL, schema: partner}
-    projection: {from: sensitive, fields: [domain, one_line], sensitivity_gate: low}
+    projection:
+      from: sensitive
+      fields: [domain, one_line]
+      sensitivity_gate: low
+      gate_action: stub
+      redact: {person_name: initial}
     serve: {server_name: corpus-partner}
     query: {max_limit: 20, filterable: [domain], aggregatable: [domain], orders: [priority], text: true, semantic: true}
 """
@@ -447,8 +464,9 @@ def test_sync_into_a_tier_defined_only_in_the_file(
     src = tier("sensitive")
     assert sanitized_store_cls.call_args.args == (PARTNER_DSN, "partner")
     assert document_store_cls.call_args.args == (src.dsn, src.schema)
-    kwargs = run_sync.call_args.kwargs
-    assert (kwargs["gate"], kwargs["fields"]) == ("low", ("domain", "one_line"))
+    policy = run_sync.call_args.kwargs["policy"]
+    assert (policy.sensitivity_gate.value, policy.fields) == ("low", ("domain", "one_line"))
+    assert (policy.gate_action, policy.redact.person_name) == ("stub", "initial")
 
 
 @pytest.mark.parametrize(

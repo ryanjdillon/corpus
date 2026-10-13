@@ -176,7 +176,10 @@ What is redacted, each replaced by a `[REDACTED:<type>]` placeholder:
   blocked by default (`BLOCK_TYPES`) rather than redacted;
 - identity and financial numbers (`pii`): IBANs and crypto wallets on format,
   and US SSNs, credit cards and US bank numbers only with a context word right
-  beside them, so an order number that looks like a card passes;
+  beside them, so an order number that looks like a card passes. The context
+  words are Presidio's English ones plus Norwegian ones for a card (`kort`,
+  `kortnummer`…) and an account (`konto`, `kontonummer`…); see
+  [Tiers](tiers.md#what-financial_id-does-not-find) for what still passes;
 - Norwegian national id numbers (fødselsnummer, D-nummer, H-nummer, and the tax
   administration's Tenor synthetic test numbers), only when both mod-11 check
   digits and the birth date are valid;
@@ -205,17 +208,20 @@ image and audio parts pass through byte-identical.
 ## Sanitized tier
 
 `corpus sync` projects enriched documents into a separate, trust-downgraded
-database: summaries, the priority signal and an https message link, never raw
-content, subject or sender. `corpus serve sanitized` serves that database to
-cloud-side consumers over MCP. The sync's stores, source tier, columns and
-sensitivity gate come from the `sanitized` tier's `projection` (see
-[Tiers](tiers.md)); `corpus sync --reproject` re-projects every row after the
-projection changes, and `corpus sync --tier <name>` syncs into another projected
-tier the file defines.
+database: redacted summaries, the priority signal and an https message link,
+never raw content, subject or sender. `corpus serve sanitized` serves that
+database to cloud-side consumers over MCP. The sync's stores, source tier,
+columns, redaction and sensitivity gate come from the `sanitized` tier's
+`projection` (see [Tiers](tiers.md#redaction)); a changed projection policy
+re-projects the rows over the next syncs, at most
+`CORPUS_SYNC_REPROJECT_LIMIT` a run, `corpus sync --reproject` re-projects
+every row at once, and `corpus sync --tier <name>` syncs into another
+projected tier the file defines.
 
 | Variable | Purpose |
 |---|---|
 | `CORPUS_CONFIG_FILE` | path of the config file (`tiers:` and `sources:`); unset means the built-in default tiers and the deprecated pre-file sources. `CORPUS_TIERS_FILE` is its deprecated name |
+| `CORPUS_SYNC_REPROJECT_LIMIT` | most rows one sync re-projects only because the projection policy changed (default 500; 0: no cap). New and re-enriched rows are never capped. See [Tiers](tiers.md#rolling-out-a-policy-change) |
 | `CORPUS_SANITIZED_DATABASE_URL` | DSN the sync writes to (the default tiers' `dsn_env`) |
 | `CORPUS_INDEX_DATABASE_URL` | DSN the index server reads with, a read-only role (the default tiers' `reader_dsn_env`) |
 

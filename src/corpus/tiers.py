@@ -13,8 +13,9 @@ tiers first. It is validated at startup into typed structs: an unknown key, a
 missing query policy or a projection from an unknown tier is an error, never
 ignored. Without a file, or a file without ``tiers:``, the built-in
 :data:`DEFAULT` applies, which is the configuration corpus had before the file
-existed. The file never holds a DSN: each store names the environment variable
-that does, so secrets keep their injection path.
+existed, with the sanitized tier's default redaction policy
+(``sanitize.DEFAULT_POLICY``). The file never holds a DSN: each store names the
+environment variable that does, so secrets keep their injection path.
 
 ``serve`` and ``sync`` need nothing but :func:`tier`. A few older environment
 variables still override the file for one release (see :data:`OVERRIDES`).
@@ -35,6 +36,7 @@ import msgspec
 from .config import Settings, settings
 from .enrichment import SensitivityLevel
 from .query import SANITIZED_POLICY, SENSITIVE_POLICY, QueryPolicy
+from .sanitize import GateAction, Policy, Redaction
 from .sanitized_store import COLS
 from .sources import Registry as SourceRegistry
 from .sources import SourceEntry
@@ -77,15 +79,29 @@ class StoreConfig(_Strict):
 class ProjectionConfig(_Strict):
     """How a downgraded tier is derived from a source tier (``corpus sync``).
 
+    Every key but ``from`` is the projection's :class:`~corpus.sanitize.Policy`;
+    an unset one takes the policy's default.
+
     Attributes:
         source: The source tier (key ``from``).
         fields: The projected columns; any other column is stored as NULL.
-        sensitivity_gate: The sensitivity at/above which free text is withheld.
+        sensitivity_gate: The sensitivity at/above which ``gate_action`` applies.
+        gate_action: ``redact`` a row at/above the gate like any other, or ``stub`` it.
+        redact: What each entity class becomes in the free text.
     """
 
     source: _Name = msgspec.field(name="from")
     fields: tuple[str, ...] = COLS
     sensitivity_gate: SensitivityLevel = SensitivityLevel.high
+    gate_action: GateAction = "redact"
+    redact: Redaction = Redaction()
+
+    def policy(self) -> Policy:
+        """The projection's policy: everything here but the source tier."""
+        return Policy(
+            fields=tuple(self.fields), sensitivity_gate=self.sensitivity_gate,
+            gate_action=self.gate_action, redact=self.redact,
+        )
 
 
 class ServeConfig(_Strict):
@@ -124,8 +140,10 @@ class ConfigFile(_Strict):
     sources: list[SourceEntry] | None = None
 
 
-#: The tiers without a file: exactly the configuration before the file existed.
+#: The tiers without a file: the configuration before the file existed, with the
+#: sanitized tier redacting by the default policy rather than stubbing at the gate.
 DEFAULT = ConfigFile(tiers=[
+
     TierConfig(
         name="sensitive",
         store=StoreConfig(dsn_env=SOURCE_DSN_ENV),
@@ -163,11 +181,10 @@ class TierConfigError(ConfigError):
 
 @dataclass(frozen=True)
 class Projection:
-    """A projected tier's derivation: its source tier, columns and gate."""
+    """A projected tier's derivation: its source tier and its policy."""
 
     source: str
-    fields: tuple[str, ...]
-    sensitivity_gate: str
+    policy: Policy
 
 
 @dataclass(frozen=True)
@@ -420,9 +437,7 @@ class Registry:
             server_name=t.serve.server_name,
             access=tuple(t.serve.access),
             policy=t.query,
-            projection=None if p is None else Projection(
-                source=p.source, fields=tuple(p.fields), sensitivity_gate=p.sensitivity_gate.value
-            ),
+            projection=None if p is None else Projection(source=p.source, policy=p.policy()),
         )
 
     def tiers(self) -> tuple[Tier, ...]:

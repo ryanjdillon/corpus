@@ -195,6 +195,13 @@ def test_a_store_without_its_dsn_fails_naming_the_variable(opener, env):
         opener(registry.tier(name))
 
 
+def test_a_source_tier_has_no_index_store():
+    registry = tiers.Registry(tiers.DEFAULT, Settings(), {})
+
+    with pytest.raises(ValueError, match="source tier"):
+        serving.open_index_store(registry.tier("sensitive"))
+
+
 @pytest.mark.parametrize("tier", TIERS)
 def test_serves_stateless_http(tier):
     # Idle sessions must not expire under long-lived clients (they would get 404).

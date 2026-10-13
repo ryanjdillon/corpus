@@ -98,6 +98,22 @@ the data-class `label`) are trusted, and so is the sanitized tier's `uri`, a
 provider web link that is projected only as an https URL (see
 [Tiers](tiers.md#the-message-link-uri)).
 
+On the sanitized tier, `one_line`, `action_summary` and `organizations` are
+redacted by the tier's policy before they are stored: names become roles or
+initials, reference and account numbers become placeholders such as
+`[booking ••••42]`, email addresses and phone numbers are dropped, and a
+credential becomes `[REDACTED:<type>]` under every policy (see
+[Tiers](tiers.md#redaction)). A high-sensitivity row with nothing to redact
+against, or on a tier set to `gate_action: stub`, carries a stub instead:
+`[sensitive] <domain> item — action: <action>`. A row the sync has not yet
+re-projected under the tier's current policy is served as
+`[pending redaction] <domain> item`, with no `action_summary` or
+`organizations` (see [Tiers](tiers.md#serving-a-row-not-yet-re-projected)).
+Redacted text is still derived
+from third-party text, so those columns stay untrusted. The placeholders match
+none of the `instruction_like` patterns, so redaction neither raises nor clears
+the flag.
+
 The sanitized tier's untrusted columns are `sanitized_store.UNTRUSTED_COLS`,
 next to the projection itself; the full surface's row keys are
 `store.SEARCH_KEYS`, `QUERY_KEYS` and `GET_KEYS`. Tests require every column

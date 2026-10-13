@@ -20,6 +20,7 @@ from corpus.query import (
     QuerySpec,
     parse_spec,
 )
+from corpus.sanitize import DEFAULT_POLICY, Policy
 from corpus.sanitized_store import COLS, SanitizedStore
 from corpus.store import DocumentStore, to_document
 
@@ -82,10 +83,11 @@ DEFAULTS = {
 
 @pytest.fixture
 def sanitized(pg):
-    """A SanitizedStore on the test schema, holding ``ROWS``."""
+    """A SanitizedStore on the test schema, holding ``ROWS`` under the default policy."""
     with SanitizedStore(dsn=pg, schema=SCHEMA) as store:
         for id_, overrides, vec in ROWS:
             row = {c: None for c in COLS} | DEFAULTS | {"id": id_} | overrides
+            row["policy_hash"] = DEFAULT_POLICY.digest()
             store.save_message(row, vec)
         yield store
 
@@ -157,6 +159,40 @@ def test_a_reader_reads_a_column_its_table_lacks_as_null(pg, reader_dsn):
             writer._write(f"UPDATE {SCHEMA}.messages SET uri = %s WHERE id = 't1'", (link,))
         assert reader.get("t1")["uri"] == link
         assert _query(reader, filters={"domain": "travel"}, order="oldest")[0] == "t5"
+
+
+def test_a_reader_reads_a_table_without_the_policy_hash(pg, reader_dsn):
+    # The sync's bookkeeping column, added by its DDL: a reader never selects it.
+    with psycopg.connect(pg, autocommit=True) as conn:
+        conn.execute(f"ALTER TABLE {SCHEMA}.messages DROP COLUMN policy_hash")
+    with SanitizedStore(dsn=reader_dsn, schema=SCHEMA, read_only=True) as reader:
+        assert _query(reader, filters={"domain": "work"}, order="priority") == ["w1", "w2"]
+        assert set(reader.get("t1")) == set(COLS)
+
+
+def test_a_stale_row_loses_a_column_the_serving_policy_no_longer_projects(reader_dsn):
+    # Every ROWS row was projected under the default policy, so each is stale
+    # under this one; a column it drops must not be served from the old projection.
+    narrower = Policy(fields=tuple(c for c in COLS if c != "sender_domain"))
+    with SanitizedStore(
+        dsn=reader_dsn, schema=SCHEMA, read_only=True, projection=narrower
+    ) as store:
+        assert _query(store, filters={"sender_domain": "bank.example.com"}) == []
+        row = store.get("b1")
+    assert row["sender_domain"] is None
+    assert row["one_line"] == "[pending redaction] banking item"
+    assert (row["domain"], row["importance"]) == ("banking", "medium")
+
+
+def test_a_table_without_the_policy_hash_serves_every_row_degraded(pg, reader_dsn):
+    with psycopg.connect(pg, autocommit=True) as conn:
+        conn.execute(f"ALTER TABLE {SCHEMA}.messages DROP COLUMN policy_hash")
+    with SanitizedStore(
+        dsn=reader_dsn, schema=SCHEMA, read_only=True, projection=DEFAULT_POLICY
+    ) as store:
+        assert _query(store, text="tromsø") == []
+        assert store.get("t1")["one_line"] == "[pending redaction] travel item"
+        assert store.get("t3")["action_summary"] is None
 
 
 def test_any_of_lists_and_single_values(reader):
