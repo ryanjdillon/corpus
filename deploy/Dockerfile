@@ -19,7 +19,7 @@ RUN python -m build --wheel --outdir /dist packages/detect \
 # build. The pin is the release's cosign-signed checksums.txt line, verified when it
 # was bumped (docs/development.md#build); `just verify-dockerfile-checksum` checks
 # that a wrong pin fails.
-FROM debian:12-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587 AS leaks
+FROM debian:13-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f AS leaks
 ARG BETTERLEAKS_VERSION=1.8.1
 ARG BETTERLEAKS_SHA256=efa407244e1ea8e35f582b8a42becdeac08bdead04f68eb752adda722d583c2a
 RUN apt-get update \
