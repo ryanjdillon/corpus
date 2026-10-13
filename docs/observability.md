@@ -93,16 +93,25 @@ suffix, and the `{row}` and `{run}` units add none either.
 
 They are gauges rather than counters because of how a sync runs. Each sync is a
 one-shot process, so its instruments start from nothing and are exported about
-once, when it flushes on exit. And the syncs into one tier write **one series**:
-the attributes are only `tier` and `schema`, and the exporter adds no per-process
-label, so several sources syncing into a tier from jobs of one service (one
-CronJob per source, say) share it, last writer wins. A counter's `rate` or
-`increase` over that series would read the difference between two runs' work
-(runs of 5 then 7 rows as +2), so never apply either to these metrics; read
-them with `last_over_time` or `max_over_time`. Last writer wins is what the
-backlog gauges want: the store is shared, so every job reports the same
-tier-wide backlog. For the work gauges it means a window shows the runs that
-were sampled, not a total.
+once, when it flushes on exit. And **every run is its own series**: the
+OpenTelemetry SDK gives each process a random `service.instance.id`, which a
+Prometheus backend turns into the `instance` label. A rate over one series
+would see a single sample, so never apply `rate` or `increase` to these
+metrics; read each series with `last_over_time` or `min_over_time`.
+
+Several runs of one tier, such as one job per source syncing into a shared
+tier, therefore leave several series at once, each holding that run's value.
+Aggregate them per tier with `min by (job, schema, tier)`.
+
+- **Backlog gauges.** Every run reports the backlog of the whole tier, since
+  the store is shared. Between policy changes the backlog only shrinks, so the
+  smallest value across the window's runs is the latest state, and a backlog
+  that is really stuck stays non-zero in every run.
+- **Work gauges** (`reprojected`, `embedded`, `capped`). These describe a
+  single run. Read them per series, or sum the runs in a window for a total:
+  `sum by (job, schema, tier) (last_over_time(corpus_sync_embedded[1d]))`.
+  `sum_over_time` would add nothing, because each series holds a single
+  sample.
 
 Between runs an instant query finds a gauge only while the backend still
 returns a series without new samples (Prometheus stops returning one five
@@ -111,11 +120,16 @@ instant value. For example:
 
 ```promql
 # Embeddings have not caught up for three days: semantic search is missing rows.
-min_over_time(corpus_sync_embed_stale[3d]) > 0
+min by (job, schema, tier) (min_over_time(corpus_sync_embed_stale[3d])) > 0
 
-# A sync left placeholders: only a run cut short by --limit should.
-max_over_time(corpus_sync_deferred[1h]) > 0
+# Rows are still served as placeholders. A sync re-projects every row under an
+# older policy, whatever its --limit, so this stays non-zero only while the
+# runs into a tier are still going, or when re-projection keeps failing.
+min by (job, schema, tier) (last_over_time(corpus_sync_deferred[13h])) > 0
 ```
+
+The aggregation does hide one case. A backlog that newly gets stuck after a
+clean run stays hidden until that clean run's series leaves the window.
 
 A skipped re-embedding is routine when several sources sync into one tier on
 the same schedule (one of them holds the lock), so `reembed_skipped` explains
