@@ -64,3 +64,39 @@ a different presidio, spaCy or grpcio. CI installs with the same constraints, so
 the tests run against what ships. Run `just lock` after changing dependencies, or
 to take upstream updates, and commit the result. Pushing a `v*` tag builds and
 publishes `ghcr.io/<owner>/corpus` (see `.github/workflows/docker.yml`).
+
+The base images (`python:3.12-slim`, `debian:12-slim`) are pinned by digest
+next to their tag, so a rebuild gets the same layers; Dependabot's `docker`
+ecosystem proposes digest bumps.
+
+### The Betterleaks pin
+
+The `leaks` stage downloads the [Betterleaks](detect.md#settings) release
+tarball and checks it against `BETTERLEAKS_SHA256` with `sha256sum -c` before
+unpacking it, so a tampered or swapped release fails the build. Betterleaks
+reads the whole archive in the sensitive tier, which is why it is not taken on
+trust from the download. Building it from source would add a Go toolchain stage
+for no extra assurance over a pinned digest, so the image downloads and verifies.
+
+The release publishes `checksums.txt` with a cosign keyless signature
+(`checksums.txt.sigstore.json`) from its release workflow. To bump
+`BETTERLEAKS_VERSION`, verify that signature, take the `linux_x64` line, and
+check it against the tarball:
+
+```bash
+v=1.8.1  # the new version
+gh release download "v$v" -R betterleaks/betterleaks \
+  -p checksums.txt -p checksums.txt.sigstore.json -p "betterleaks_${v}_linux_x64.tar.gz"
+cosign verify-blob --bundle checksums.txt.sigstore.json \
+  --certificate-identity "https://github.com/betterleaks/betterleaks/.github/workflows/release.yml@refs/tags/v$v" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com checksums.txt
+grep "_linux_x64.tar.gz" checksums.txt   # the new BETTERLEAKS_SHA256
+sha256sum "betterleaks_${v}_linux_x64.tar.gz"   # must match
+```
+
+Set both `ARG`s in `deploy/Dockerfile` together. `just verify-dockerfile-checksum`
+builds only the `leaks` stage with a wrong checksum and passes only if
+`sha256sum` refused it. It needs Docker and the network, so it is a local
+check, not part of `just check` or CI. Whether the binary ran or the audit fell
+back to the local rules is counted per scan; see
+[Observability](observability.md#credential-scanner-fallback).
