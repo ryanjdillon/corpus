@@ -7,7 +7,7 @@ which were linked only by when each was scheduled to start.
 
 ```bash
 corpus pipeline imap:example                       # ingest, enrich, sync
-corpus pipeline imap:example --limit 400           # enrich and sync at most 400
+corpus pipeline imap:example --limit 400           # enrich and embed at most 400
 corpus pipeline imap:example --stages ingest       # just ingest
 corpus pipeline imap:example --batch-size 16       # embed 16 records per request
 corpus pipeline imap:example --tier partner        # sync into another projected tier
@@ -31,7 +31,7 @@ The stages always run in this order, each scoped to the source:
 |---|---|---|
 | `ingest` | `corpus ingest <source> --batch-size <n>` | nothing: ingest takes everything newer than its cursor |
 | `enrich` | `corpus enrich --source <source>`, including its [secret audit](enrichment.md) | at most N documents sent to the model |
-| `sync` | `corpus sync --source <source> --tier <tier>` | at most N rows projected |
+| `sync` | `corpus sync --source <source> --tier <tier>` | at most N new or re-enriched rows embedded in the text phase; new rows past it wait for the next run, every stored row is still re-projected, and the re-embed phase keeps its own cap (`CORPUS_SYNC_REEMBED_LIMIT`) |
 
 `--limit` does not cap ingest; `--batch-size` (the source's
 `pipeline.batch_size`, else `50`, the same as `corpus ingest`) sets how many

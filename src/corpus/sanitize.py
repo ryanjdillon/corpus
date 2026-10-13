@@ -702,12 +702,18 @@ def run_sync(
     ``policy_hash``) for the embedding phase of this or a later run, which
     takes the newest first.
 
-    ``limit`` caps the rows the text phase projects (0 does all). New and
-    re-enriched rows are projected before those stale only by policy, so a
-    capped run keeps the tier current first. ``projector`` builds each row
-    (``project`` unless a caller substitutes its own and accepts the same
-    arguments). ``store`` is an open SanitizedStore and ``documents`` an open
-    DocumentStore on the source tier, whose lifecycles the caller owns.
+    ``limit`` caps the embedding calls of the text phase (0: no cap), which
+    embeds new rows and re-enriched rows whose ``one_line`` changed. A new row
+    past the cap is not written, and is counted as ``capped``: it has no
+    stored row, so nothing is served for it until a later run takes it, in the
+    same newest-first order. A re-enriched row past the cap is projected all
+    the same, keeping its stored vector and left embed-stale for the embedding
+    phase, as a re-projection is. Every other row the text phase projects keeps
+    its vector too, so the cap never leaves a row a placeholder. ``projector``
+    builds each row (``project`` unless a caller substitutes its own and
+    accepts the same arguments). ``store`` is an open SanitizedStore and
+    ``documents`` an open DocumentStore on the source tier, whose lifecycles
+    the caller owns.
 
     Rows whose written columns are unchanged are not rewritten, so a run
     interrupted and run again redoes nothing it finished, and counts those
@@ -715,7 +721,8 @@ def run_sync(
 
     Returns the counts: ``scanned``, ``synced`` (rows written), ``skipped``,
     ``reprojected`` (rows rewritten only because of the policy or ``force``),
-    ``embedded`` (vectors stored, in either phase), and, after the run,
+    ``embedded`` (vectors stored, in either phase), ``capped`` (new rows
+    ``limit`` left for a later run), and, after the run,
     ``pending`` (rows still projected under another policy, which a reader
     serves as a placeholder) and ``embed_stale`` (rows still awaiting a new
     vector). ``reembed_skipped`` is present only when the embedding phase was
@@ -724,16 +731,17 @@ def run_sync(
     embedder = embedder or Embedder()
     digest = policy.digest()
     state = store.synced_state()
-    counts = {"scanned": 0, "synced": 0, "skipped": 0, "reprojected": 0, "embedded": 0}
+    counts = {
+        "scanned": 0, "synced": 0, "skipped": 0, "reprojected": 0, "embedded": 0, "capped": 0,
+    }
     to_embed: list[dict] = []
     # Rows rewritten keeping their vector: re-enriched ones, and re-projected ones.
     to_update: list[dict] = []
     to_reproject: list[dict] = []
-    # Rows stale only by policy, held back behind the current ones when the
-    # run is capped. At most ``limit`` can be projected, so at most that many
-    # are held; uncapped, they are projected in place.
-    held: list[tuple[str, dict | None, dict | None, object]] = []
-    queued = 0
+    # Rows queued for embedding. The limit caps these, not rows scanned: the
+    # reader's order is stable, so a scan cap would re-scan the same
+    # already-synced prefix on every run and never reach older unsynced rows.
+    embeds = 0
 
     def flush() -> None:
         for rows, reprojected in ((to_update, False), (to_reproject, True)):
@@ -752,48 +760,40 @@ def run_sync(
             counts["embedded"] += len(to_embed)
             to_embed.clear()
 
-    def queue(doc_id: str, meta: dict | None, enr: dict | None, enriched_at: object) -> bool:
-        """Project one row; True once ``limit`` rows are projected."""
-        nonlocal queued
-        stored = state.get(doc_id)
-        row = projector(doc_id, meta, enr, policy)
-        row["enriched_at"] = enriched_at
-        row["policy_hash"] = digest
-        if stored is None or stored[0] != enriched_at:
-            row["embedded_policy_hash"] = digest
-            pending = to_update if _embeds(stored, row["one_line"]) else to_embed
-        else:
-            row["embedded_policy_hash"] = _embedded_under(stored, row["one_line"], digest)
-            pending = to_reproject
-        pending.append(row)
-        queued += 1
-        if len(pending) >= batch_size:
-            flush()
-        # The limit caps rows projected, not rows scanned: the reader's order
-        # is stable, so a scan cap would re-scan the same already-synced
-        # prefix on every run and never reach older unsynced rows.
-        return bool(limit) and queued >= limit
-
-    done = False
     with closing(documents.iter_enriched(source=source)) as enriched:
         for doc_id, meta, enr, enriched_at in enriched:
             counts["scanned"] += 1
             stored = state.get(doc_id)
-            if not force and stored is not None and stored[0] == enriched_at:
-                if stored[2] == digest:
-                    counts["skipped"] += 1
+            current = stored is not None and stored[0] == enriched_at
+            if current and not force and stored[2] == digest:
+                counts["skipped"] += 1
+                continue
+            row = projector(doc_id, meta, enr, policy)
+            row["enriched_at"] = enriched_at
+            row["policy_hash"] = digest
+            if current:
+                row["embedded_policy_hash"] = _embedded_under(stored, row["one_line"], digest)
+                pending = to_reproject
+            elif _embeds(stored, row["one_line"]):
+                row["embedded_policy_hash"] = digest
+                pending = to_update
+            elif limit and embeds >= limit:
+                if stored is None:
+                    counts["capped"] += 1
                     continue
-                if limit:
-                    if len(held) < limit:
-                        held.append((doc_id, meta, enr, enriched_at))
-                    continue
-            if queue(doc_id, meta, enr, enriched_at):
-                done = True
-                break
-    for row in held:
-        if done:
-            break
-        done = queue(*row)
+                # Embed-stale until the embedding phase reaches it. Not the
+                # stored embedded_policy_hash: that policy was applied to the
+                # old enrichment, so a revert to it would mark the old vector
+                # current for the new text (see _vector_holds).
+                row["embedded_policy_hash"] = None
+                pending = to_update
+            else:
+                row["embedded_policy_hash"] = digest
+                pending = to_embed
+                embeds += 1
+            pending.append(row)
+            if len(pending) >= batch_size:
+                flush()
     flush()
     if reembed_limit is not None:
         with store.reembed_lock(wait=reembed_wait, on_wait=on_reembed_wait) as held:
@@ -811,6 +811,11 @@ def run_sync(
         counts["reprojected"],
         counts["embedded"],
     )
+    if counts["capped"]:
+        log.info(
+            "%d new rows held back by the limit; the next sync takes them",
+            counts["capped"],
+        )
     if counts["pending"]:
         log.info(
             "%d rows still projected under an older policy, served as placeholders; "
@@ -848,8 +853,9 @@ def _vector_holds(stored: _State, one_line: str | None, digest: str) -> bool:
     re-projected under another since (a policy changed, then reverted). The
     projection is deterministic, so this policy writes the text the vector was
     computed from again. Every new or re-enriched row is embedded under the
-    policy of the time, so a row's ``embedded_policy_hash`` always names a
-    policy applied to its current enrichment.
+    policy of the time, or, past the text phase's ``limit``, given no
+    ``embedded_policy_hash``, so one always names a policy applied to the row's
+    current enrichment.
     """
     return _embeds(stored, one_line) or stored[3] == digest != stored[2]
 

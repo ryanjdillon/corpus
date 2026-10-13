@@ -31,7 +31,7 @@ sources:
 | `credentials_env_prefix` | The prefix of the source's credential variables, `[A-Z_][A-Z0-9_]*`. Default: `CORPUS_<KIND>_<NAME>`. |
 | `options` | What to fetch; the keys depend on the kind (below). |
 | `pipeline.batch_size` | Records ingest embeds per request and writes per batch (default `50`). `corpus ingest --batch-size` and `corpus pipeline --batch-size` override it. |
-| `pipeline.limit` | At most this many documents enriched and rows synced per run; `0` is no limit (default). `corpus pipeline --limit` overrides it. |
+| `pipeline.limit` | At most this many documents enriched, and new or re-enriched rows embedded by sync, per run (sync still re-projects every stored row); `0` is no limit (default). `corpus pipeline --limit` overrides it. |
 | `pipeline.tier` | The projected tier sync writes (default `sanitized`). `corpus pipeline --tier` overrides it. |
 
 | Kind | `options` key | Meaning |
