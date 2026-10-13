@@ -38,6 +38,7 @@ from presidio_analyzer.predefined_recognizers import (
     UsBankRecognizer,
     UsSsnRecognizer,
 )
+from tldextract import TLDExtract
 
 from .span import Span
 
@@ -83,7 +84,26 @@ _RECOGNIZERS = [
 # Redaction-only: email is high-precision on format but far too common to flag in
 # the archive audit, so it is scanned solely for the egress redactor. Kept out of
 # _RECOGNIZERS/_ENTITY_NAMES so the audit counts (and the detector fingerprint) are unchanged.
-_EMAIL_RECOGNIZER = EmailRecognizer()
+# Presidio validates an email match with module-level ``tldextract.extract``, whose
+# default extractor fetches the Public Suffix List over HTTPS on first use and
+# falls back to the bundled snapshot only after that fetch fails. Behind a
+# deny-all egress policy the fetch stalls the first email-bearing text, so the
+# suffix list here is the bundled snapshot only: no fetch, no disk cache.
+class _OfflineEmailRecognizer(EmailRecognizer):
+    """Presidio's email recognizer, validated against the bundled suffix list."""
+
+    def __init__(self, extractor: TLDExtract | None = None) -> None:
+        super().__init__()
+        self._tld_extractor = (
+            extractor if extractor is not None else TLDExtract(suffix_list_urls=(), cache_dir=None)
+        )
+
+    def validate_result(self, pattern_text: str) -> bool:
+        """Accept a match whose domain ends in a known public suffix."""
+        return self._tld_extractor(pattern_text).fqdn != ""
+
+
+_EMAIL_RECOGNIZER = _OfflineEmailRecognizer()
 _EMAIL_ENTITY = "email"
 
 # Norwegian national identity number (fødselsnummer; D-nummer for non-residents,

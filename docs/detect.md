@@ -5,7 +5,7 @@ are their own distribution: `corpus-detect`, in `packages/detect/` (import
 package `corpus_detect`). corpus depends on it for the secret audit and tier
 projection. [scan-gate](https://github.com/ryanjdillon/scan-gate), the egress gate in
 front of model providers, is a consumer of it: it depends on corpus-detect
-without the rest of corpus (haystack, psycopg, mcp). corpus-detect's only dependency is `presidio-analyzer`.
+without the rest of corpus (haystack, psycopg, mcp). corpus-detect's dependencies are `presidio-analyzer` and `tldextract`.
 
 ## Interface
 
@@ -71,6 +71,11 @@ What `redact` replaces, each by a `[REDACTED:<type>]` placeholder:
 Email addresses and phone numbers are found for redaction only. They are too
 common in mail to count as findings in the archive audit; the national id
 and bank account numbers are counted there too.
+
+Detection never reaches the network, so it runs behind a deny-all egress policy.
+An email match must end in a known public suffix; the suffix list is the
+snapshot bundled with `tldextract`, not the live Public Suffix List that
+Presidio's own email recognizer fetches on first use.
 
 ## Settings
 

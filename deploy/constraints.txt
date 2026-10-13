@@ -316,7 +316,9 @@ tenacity==9.2.1
 thinc==8.3.13
     # via spacy
 tldextract==5.4.0
-    # via presidio-analyzer
+    # via
+    #   corpus-detect
+    #   presidio-analyzer
 tqdm==4.70.1
     # via
     #   haystack-ai
