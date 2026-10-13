@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING, Literal
 from urllib.parse import urlsplit
 
 import msgspec
+from corpus_detect import Span, leaks, resolve_overlaps
 
 from . import telemetry
 from .embeddings import Embedder
@@ -49,7 +50,6 @@ from .enrichment import (
     Travel,
     country_code,
 )
-from .redact import Span, resolve_overlaps
 from .sanitized_store import COLS
 
 if TYPE_CHECKING:
@@ -430,7 +430,7 @@ class _Redactor:
                 else:
                     start, end = m.span()
                 yield Span(start, end, cls, "pii"), replace(text[start:end])
-        from . import pii
+        from corpus_detect import pii
 
         for span in pii.scan_spans(text):
             # A type the scan learns later is an identifier until classified.
@@ -528,8 +528,6 @@ def credential_spans(text: str) -> list[Span]:
     A summary should hold none, but a model can copy a token from the mail
     into one; no policy can keep it.
     """
-    from . import leaks
-
     return resolve_overlaps(leaks.scan_spans(text))
 
 

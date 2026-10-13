@@ -1,8 +1,8 @@
 """Batch secret audit over the stored archive.
 
-Streams stored documents, runs the deterministic secret scanner on each, and
-returns a report of which messages contain which secret *types* — counts and
-identifying metadata only, never the secret values. This is the "find the SSNs /
+Streams stored documents, runs the deterministic detectors (``corpus_detect``) on
+each, and returns a report of which messages contain which secret *types* —
+counts and identifying metadata only, never the secret values. This is the "find the SSNs /
 recovery codes / credentials in my mail" pass; it depends on no model.
 """
 
@@ -13,8 +13,8 @@ import re
 from contextlib import closing
 from typing import Any
 
-from . import leaks, pii
-from .redact import Span
+from corpus_detect import Span, detect, detect_spans, fingerprint_parts
+
 from .store import DocumentStore
 
 # Tight literal-phrase gate for recovery/backup codes: these have no deterministic
@@ -30,23 +30,11 @@ _RECOVERY_HINT = re.compile(
 def _detector_fingerprint() -> str:
     """Return a stable hash of what the deterministic detectors actually match.
 
-    Covers the pii recognizers/entities/gates, the leaks rules, and the recovery
-    hint. It changes only when detection logic changes, so nothing needs manual
-    bumping.
+    Covers the detectors' own parts (``corpus_detect.fingerprint_parts``) and the
+    recovery hint. It changes only when detection logic changes, so nothing needs
+    manual bumping.
     """
-    parts = (
-        sorted(type(r).__name__ for r in pii._RECOGNIZERS),
-        sorted(pii._ENTITY_NAMES.items()),
-        sorted(pii._CONTEXT_REQUIRED),
-        sorted(pii._EXTRA_CONTEXT.items()),
-        pii._MIN_SCORE,
-        pii._NO_NATIONAL_ID.pattern,
-        pii._NO_BANK_ACCOUNT.pattern,
-        pii._NO_BANK_ACCOUNT_CONTEXT,
-        [(name, pattern.pattern) for name, pattern in leaks._RULES],
-        sorted(leaks._RULE_MAP.items()),
-        _RECOVERY_HINT.pattern,
-    )
+    parts = (*fingerprint_parts(), _RECOVERY_HINT.pattern)
     return hashlib.sha1(repr(parts).encode()).hexdigest()[:12]
 
 
@@ -54,29 +42,6 @@ def _detector_fingerprint() -> str:
 #: which candidate-generation logic produced it. Derived, so it updates itself when
 #: any recognizer, rule, or gate changes.
 SCAN_VERSION = _detector_fingerprint()
-
-
-def detect(content: str | None) -> dict[str, int]:
-    """Merge the identity (``pii``) and credential (``leaks``) detectors.
-
-    Returns a single ``{secret_type: count}`` map for one document.
-    """
-    counts = dict(pii.scan(content).secret_counts)
-    for name, count in leaks.scan(content).items():
-        counts[name] = counts.get(name, 0) + count
-    return counts
-
-
-def detect_spans(content: str | None) -> list[Span]:
-    """Merge the identity and credential detectors' match offsets for redaction.
-
-    The span-level counterpart of :func:`detect`: the same two detectors, but each
-    match's ``[start, end)`` extent and type rather than a count. Values are never
-    included. Overlap resolution is the caller's concern (see ``redact``).
-    """
-    if not content:
-        return []
-    return pii.scan_spans(content) + leaks.scan_spans(content)
 
 
 def candidate_spans(content: str | None) -> list[Span]:

@@ -11,9 +11,10 @@ import subprocess
 from unittest.mock import create_autospec
 
 import pytest
+from corpus_detect import leaks
+from corpus_detect.leaks import LeaksSettings
 
-from corpus import leaks
-from corpus.config import settings
+_BETTERLEAKS = LeaksSettings(bin="betterleaks", timeout=5.0)
 
 
 @pytest.fixture
@@ -49,48 +50,67 @@ def test_clean_text_and_empty():
     assert leaks.scan(None) == {}
 
 
-def test_betterleaks_unions_new_rule_types(run, monkeypatch):
-    monkeypatch.setattr(settings, "leaks_bin", "betterleaks")
+def test_betterleaks_unions_new_rule_types(run):
     run.return_value.stdout = json.dumps(
         [{"RuleID": "aws-access-token"}, {"RuleID": "generic-api-key"}]
     ).encode()
 
     # text has no local matches, so the external findings are what surface
-    counts = leaks.scan("nothing structured here", run=run)
+    counts = leaks.scan("nothing structured here", config=_BETTERLEAKS, run=run)
     assert counts.get("aws_access_key") == 1  # mapped rule id
     assert counts.get("leak_generic-api-key") == 1  # unmapped -> kept verbatim
     run.assert_called_once()
 
 
-def test_betterleaks_missing_binary_degrades_to_local(run, monkeypatch):
-    monkeypatch.setattr(settings, "leaks_bin", "betterleaks")
+def test_betterleaks_missing_binary_degrades_to_local(run):
     run.side_effect = FileNotFoundError("betterleaks")
 
     # local regex still fires; the missing binary must not crash the scan
-    counts = leaks.scan("key AKIAIOSFODNN7EXAMPLE", run=run)
+    counts = leaks.scan("key AKIAIOSFODNN7EXAMPLE", config=_BETTERLEAKS, run=run)
     assert counts.get("aws_access_key") == 1
 
 
-def test_local_regex_takes_precedence_over_external(run, monkeypatch):
-    monkeypatch.setattr(settings, "leaks_bin", "betterleaks")
+def test_local_regex_takes_precedence_over_external(run):
     run.return_value.stdout = json.dumps([{"RuleID": "aws-access-token"}]).encode()
 
     # local regex already counted the AWS key once; external must not double it
-    counts = leaks.scan("key AKIAIOSFODNN7EXAMPLE", run=run)
+    counts = leaks.scan("key AKIAIOSFODNN7EXAMPLE", config=_BETTERLEAKS, run=run)
     assert counts["aws_access_key"] == 1
 
 
-def test_bad_external_report_is_ignored(run, monkeypatch):
-    monkeypatch.setattr(settings, "leaks_bin", "betterleaks")
+def test_bad_external_report_is_ignored(run):
     run.return_value.stdout = b"not json"
 
-    assert leaks.scan("just text", run=run) == {}
+    assert leaks.scan("just text", config=_BETTERLEAKS, run=run) == {}
 
 
-def test_external_not_invoked_when_unconfigured(run, monkeypatch):
-    monkeypatch.setattr(settings, "leaks_bin", "")
-    leaks.scan("key AKIAIOSFODNN7EXAMPLE", run=run)
+def test_external_not_invoked_when_unconfigured(run):
+    leaks.scan("key AKIAIOSFODNN7EXAMPLE", config=LeaksSettings(), run=run)
     run.assert_not_called()
+
+
+def test_betterleaks_runs_the_configured_binary_with_its_timeout(run):
+    run.return_value.stdout = b"[]"
+    leaks.scan("text", config=_BETTERLEAKS, run=run)
+    args, kwargs = run.call_args
+    assert args[0][0] == "betterleaks"
+    assert kwargs["timeout"] == 5.0
+
+
+def test_settings_read_the_corpus_environment_names():
+    env = {"CORPUS_LEAKS_BIN": "/usr/local/bin/betterleaks", "CORPUS_LEAKS_TIMEOUT": "12.5"}
+    assert LeaksSettings.from_env(env) == LeaksSettings(
+        bin="/usr/local/bin/betterleaks", timeout=12.5
+    )
+
+
+def test_settings_default_to_local_rules_only():
+    assert LeaksSettings.from_env({}) == LeaksSettings(bin="", timeout=30.0)
+
+
+def test_a_bad_timeout_names_its_variable():
+    with pytest.raises(ValueError, match="CORPUS_LEAKS_TIMEOUT"):
+        LeaksSettings.from_env({"CORPUS_LEAKS_TIMEOUT": "soon"})
 
 
 def test_scan_spans_masks_whole_private_key_block():

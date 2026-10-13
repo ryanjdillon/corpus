@@ -6,7 +6,8 @@ describes the pipeline as a set of deep modules. Nothing forces it to change
 when the module set does, so it silently goes stale: the enrichment and
 secret-scanning stacks both landed without it being touched.
 
-This gate fails a change that adds or removes a top-level `corpus` module
+This gate fails a change that adds or removes a top-level module of `corpus`
+or of `corpus_detect` (the detectors' own distribution, `packages/detect`)
 without naming it in (or removing it from) the architecture artifacts. It
 checks content, not merely that the file was edited, and it only judges modules
 this change touches — pre-existing gaps are reported as notices so fixing them
@@ -15,6 +16,9 @@ stays a deliberate act rather than a blocked merge.
 Editing a module's body is not architecture: only added, removed, and renamed
 modules are gated. Modules inside subpackages (`fetchers/`) are exempt — a new
 fetcher behind `build_fetcher` is the design working, not a topology change.
+Modules are named by stem across both packages, so moving one between them
+(`src/corpus/pii.py` to `corpus_detect/pii.py`) is a rename, not a change to the
+module set; the artifact must still point its sources at the new path.
 
 Usage:
 
@@ -29,7 +33,7 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-MODULE_DIR = "src/corpus"
+MODULE_DIRS = ("src/corpus", "packages/detect/src/corpus_detect")
 # The artifact that claims to describe the module set: the Archify specification
 # the rendered diagram is generated from.
 ARTIFACTS = ("docs/architecture.json",)
@@ -38,8 +42,8 @@ EXEMPT_STEMS = frozenset({"__init__", "__main__"})
 
 def top_level_module(path: str) -> str | None:
     """Return the module stem for a gated path, or None if it is not gated."""
-    prefix = f"{MODULE_DIR}/"
-    if not path.startswith(prefix) or not path.endswith(".py"):
+    prefix = next((f"{d}/" for d in MODULE_DIRS if path.startswith(f"{d}/")), None)
+    if prefix is None or not path.endswith(".py"):
         return None
     relative = path[len(prefix) :]
     if "/" in relative:  # a subpackage module, e.g. fetchers/gmail.py
@@ -51,7 +55,7 @@ def top_level_module(path: str) -> str | None:
 def changed_modules(base_ref: str) -> tuple[set[str], set[str]]:
     """Modules added and removed between the merge base and HEAD."""
     result = subprocess.run(
-        ["git", "diff", "--name-status", "-M", f"{base_ref}...HEAD", "--", MODULE_DIR],
+        ["git", "diff", "--name-status", "-M", f"{base_ref}...HEAD", "--", *MODULE_DIRS],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
@@ -104,7 +108,7 @@ def main(argv: list[str]) -> int:
 
     added, removed = changed_modules(base_ref)
     if not added and not removed:
-        print("No top-level corpus modules added or removed; architecture unchanged.")
+        print("No top-level modules added or removed; architecture unchanged.")
         return 0
 
     artifacts = existing_artifacts()
@@ -136,8 +140,9 @@ def main(argv: list[str]) -> int:
     for path, text in artifacts:
         stale = sorted(
             module
-            for source in (REPO_ROOT / MODULE_DIR).glob("*.py")
-            if (module := top_level_module(f"{MODULE_DIR}/{source.name}")) is not None
+            for directory in MODULE_DIRS
+            for source in (REPO_ROOT / directory).glob("*.py")
+            if (module := top_level_module(f"{directory}/{source.name}")) is not None
             and not mentions(text, module)
         )
         if stale:

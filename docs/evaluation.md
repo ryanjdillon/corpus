@@ -289,4 +289,4 @@ configuration (no gitleaks or Betterleaks config, no GitHub secret-scanning
 config, and no scanner step in CI; Betterleaks only runs inside the service as
 a detector), so there is no allowlist to extend. If a scanner is added, allowlist
 that one path rather than loosening the rules, and do not relax the
-gateway's `scan_gate.py` or `redact.py` to make it pass.
+gateway's `scan_gate.py` or the detectors (`corpus_detect`) to make it pass.

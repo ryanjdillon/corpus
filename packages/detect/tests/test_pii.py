@@ -1,6 +1,5 @@
 import pytest
-
-from corpus import pii
+from corpus_detect import pii
 
 
 def test_detects_ssn_with_adjacent_context():
@@ -230,7 +229,7 @@ def test_a_phone_is_cut_where_its_number_ends(text, phone):
 
 
 def test_redaction_replaces_a_phone_and_a_national_id():
-    from corpus.redact import redact
+    from corpus_detect import redact
 
     fnr = _synthetic("018190")
     out = redact(f"Ring meg på tlf 012 34 568, fnr {fnr}.").text
