@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Lint and render the chart: each example and test values file must render, the
-# rendered integers and strings must be exact, and each file under
-# tests/invalid must be refused. `just helm-check` and CI both run this.
+# rendered integers, strings and container commands must be exact, and each
+# file under tests/invalid must be refused. `just helm-check` and CI both run
+# this. Needs helm and yq (mikefarah, v4).
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -58,6 +59,47 @@ for line in 'containerPort: 9100' 'port: 9100' '- name: CORPUS_MCP_PORT' 'value:
 done
 if ! grep -q 'os.environ\["CORPUS_MCP_PORT"\]' <<< "$out"; then
     echo "readiness probe does not read CORPUS_MCP_PORT" >&2
+    exit 1
+fi
+
+# Every container sets its command. Helm adopting a live object patches it
+# against the render, so a command the render leaves out keeps the live one.
+# One line per container: "<workload> <container> <command...>".
+commands() {
+    render "$1" | yq e -N '
+        select(.kind == "Deployment" or .kind == "CronJob")
+        | .metadata.name as $w
+        | .. | select(tag == "!!map") | select(has("containers"))
+        | (.containers + (.initContainers // []))[]
+        | $w + " " + .name + " " + ((.command // []) | join(" "))' -
+}
+for values in examples/values-*.yaml tests/values-*.yaml; do
+    out=$(commands "$values")
+    if [[ -z "$out" ]]; then
+        echo "$values: no container rendered" >&2
+        exit 1
+    fi
+    if missing=$(awk 'NF < 3' <<< "$out") && [[ -n "$missing" ]]; then
+        echo "$values: containers without a command:" >&2
+        echo "$missing" >&2
+        exit 1
+    fi
+done
+for values in examples/values-*.yaml; do
+    if wrong=$(awk '$3 != "corpus" || NF != 3' <<< "$(commands "$values")") && [[ -n "$wrong" ]]; then
+        echo "$values: containers whose command is not the image's (corpus):" >&2
+        echo "$wrong" >&2
+        exit 1
+    fi
+done
+expected='corpus server corpus-serve
+corpus-backfill job corpus
+corpus-backfill prepare corpus scan
+corpus-index server corpus-index
+corpus-pipeline-inbox-a pipeline corpus-pipeline
+corpus-pipeline-inbox-b pipeline corpus-inbox-b'
+if ! diff <(sort <<< "$expected") <(commands tests/values-command.yaml | sort) >&2; then
+    echo "tests/values-command.yaml: commands do not follow the layering" >&2
     exit 1
 fi
 

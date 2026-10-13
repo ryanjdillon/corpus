@@ -5,7 +5,7 @@ description: >-
   one pipeline CronJob per source, one MCP server per served tier, and the
   network policies around them.
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: "0.6.1"
 home: https://github.com/ryanjdillon/corpus
 sources:

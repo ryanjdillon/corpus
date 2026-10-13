@@ -1,0 +1,8 @@
+# Must fail: an empty command, which renders as no command at all.
+defaults:
+  pipeline:
+    command: []
+sources:
+  - name: inbox-a
+    kind: imap
+    enrich: true

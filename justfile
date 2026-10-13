@@ -45,8 +45,9 @@ commitlint BASE="origin/main":
     commitlint --from {{BASE}} --to HEAD
 
 # Lint the Helm chart, render it with each example and test values file, check
-# that rendered numbers are exact, and check that the invalid values under
-# deploy/helm/tests/invalid are refused (deploy/helm/scripts/check.sh, as CI).
+# that rendered numbers and container commands are exact, and check that the
+# invalid values under deploy/helm/tests/invalid are refused
+# (deploy/helm/scripts/check.sh, as CI).
 helm-check:
     bash deploy/helm/scripts/check.sh
 

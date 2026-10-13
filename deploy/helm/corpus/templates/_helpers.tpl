@@ -113,6 +113,16 @@ Args: dict "root" $ "w" <layered workload>.
 {{- end }}
 {{- end -}}
 
+{{/*
+The container's command, always explicit: an adopting upgrade patches the live
+object against the render, so a command the render leaves out survives from
+the live object. Args: dict "name" <workload> "w" <layered workload>.
+*/}}
+{{- define "corpus.command" -}}
+{{- if not .w.command }}{{ fail (printf "%s: command must not be empty" .name) }}{{ end -}}
+{{- toYaml .w.command -}}
+{{- end -}}
+
 {{- define "corpus.configMount" -}}
 - name: corpus-config-file
   mountPath: {{ .Values.configFile.mountPath }}

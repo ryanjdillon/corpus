@@ -1,0 +1,36 @@
+# The command at each layer: defaults.pod for the backfill job, defaults.serve
+# and a tier's deploy for the servers, defaults.pipeline and a source's runtime
+# for the pipelines, and an init container that sets its own.
+defaults:
+  serve:
+    command: [corpus-serve]
+  pipeline:
+    command: [corpus-pipeline]
+
+tiers:
+  - name: sensitive
+    serve:
+      enabled: true
+  - name: sanitized
+    serve:
+      enabled: true
+    deploy:
+      command: [corpus-index]
+
+sources:
+  - name: inbox-a
+    kind: imap
+    enrich: true
+  - name: inbox-b
+    kind: imap
+    enrich: true
+    runtime:
+      command: [corpus-inbox-b]
+
+jobs:
+  corpus-backfill:
+    schedule: "0 4 * * *"
+    args: [pipeline, "imap:inbox-a", --stages, ingest]
+    initContainers:
+      - name: prepare
+        command: [corpus, scan]
