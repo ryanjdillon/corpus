@@ -205,6 +205,7 @@ def sync(
                 store, documents=documents, source=source, limit=limit, force=reproject,
                 policy=dst.projection.policy, reembed_limit=reembed_limit,
                 reembed_wait=reembed_wait, on_reembed_wait=lambda: click.echo(REEMBED_WAITING),
+                tier=dst,
             )
         click.echo(
             f"synced {r['synced']}, skipped {r['skipped']} of {r['scanned']} scanned; "

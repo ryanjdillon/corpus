@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import create_autospec
 
 import pytest
 
 from corpus import telemetry
 from corpus.store import DocumentStore
+from corpus.tiers import tier
 
 
 def test_enabled_reflects_env(monkeypatch):
@@ -91,3 +93,78 @@ def test_configure_sets_providers_and_is_idempotent(monkeypatch):
         telemetry.shutdown()
         telemetry.shutdown()  # idempotent
         HTTPXClientInstrumentor().uninstrument()
+
+
+# --- sync backlog --------------------------------------------------------------
+
+
+@pytest.fixture
+def reader():
+    """An in-memory reader on a provider of its own, so no global provider is set."""
+    from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+
+    return InMemoryMetricReader()
+
+
+@pytest.fixture
+def sync_metrics(reader):
+    from opentelemetry.sdk.metrics import MeterProvider
+
+    return telemetry.SyncMetrics(MeterProvider(metric_readers=[reader]).get_meter("test"))
+
+
+def _collect(reader) -> dict[str, Any]:
+    """Each metric's data (its type and points), by name, from one collection."""
+    data = reader.get_metrics_data()
+    return {
+        m.name: m.data
+        for rm in data.resource_metrics for sm in rm.scope_metrics for m in sm.metrics
+    }
+
+
+#: A sync's counts (``sanitize.run_sync``): what it did, and what is left.
+_COUNTS = {"scanned": 9, "synced": 4, "skipped": 5, "reprojected": 3, "embedded": 2,
+           "capped": 6, "pending": 1, "embed_stale": 7}
+
+
+def test_a_sync_records_its_backlog_and_work_by_tier(reader, sync_metrics):
+    sanitized = tier("sanitized")
+
+    sync_metrics.record(_COUNTS, sanitized)
+
+    points = {name: list(d.data_points) for name, d in _collect(reader).items()}
+    values = {name: [p.value for p in ps] for name, ps in points.items()}
+    assert values == {
+        "corpus.sync.deferred": [1],
+        "corpus.sync.embed_stale": [7],
+        "corpus.sync.reembed_skipped": [0],  # present from the first sync
+        "corpus.sync.reprojected": [3],
+        "corpus.sync.embedded": [2],
+        "corpus.sync.capped": [6],
+    }
+    expected = {"tier": "sanitized", "schema": sanitized.schema}
+    assert all(dict(p.attributes) == expected for ps in points.values() for p in ps)
+
+
+def test_every_sync_metric_is_a_gauge_of_the_last_sync(reader, sync_metrics):
+    sanitized = tier("sanitized")
+
+    sync_metrics.record(_COUNTS, sanitized)
+    sync_metrics.record({**_COUNTS, "pending": 0, "embed_stale": 2, "reembed_skipped": 1,
+                         "reprojected": 0, "embedded": 5, "capped": 0}, sanitized)
+
+    # Gauges, not counters: a one-shot sync's counter would start from zero in
+    # each process, and the tier's syncs share one series, so its rate misleads.
+    from opentelemetry.sdk.metrics.export import Gauge
+
+    collected = _collect(reader)
+    assert all(isinstance(d, Gauge) for d in collected.values())
+    values = {name: [p.value for p in d.data_points] for name, d in collected.items()}
+    assert values == {
+        "corpus.sync.deferred": [0],
+        "corpus.sync.embed_stale": [2],
+        "corpus.sync.reembed_skipped": [1],
+        "corpus.sync.reprojected": [0],
+        "corpus.sync.embedded": [5],  # the last run's, not the sum
+        "corpus.sync.capped": [0],
+    }

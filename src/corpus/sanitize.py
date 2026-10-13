@@ -39,6 +39,7 @@ from urllib.parse import urlsplit
 
 import msgspec
 
+from . import telemetry
 from .embeddings import Embedder
 from .enrichment import (
     UNKNOWN_ROLE,
@@ -53,6 +54,7 @@ from .sanitized_store import COLS
 
 if TYPE_CHECKING:
     from .store import DocumentStore
+    from .tiers import Tier
 
 log = logging.getLogger("corpus.sanitize")
 
@@ -676,6 +678,8 @@ def run_sync(
     embedder: Embedder | None = None,
     batch_size: int = 64,
     projector: Callable[[str, dict | None, dict | None, Policy], dict] = project,
+    tier: Tier | None = None,
+    metrics: telemetry.SyncMetrics | None = None,
 ) -> dict[str, int]:
     """Project enriched documents into the sanitized store under *policy*.
 
@@ -727,6 +731,10 @@ def run_sync(
     serves as a placeholder) and ``embed_stale`` (rows still awaiting a new
     vector). ``reembed_skipped`` is present only when the embedding phase was
     skipped for another sync's lock.
+
+    Given the ``tier`` synced into, the counts are also recorded as metrics of
+    that tier, on ``metrics`` (``telemetry.sync_metrics`` unless a caller
+    substitutes its own); without one, nothing is recorded.
     """
     embedder = embedder or Embedder()
     digest = policy.digest()
@@ -803,6 +811,8 @@ def run_sync(
                 counts["reembed_skipped"] = 1
                 log.info(REEMBED_SKIPPED)
     counts["pending"], counts["embed_stale"] = store.backlog(digest)
+    if tier is not None:
+        (metrics or telemetry.sync_metrics).record(counts, tier)
     log.info(
         "synced %d, skipped %d of %d scanned; re-projected %d, embedded %d",
         counts["synced"],

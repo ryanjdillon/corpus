@@ -30,6 +30,7 @@ from corpus.pipeline import (
 from corpus.sanitized_store import SanitizedStore
 from corpus.sources import ImapSource, PipelineOptions
 from corpus.store import get_cursor
+from corpus.telemetry import SyncMetrics
 
 SOURCE = "imap:test"
 CURSOR = "1:3"
@@ -187,6 +188,16 @@ def test_every_stage_runs_in_order_with_counts(stores, fetcher, enricher):
     }
     assert len(_synced(stores)) == 3
     assert get_cursor(SOURCE) == CURSOR
+
+
+@pytest.mark.integration
+def test_the_sync_stage_records_its_tiers_backlog(stores, fetcher, enricher):
+    metrics = create_autospec(SyncMetrics, instance=True)
+
+    counts = run(SOURCE, fetcher=fetcher, enricher=enricher, sync_metrics=metrics)
+
+    # Labelled by the tier the source syncs into, which other sources share.
+    metrics.record.assert_called_once_with(counts["sync"], tiers.tier("sanitized"))
 
 
 @pytest.mark.integration

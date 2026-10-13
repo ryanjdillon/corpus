@@ -10,7 +10,8 @@ sanitized`) unless `OTEL_SERVICE_NAME` says otherwise.
   embed latency, batch size), a corpus-size gauge by data-class (from the
   sensitive server), MCP tool calls by principal (see below), and enrichments
   whose free text reads like instructions to an AI
-  (`corpus.enrich.instruction_like`, by model).
+  (`corpus.enrich.instruction_like`, by model), and each sync's backlog (see
+  below).
 
 It is a no-op when the endpoint is unset. Heavy SDK imports are deferred until
 telemetry is configured, and a one-shot process (an ingest run) flushes the
@@ -66,6 +67,75 @@ sum by (principal, tier) (
       | regexp "corpus.audit (?P<event>.*)" | line_format "{{.event}}" | json
       | outcome="ok" | unwrap rows [1h]))
 ```
+
+## Sync backlog
+
+Every sync, `corpus sync` and the sync stage of `corpus pipeline` alike,
+records what it left behind and what it did, attributed by `tier` and its
+`schema`. Not by source: the sources syncing into a tier share its backlog, so
+a per-source label would report the same tier-wide value under each.
+
+| Metric | Type | Reads |
+|---|---|---|
+| `corpus.sync.deferred` | gauge | rows still projected under another policy, served as placeholders (the run's `pending`) |
+| `corpus.sync.embed_stale` | gauge | rows whose vector is older than their text (embedded under a different policy from the one their text is projected under), left out of `search` until re-embedded (the run's `embed_stale`) |
+| `corpus.sync.reembed_skipped` | gauge | 1 if the run's [re-embedding was skipped](tiers.md#text-now-embeddings-later) for another sync's lock, else 0 |
+| `corpus.sync.reprojected` | gauge | rows the run rewrote only because of the policy or `--reproject` |
+| `corpus.sync.embedded` | gauge | vectors the run stored, in either phase |
+| `corpus.sync.capped` | gauge | new rows the run held back for `--limit`, left for a later sync (the run's `capped`) |
+
+Every one is a gauge holding the **last sync's value**, set at the end of the
+run; `deferred` and `embed_stale` are `SanitizedStore.backlog` read then. With
+the default `corpus.` to `corpus_` name translation they export as
+`corpus_sync_deferred`, `corpus_sync_embed_stale`, `corpus_sync_reembed_skipped`,
+`corpus_sync_reprojected`, `corpus_sync_embedded` and `corpus_sync_capped`: gauges take no `_total`
+suffix, and the `{row}` and `{run}` units add none either.
+
+They are gauges rather than counters because of how a sync runs. Each sync is a
+one-shot process, so its instruments start from nothing and are exported about
+once, when it flushes on exit. And the syncs into one tier write **one series**:
+the attributes are only `tier` and `schema`, and the exporter adds no per-process
+label, so several sources syncing into a tier from jobs of one service (one
+CronJob per source, say) share it, last writer wins. A counter's `rate` or
+`increase` over that series would read the difference between two runs' work
+(runs of 5 then 7 rows as +2), so never apply either to these metrics; read
+them with `last_over_time` or `max_over_time`. Last writer wins is what the
+backlog gauges want: the store is shared, so every job reports the same
+tier-wide backlog. For the work gauges it means a window shows the runs that
+were sampled, not a total.
+
+Between runs an instant query finds a gauge only while the backend still
+returns a series without new samples (Prometheus stops returning one five
+minutes after its last sample), so alert over a window rather than on the
+instant value. For example:
+
+```promql
+# Embeddings have not caught up for three days: semantic search is missing rows.
+min_over_time(corpus_sync_embed_stale[3d]) > 0
+
+# A sync left placeholders: only a run cut short by --limit should.
+max_over_time(corpus_sync_deferred[1h]) > 0
+```
+
+A skipped re-embedding is routine when several sources sync into one tier on
+the same schedule (one of them holds the lock), so `reembed_skipped` explains
+a lingering `embed_stale` rather than being an alert of its own.
+
+**A failed sync records nothing.** The metrics are set only when a run
+completes, so while every sync fails the series simply go quiet: the
+`embed_stale` alert above sees no samples and stays silent. Pair it with an
+alert on the failures themselves, such as one on `kube_job_status_failed` for
+the sync CronJobs' jobs, or on the series going missing:
+
+```promql
+# No sync into the tier has completed for a day.
+absent_over_time(corpus_sync_embed_stale{tier="sanitized"}[1d])
+```
+
+Pick the `embed_stale` window from the backlog a policy change creates: at the
+default 500 rows a run, it takes as many syncs as the changed rows divided by
+500, unless drained with `--reembed-limit 0` (see
+[Rolling out a policy change](tiers.md#rolling-out-a-policy-change)).
 
 ## Diagnosing a shedding enrichment endpoint
 

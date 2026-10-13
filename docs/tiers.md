@@ -524,7 +524,11 @@ placeholders; non-zero only for rows the run did not scan, such as another
 source's, or after one that failed part-way) and
 `embed_stale` (rows awaiting a new vector). `corpus sync` prints them;
 `corpus pipeline` prints its sync stage's. `SanitizedStore.backlog(digest)`
-returns the last two, for a gauge.
+returns the last two. Each sync also exports them all as gauges of the tier
+holding the last run's values: `corpus.sync.deferred`, `corpus.sync.embed_stale`,
+`corpus.sync.reprojected`, `corpus.sync.embedded`, `corpus.sync.capped` and
+`corpus.sync.reembed_skipped` (see [Observability](observability.md#sync-backlog),
+with suggested alerts).
 
 ### Serving a row not yet re-projected
 

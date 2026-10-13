@@ -43,6 +43,7 @@ from .sources import source as configured_source
 if TYPE_CHECKING:  # the stages import their modules when they run, keeping the CLI light
     from .enricher import Enricher
     from .fetchers import Fetcher
+    from .telemetry import SyncMetrics
 
 log = logging.getLogger("corpus.pipeline")
 
@@ -89,12 +90,15 @@ class Context:
         options: The run's per-stage options: the source's, overridden.
         fetcher: The fetcher ingest reads; ``None`` builds the one for ``source``.
         enricher: The enricher used; ``None`` builds one from the settings.
+        sync_metrics: The instruments sync records its tier's backlog on;
+            ``None`` uses ``telemetry.sync_metrics``.
     """
 
     source: Source
     options: PipelineOptions
     fetcher: Fetcher | None = None
     enricher: Enricher | None = None
+    sync_metrics: SyncMetrics | None = None
 
 
 def _ready(ctx: Context) -> None:
@@ -168,6 +172,7 @@ def _sync(ctx: Context) -> Counts:
         return run_sync(
             store, documents=documents, source=ctx.source.id, limit=ctx.options.limit,
             policy=dst.projection.policy, reembed_limit=settings.sync_reembed_limit,
+            tier=dst, metrics=ctx.sync_metrics,
         )
 
 
@@ -236,6 +241,7 @@ def run(
     options: Options | None = None,
     fetcher: Fetcher | None = None,
     enricher: Enricher | None = None,
+    sync_metrics: SyncMetrics | None = None,
 ) -> dict[str, Counts]:
     """Run the selected *stages* for *source*, in order, and return each one's counts.
 
@@ -256,7 +262,7 @@ def run(
     entry = configured_source(source) if isinstance(source, str) else source
     source_id = entry.id
     resolved = (options or Options()).over(entry.pipeline)
-    ctx = Context(entry, resolved, fetcher=fetcher, enricher=enricher)
+    ctx = Context(entry, resolved, fetcher=fetcher, enricher=enricher, sync_metrics=sync_metrics)
     for stage in selected:
         stage.check(ctx)
     counts: dict[str, Counts] = {}
