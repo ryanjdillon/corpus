@@ -642,6 +642,17 @@ def test_financial_ids_are_masked(text, masked):
     assert _redact(text) == masked
 
 
+def test_a_norwegian_account_number_is_masked_in_a_one_line():
+    # Synthetic: bank code 0100 and a made-up account part; the last digit is
+    # its mod-11 check digit.
+    assert _redact("Husleie betales til 0100.12.00018 innen den 20.", people=[]) == (
+        "Husleie betales til [no_bank_account ••••18] innen den 20."
+    )
+    assert _redact("Husleie til kontonummer 01001200018", people=[], financial_id="drop") == (
+        "Husleie til kontonummer"
+    )
+
+
 def test_a_card_named_in_norwegian_is_masked():
     assert _redact("Betalt med kort 4111 1111 1111 1111 i går", people=[]) == (
         "Betalt med kort [credit_card ••••11] i går"
@@ -834,14 +845,14 @@ def test_facts_are_projected_only_if_the_policy_names_the_column():
 def test_facts_change_the_digest_only_through_the_fields():
     # A policy that names its fields without facts projects what it did before
     # facts existed, so its rows are not re-projected: its digest is the same.
-    assert Policy(fields=("one_line", "domain", "uri")).digest() == "e6b835f0f3b9df50"
+    assert Policy(fields=("one_line", "domain", "uri")).digest() == "0ba2d3bc443fdc5b"
     without = Policy(fields=tuple(c for c in COLS if c != "facts"))
     assert without.digest() != sanitize.DEFAULT_POLICY.digest()
 
 
 def test_place_name_changes_the_digest_only_where_facts_are_projected():
     keep = Redaction(place_name="keep")
-    assert Policy(fields=("one_line", "domain", "uri"), redact=keep).digest() == "e6b835f0f3b9df50"
+    assert Policy(fields=("one_line", "domain", "uri"), redact=keep).digest() == "0ba2d3bc443fdc5b"
     assert Policy(redact=keep).digest() != sanitize.DEFAULT_POLICY.digest()
 
 

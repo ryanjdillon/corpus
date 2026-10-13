@@ -203,7 +203,7 @@ one.
 | `organization` | `keep`, `drop` | The enrichment's `organizations`: the column, and their names in the text. |
 | `person_name` | `keep`, `initial`, `role`, `drop` | The names in the enrichment's `people`. |
 | `reference_id` | `keep`, `mask`, `drop` | The values in the enrichment's `references`: booking codes, order, case and ticket numbers. |
-| `financial_id` | `keep`, `mask`, `drop` | What the `pii` scan finds: a card number, an IBAN, a US bank account or SSN, a crypto wallet, a Norwegian national id (see [its limits](#what-financial_id-does-not-find)). |
+| `financial_id` | `keep`, `mask`, `drop` | What the `pii` scan finds: a card number, an IBAN, a US bank account or SSN, a crypto wallet, a Norwegian national id or bank account number (see [its limits](#what-financial_id-does-not-find)). |
 | `email_address` | `keep`, `drop` | Email addresses, found by the `pii` scan. |
 | `phone` | `keep`, `drop` | Phone numbers, found by the `pii` scan (an international prefix, or a phone word just before the number). |
 | `place_name` | `keep`, `drop` | The name of a trip's origin and destination in `facts`; its country is kept either way (see [Typed facts](#typed-facts)). |
@@ -296,11 +296,27 @@ projection, so none applies there. The projection before this policy existed is
   characters): Presidio's English words (`card`, `visa`, `account`, `bank`…)
   or the Norwegian ones corpus adds (`pii._EXTRA_CONTEXT`): `kort`, `kortet`,
   `kortnummer`, `bankkort`, `kredittkort`, `betalingskort` for a card;
-  `konto`, `kontoen`, `kontonummer`, `kontonr`, `bankkonto` for an account.
+  `konto`, `kontoen`, `kontonummer`, `kontonummeret`, `kontonr`, `bankkonto`,
+  `bankkontoen`, `bankkontoer` for an account.
   "kort 4111 1111 1111 1111" is masked; "ordre 4111 1111 1111 1111" is not.
-- **A Norwegian account number in its usual dotted form** (`1234.56.78903`)
-  is not found at all: the US bank recognizer matches an unbroken digit run
-  only.
+- **A Norwegian account number needs a valid check digit**, and written bare
+  an account word beside it. Its mod-11 check digit (weights 5, 4, 3, 2, 7, 6,
+  5, 4, 3, 2 over the first ten digits) is checked in every form. Dotted
+  (`NNNN.NN.NNNNN`) or spaced (`NNNN NN NNNNN`, with plain, no-break or narrow
+  no-break spaces), it is masked on format alone (`[no_bank_account ••••18]`);
+  a bare 11-digit run only with one of the account words above, `account`,
+  `acct` or `bank` within 48 characters, as any reference number passes the
+  check one time in eleven. An amount after the number does not hide it
+  (`0100.12.00018 500 kr` is masked), but a number that continues its own
+  grouping is not found: a dotted one followed by `.` and a digit, a spaced one
+  followed by two more spaced digit groups (so `NNNN NN NNNNN 1 500 kr` is
+  missed), a bare one running into more digits or a decimal part. Mixed dots
+  and spaces are not found either.
+- **A bare 11-digit number that is a valid national id is labelled one**,
+  even beside an account word: a national id ends in the same mod-11 check, and
+  adds a birth date and a second check digit, so it is the more specific
+  reading. Either way the number is a `financial_id` and redacted; only the
+  mask's label differs.
 - **A US SSN needs an English context word** (`ssn`, `social security`) beside
   it; a bare `536-90-4399` passes. A format-only SSN match is too noisy to
   trust (a nine-digit reading or id looks the same).
