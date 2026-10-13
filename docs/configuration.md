@@ -212,16 +212,19 @@ database: redacted summaries, the priority signal and an https message link,
 never raw content, subject or sender. `corpus serve sanitized` serves that
 database to cloud-side consumers over MCP. The sync's stores, source tier,
 columns, redaction and sensitivity gate come from the `sanitized` tier's
-`projection` (see [Tiers](tiers.md#redaction)); a changed projection policy
-re-projects the rows over the next syncs, at most
-`CORPUS_SYNC_REPROJECT_LIMIT` a run, `corpus sync --reproject` re-projects
-every row at once, and `corpus sync --tier <name>` syncs into another
-projected tier the file defines.
+`projection` (see [Tiers](tiers.md#redaction)). A changed projection policy
+re-projects every row's text on the next sync, and the summaries it changed
+are re-embedded over the following syncs, at most `CORPUS_SYNC_REEMBED_LIMIT`
+a run (`corpus sync --reembed-limit 0` does all at once). Until re-embedded,
+such a row is left out of `search` but stays reachable by keyword and filter.
+`corpus sync --reproject` re-projects every row even under an unchanged
+policy, and `corpus sync --tier <name>` syncs into another projected tier the
+file defines.
 
 | Variable | Purpose |
 |---|---|
 | `CORPUS_CONFIG_FILE` | path of the config file (`tiers:` and `sources:`); unset means the built-in default tiers and the deprecated pre-file sources. `CORPUS_TIERS_FILE` is its deprecated name |
-| `CORPUS_SYNC_REPROJECT_LIMIT` | most rows one sync re-projects only because the projection policy changed (default 500; 0: no cap). New and re-enriched rows are never capped. See [Tiers](tiers.md#rolling-out-a-policy-change) |
+| `CORPUS_SYNC_REEMBED_LIMIT` | most embed-stale rows (text re-projected, vector from an earlier summary) one sync, or one `corpus pipeline` sync stage, re-embeds (default 500; 0: no cap). `corpus sync --reembed-limit` overrides it. Re-projecting text, and embedding new and re-enriched rows, are never capped. Replaces `CORPUS_SYNC_REPROJECT_LIMIT`, which capped the re-projection itself and is no longer read: its `0` would now mean an uncapped re-embedding on every sync. See [Tiers](tiers.md#text-now-embeddings-later) |
 | `CORPUS_SANITIZED_DATABASE_URL` | DSN the sync writes to (the default tiers' `dsn_env`) |
 | `CORPUS_INDEX_DATABASE_URL` | DSN the index server reads with, a read-only role (the default tiers' `reader_dsn_env`) |
 

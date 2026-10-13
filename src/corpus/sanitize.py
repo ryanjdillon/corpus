@@ -20,7 +20,9 @@ as the policy's ``gate_action`` says.
 One-directional (sensitive → sanitized), incremental (re-projects a document
 after it is re-enriched, after the policy changes, or every document on
 request), resumable, and re-embeds a row only when its embedded text changed.
-The policy is the tier's ``projection`` (see ``tiers``).
+A re-projection rewrites the text at once and leaves the re-embedding to a
+capped phase of this and later syncs (see :func:`run_sync`). The policy is the
+tier's ``projection`` (see ``tiers``).
 """
 
 from __future__ import annotations
@@ -581,56 +583,78 @@ def run_sync(
     limit: int = 0,
     force: bool = False,
     policy: Policy = DEFAULT_POLICY,
-    reproject_limit: int = 0,
+    reembed_limit: int | None = None,
     embedder: Embedder | None = None,
     batch_size: int = 64,
     projector: Callable[[str, dict | None, dict | None, Policy], dict] = project,
 ) -> dict[str, int]:
     """Project enriched documents into the sanitized store under *policy*.
 
-    A row is projected when it is new, when its source enrichment changed since
-    the last sync, or when it was projected under another policy (its stored
-    ``policy_hash``), so a changed policy reaches every row without a flag.
-    ``force`` re-projects every row regardless. ``limit`` caps the rows
-    projected (0 does all). ``projector`` builds each row (``project`` unless a
-    caller substitutes its own and accepts the same arguments). ``store`` is an
-    open SanitizedStore and ``documents`` an open DocumentStore on the source
-    tier, whose lifecycles the caller owns.
+    Runs in two phases. The **text phase** projects a row when it is new, when
+    its source enrichment changed since the last sync, or when it was projected
+    under another policy (its stored ``policy_hash``), so a changed policy
+    reaches every row without a flag; ``force`` re-projects every row
+    regardless. The **embedding phase** then re-embeds rows whose text the
+    text phase changed, at most ``reembed_limit`` of them (0: all; ``None``
+    skips the phase).
 
-    ``reproject_limit`` caps the rows projected only because the policy changed
-    (0: no cap). New and re-enriched rows are projected first and are never
-    capped, so the tier stays current while a policy change spreads over
-    several runs; the capped rows are the first stale ones in the reader's
-    stable order, and the rest are counted as ``deferred`` for a later run.
+    A new or re-enriched row is embedded in the text phase when its
+    ``one_line`` (the embedded text) changed, as part of keeping the tier
+    current. A row re-projected only because of the policy or ``force`` is
+    never embedded there: its columns and ``policy_hash`` are rewritten and its
+    stored vector kept, so a policy change replaces every placeholder in one
+    run with no embedding calls. If its ``one_line`` changed, the row is left
+    *embed-stale* (its ``embedded_policy_hash`` differs from its
+    ``policy_hash``) for the embedding phase of this or a later run, which
+    takes the newest first.
 
-    A row is embedded only when its ``one_line`` (the embedded text) differs
-    from the stored one; otherwise only its projected columns are rewritten, and
-    only if they differ. A re-projection is therefore resumable: run again after
-    an interruption, it embeds and writes nothing for the rows already done, and
-    counts them as skipped.
+    ``limit`` caps the rows the text phase projects (0 does all). New and
+    re-enriched rows are projected before those stale only by policy, so a
+    capped run keeps the tier current first. ``projector`` builds each row
+    (``project`` unless a caller substitutes its own and accepts the same
+    arguments). ``store`` is an open SanitizedStore and ``documents`` an open
+    DocumentStore on the source tier, whose lifecycles the caller owns.
+
+    Rows whose written columns are unchanged are not rewritten, so a run
+    interrupted and run again redoes nothing it finished, and counts those
+    rows as skipped.
+
+    Returns the counts: ``scanned``, ``synced`` (rows written), ``skipped``,
+    ``reprojected`` (rows rewritten only because of the policy or ``force``),
+    ``embedded`` (vectors stored, in either phase), and, after the run,
+    ``pending`` (rows still projected under another policy, which a reader
+    serves as a placeholder) and ``embed_stale`` (rows still awaiting a new
+    vector).
     """
     embedder = embedder or Embedder()
     digest = policy.digest()
     state = store.synced_state()
-    counts = {"scanned": 0, "synced": 0, "skipped": 0, "deferred": 0}
+    counts = {"scanned": 0, "synced": 0, "skipped": 0, "reprojected": 0, "embedded": 0}
     to_embed: list[dict] = []
+    # Rows rewritten keeping their vector: re-enriched ones, and re-projected ones.
     to_update: list[dict] = []
-    # Rows stale only by policy, held back until the current rows are done.
-    # Bounded by the cap; without one they are projected in place.
-    stale: list[tuple[str, dict | None, dict | None, object]] = []
+    to_reproject: list[dict] = []
+    # Rows stale only by policy, held back behind the current ones when the
+    # run is capped. At most ``limit`` can be projected, so at most that many
+    # are held; uncapped, they are projected in place.
+    held: list[tuple[str, dict | None, dict | None, object]] = []
     queued = 0
 
     def flush() -> None:
-        if to_update:
-            changed = store.update_projections(to_update)
-            counts["synced"] += changed
-            counts["skipped"] += len(to_update) - changed
-            to_update.clear()
+        for rows, reprojected in ((to_update, False), (to_reproject, True)):
+            if rows:
+                changed = store.update_projections(rows)
+                counts["synced"] += changed
+                counts["skipped"] += len(rows) - changed
+                if reprojected:
+                    counts["reprojected"] += changed
+                rows.clear()
         if to_embed:
             vectors = embedder.embed([r["one_line"] or "" for r in to_embed])
             for row, vec in zip(to_embed, vectors):
                 store.save_message(row, vec)
-                counts["synced"] += 1
+            counts["synced"] += len(to_embed)
+            counts["embedded"] += len(to_embed)
             to_embed.clear()
 
     def queue(doc_id: str, meta: dict | None, enr: dict | None, enriched_at: object) -> bool:
@@ -640,7 +664,12 @@ def run_sync(
         row = projector(doc_id, meta, enr, policy)
         row["enriched_at"] = enriched_at
         row["policy_hash"] = digest
-        pending = to_update if stored is not None and stored[1] == row["one_line"] else to_embed
+        if stored is None or stored[0] != enriched_at:
+            row["embedded_policy_hash"] = digest
+            pending = to_update if _embeds(stored, row["one_line"]) else to_embed
+        else:
+            row["embedded_policy_hash"] = _embedded_under(stored, row["one_line"], digest)
+            pending = to_reproject
         pending.append(row)
         queued += 1
         if len(pending) >= batch_size:
@@ -659,32 +688,103 @@ def run_sync(
                 if stored[2] == digest:
                     counts["skipped"] += 1
                     continue
-                if reproject_limit:
-                    if len(stale) < reproject_limit:
-                        stale.append((doc_id, meta, enr, enriched_at))
-                    else:
-                        counts["deferred"] += 1
+                if limit:
+                    if len(held) < limit:
+                        held.append((doc_id, meta, enr, enriched_at))
                     continue
             if queue(doc_id, meta, enr, enriched_at):
                 done = True
                 break
-    for held in stale:
+    for row in held:
         if done:
-            counts["deferred"] += 1
-        else:
-            done = queue(*held)
+            break
+        done = queue(*row)
     flush()
+    if reembed_limit is not None:
+        counts["embedded"] += _reembed(store, digest, embedder, reembed_limit, batch_size)
+    counts["pending"], counts["embed_stale"] = store.backlog(digest)
     log.info(
-        "synced %d, skipped %d of %d scanned",
+        "synced %d, skipped %d of %d scanned; re-projected %d, embedded %d",
         counts["synced"],
         counts["skipped"],
         counts["scanned"],
+        counts["reprojected"],
+        counts["embedded"],
     )
-    if counts["deferred"]:
+    if counts["pending"]:
         log.info(
-            "%d rows still projected under an older policy; later syncs re-project up to "
-            "%d each (corpus sync --reproject does all now)",
-            counts["deferred"],
-            reproject_limit,
+            "%d rows still projected under an older policy, served as placeholders; "
+            "the next sync re-projects them",
+            counts["pending"],
+        )
+    if counts["embed_stale"]:
+        log.info(
+            "%d rows await a new embedding; each sync re-embeds up to %s",
+            counts["embed_stale"],
+            reembed_limit or "all",
         )
     return counts
+
+
+#: A synced row's state: ``enriched_at``, ``one_line``, ``policy_hash`` and
+#: ``embedded_policy_hash`` (``SanitizedStore.synced_state``).
+_State = tuple[object, str | None, str | None, str | None]
+
+
+def _embeds(stored: _State | None, one_line: str | None) -> bool:
+    """Whether a row's stored vector is the embedding of *one_line*.
+
+    It is when the vector was computed from the stored ``one_line`` (its
+    ``embedded_policy_hash`` is its ``policy_hash``) and that is *one_line*.
+    """
+    return stored is not None and stored[3] == stored[2] and stored[1] == one_line
+
+
+def _vector_holds(stored: _State, one_line: str | None, digest: str) -> bool:
+    """Whether a row re-projected to *one_line* under *digest* keeps a current vector.
+
+    For a row whose enrichment is unchanged: besides :func:`_embeds`, its vector
+    also holds when it was computed under this very policy and the row was
+    re-projected under another since (a policy changed, then reverted). The
+    projection is deterministic, so this policy writes the text the vector was
+    computed from again. Every new or re-enriched row is embedded under the
+    policy of the time, so a row's ``embedded_policy_hash`` always names a
+    policy applied to its current enrichment.
+    """
+    return _embeds(stored, one_line) or stored[3] == digest != stored[2]
+
+
+def _embedded_under(
+    stored: _State,
+    one_line: str | None,
+    digest: str,
+) -> str | None:
+    """The ``embedded_policy_hash`` of a row re-projected to *one_line* under *digest*.
+
+    *digest* when its vector holds for the new text. Otherwise the policy the
+    vector was computed under, so a revert to it finds the vector current
+    again; or ``None`` when that is *digest* itself (the text changed under an
+    unchanged policy, on a forced re-projection), since a value equal to the
+    row's ``policy_hash`` would mark it current.
+    """
+    if _vector_holds(stored, one_line, digest):
+        return digest
+    embedded = stored[3]
+    return None if embedded == digest else embedded
+
+
+def _reembed(store, digest: str, embedder: Embedder, limit: int, batch_size: int) -> int:
+    """Re-embed up to *limit* (0: all) embed-stale rows under *digest*, newest first.
+
+    Returns how many vectors were stored. Each batch commits as it goes, so an
+    interrupted run keeps what it finished.
+    """
+    stale = store.stale_embeddings(digest, limit)
+    stored = 0
+    for start in range(0, len(stale), batch_size):
+        batch = stale[start:start + batch_size]
+        vectors = embedder.embed([text or "" for _, text in batch])
+        stored += store.save_embeddings(
+            digest, [(id_, text, vec) for (id_, text), vec in zip(batch, vectors)]
+        )
+    return stored

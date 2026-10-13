@@ -18,6 +18,7 @@ from corpus.query import (
     Page,
     QueryPolicy,
     QuerySpec,
+    build_query,
     parse_spec,
 )
 from corpus.sanitize import DEFAULT_POLICY, Policy
@@ -87,7 +88,7 @@ def sanitized(pg):
     with SanitizedStore(dsn=pg, schema=SCHEMA) as store:
         for id_, overrides, vec in ROWS:
             row = {c: None for c in COLS} | DEFAULTS | {"id": id_} | overrides
-            row["policy_hash"] = DEFAULT_POLICY.digest()
+            row["policy_hash"] = row["embedded_policy_hash"] = DEFAULT_POLICY.digest()
             store.save_message(row, vec)
         yield store
 
@@ -300,6 +301,32 @@ def test_semantic_ranks_past_the_pgvector_default(pg, monkeypatch):
         page = store.query(QuerySpec(semantic=_vec(1.0), limit=55), SANITIZED_POLICY)
 
     assert len(page.rows) == 55 and page.next_cursor == 55
+
+
+def test_a_served_semantic_query_is_ordered_by_the_vector_index(pg):
+    # Embed-stale rows are filtered out of the ranking, not given a NULL vector,
+    # so the HNSW index still orders the scan.
+    with SanitizedStore(dsn=pg, schema=SCHEMA) as store:
+        for i in range(60):
+            row = {c: None for c in COLS} | DEFAULTS | {"id": f"s{i:02}"}
+            row["policy_hash"] = row["embedded_policy_hash"] = DEFAULT_POLICY.digest()
+            store.save_message(row, _vec(1.0, i / 60))
+    with psycopg.connect(pg, autocommit=True) as conn:
+        conn.execute(
+            f"CREATE INDEX ON {SCHEMA}.messages USING hnsw (summary_embedding vector_cosine_ops)"
+        )
+        conn.execute(f"ANALYZE {SCHEMA}.messages")
+        conn.execute("SET enable_seqscan = off")
+        with SanitizedStore(
+            dsn=pg, schema=SCHEMA, read_only=True, projection=DEFAULT_POLICY
+        ) as reader:
+            built = build_query(QuerySpec(semantic=_vec(1.0)), SANITIZED_POLICY, reader._layout)
+        plan = "\n".join(r[0] for r in conn.execute(f"EXPLAIN {built.sql}", built.params))
+
+    assert "Index Scan using messages_summary_embedding_idx" in plan
+    (filtered,) = [line for line in plan.splitlines() if "Filter:" in line]
+    assert f"(policy_hash = '{DEFAULT_POLICY.digest()}'::text)" in filtered
+    assert "(NOT (embedded_policy_hash IS DISTINCT FROM policy_hash))" in filtered
 
 
 def test_group_by_month_and_domain(reader):

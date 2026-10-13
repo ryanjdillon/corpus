@@ -181,7 +181,10 @@ def test_every_stage_runs_in_order_with_counts(stores, fetcher, enricher):
     assert list(counts) == ["ingest", "enrich", "sync"]
     assert counts["ingest"] == {"ingested": 3}
     assert (counts["enrich"]["scanned"], counts["enrich"]["enriched"]) == (3, 3)
-    assert (counts["sync"]["synced"], counts["sync"]["skipped"]) == (3, 0)
+    assert counts["sync"] == {
+        "scanned": 3, "synced": 3, "skipped": 0, "reprojected": 0, "embedded": 3,
+        "pending": 0, "embed_stale": 0,
+    }
     assert len(_synced(stores)) == 3
     assert get_cursor(SOURCE) == CURSOR
 
@@ -280,3 +283,17 @@ def test_a_second_clean_run_does_no_work(stores, fetcher, enricher):
     assert counts["enrich"]["enriched"] == 0
     enricher.enrich_reporting.assert_not_called()
     assert (counts["sync"]["synced"], counts["sync"]["skipped"]) == (0, 3)
+
+
+@pytest.mark.integration
+def test_the_sync_stage_re_embeds_stale_rows_up_to_the_setting(
+    stores, fetcher, enricher, monkeypatch
+):
+    run(SOURCE, fetcher=fetcher, enricher=enricher)
+    with SanitizedStore(stores, "corpus") as store:  # as a re-projection leaves them
+        store._write("UPDATE corpus.messages SET embedded_policy_hash = NULL")
+    monkeypatch.setattr(settings, "sync_reembed_limit", 2)
+
+    counts = run(SOURCE, ("sync",))
+
+    assert (counts["sync"]["embedded"], counts["sync"]["embed_stale"]) == (2, 1)

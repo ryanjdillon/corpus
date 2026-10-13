@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from functools import partial
 from unittest.mock import create_autospec
 
+import psycopg
 import pytest
 
 from corpus import serving, tiers
@@ -137,6 +138,7 @@ def projected_index(pg, embed):
                 "importance": "low", "requires_action": True, "time_sensitive": False,
                 "sensitivity_level": "low", "one_line": one_line, "action_summary": action,
                 "organizations": orgs, "policy_hash": digest,
+                "embedded_policy_hash": digest,  # each vector is of its stored text
             }
             store.save_message(row, _vec(1.0, i / 10))
     environ = {"CORPUS_SANITIZED_DATABASE_URL": pg, "CORPUS_INDEX_DATABASE_URL": pg}
@@ -161,10 +163,16 @@ def test_a_row_under_another_policy_is_served_degraded_by_query(projected_index)
     assert {r["id"]: _free_text(r) for r in out["rows"]} == SERVED
 
 
-def test_a_row_under_another_policy_is_served_degraded_by_search(projected_index, embed):
+def test_a_row_under_another_policy_never_ranks_by_its_old_vector(projected_index, embed):
+    # "pre" has neither hash and "old" another policy's: each vector is of the
+    # text the placeholder hides, so neither ranks, though keyword finds both.
     out = call(projected_index, "search", text="the ferry")
+    by_keyword = call(projected_index, "query", spec={"text": "pending redaction"})
 
-    assert {r["id"]: _free_text(r) for r in out["rows"]} == SERVED
+    assert {r["id"]: _free_text(r) for r in out["rows"]} == {"cur": SERVED["cur"]}
+    assert {r["id"]: _free_text(r) for r in by_keyword["rows"]} == {
+        k: SERVED[k] for k in ("old", "pre")
+    }
 
 
 def test_a_row_under_another_policy_is_served_degraded_by_get(projected_index):
@@ -183,6 +191,29 @@ def test_no_filter_or_group_reaches_a_stale_rows_stored_text(projected_index):
     assert ids(filters={"organization": "Nordmann"}) == []
     groups = call(projected_index, "aggregate", spec={}, group_by=["organization"])["rows"]
     assert [(g["organization"], g["count"]) for g in groups] == [("Fjordline", 1), (None, 2)]
+
+
+def test_an_embed_stale_row_is_left_out_of_search_until_re_embedded(pg, projected_index):
+    # "cur" is re-projected but its vector is of an earlier, unredacted one_line.
+    digest = DEFAULT_POLICY.digest()
+    with psycopg.connect(pg, autocommit=True) as conn:
+        conn.execute(
+            f"UPDATE {SCHEMA}.messages SET embedded_policy_hash = %s WHERE id = 'cur'", (STALE,)
+        )
+
+    def ids(tool: str, **args) -> list[str]:
+        return [r["id"] for r in call(projected_index, tool, **args)["rows"]]
+
+    assert ids("search", text="the ferry") == []
+    assert ids("query", spec={"text": "ferry"}) == ["cur"]
+    assert ids("query", spec={"filters": {"organization": "Fjordline"}}) == ["cur"]
+    assert ids("get", id="cur") == ["cur"]
+
+    with SanitizedStore(dsn=pg, schema=SCHEMA) as store:
+        written = store.save_embeddings(digest, [("cur", SERVED["cur"][0], _vec(1.0))])
+
+    assert written == 1
+    assert ids("search", text="the ferry") == ["cur"]
 
 
 def _document(uid: str, sent_at: str, label: str = "personal"):

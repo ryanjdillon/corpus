@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from .config import settings
 from .query import (
@@ -51,16 +51,36 @@ COLS = (
 UNTRUSTED_COLS = ("action_summary", "one_line", "organizations", "sender_domain", "thread_id")
 
 #: Columns the sync writes but no reader returns: the digest of the projection
-#: policy a row was projected under (``sanitize.Policy.digest``). The sync
-#: re-projects a row whose digest is not the current policy's, and a serving
-#: store degrades it until then (see :func:`_served`).
-WRITTEN = (*COLS, "policy_hash")
+#: policy a row was projected under (``sanitize.Policy.digest``), and the digest
+#: its stored embedding was computed under. The sync re-projects a row whose
+#: ``policy_hash`` is not the current policy's, and a serving store degrades it
+#: until then (see :func:`_served`). A row whose ``embedded_policy_hash`` differs
+#: from its ``policy_hash`` is *embed-stale*: its text is current but its vector
+#: was computed from an earlier ``one_line``, and the sync re-embeds it later
+#: (see :meth:`SanitizedStore.stale_embeddings`). An embed-stale row is not
+#: ranked by its vector until then (see :func:`_vector_current`).
+WRITTEN = (*COLS, "policy_hash", "embedded_policy_hash")
 
 #: The ``one_line`` a row projected under another policy is served with: like
 #: the projection's stub, it names only the domain.
 PENDING = "[pending redaction] "
 _ALL = frozenset(WRITTEN)
 _DIGEST = re.compile(r"[0-9a-f]+")
+
+
+class Backlog(NamedTuple):
+    """What the sync has still to do for a policy, as row counts.
+
+    Attributes:
+        pending: Rows projected under another policy (or none), which a serving
+            store degrades to a placeholder until they are re-projected.
+        embed_stale: Rows projected under the policy whose embedding was
+            computed from an earlier ``one_line``: served with current text,
+            left out of vector ranking until re-embedded.
+    """
+
+    pending: int
+    embed_stale: int
 
 
 # Priority ordering: importance, then urgency, then recency, then id. The id makes
@@ -109,11 +129,35 @@ def layout(schema: str) -> Layout:
         dates=frozenset({"deadline"}),
         orders={"priority": PRIORITY, "deadline": f"deadline NULLS LAST, {PRIORITY}"},
         embedding="summary_embedding",
+        ranked=_vector_current(_ALL),
     )
 
 
-def _served(schema: str, present: frozenset[str], projection: Policy | None) -> str:
-    """The relation a reader selects from: ``messages`` as the serving policy allows.
+def _vector_current(present: frozenset[str]) -> str:
+    """The predicate that a row's vector was computed from its stored text.
+
+    An embed-stale row's vector came from an earlier ``one_line``, which may
+    hold what the row's policy now redacts, so a ranking by it would link that
+    text to the row's served columns. Such a row is left out of vector ranking
+    until the sync re-embeds it. ``IS NOT DISTINCT FROM`` keeps a row with
+    neither hash (synced before both existed): its vector is its text's. A
+    serving store also requires the row's text to be its policy's (see
+    :func:`_served`).
+
+    A table without ``embedded_policy_hash`` predates two-phase re-projection,
+    whose sync embedded every row it wrote, so every vector there is current
+    (as the migration that adds the column records).
+    """
+    if "embedded_policy_hash" not in present:
+        return "true"
+    policy = "policy_hash" if "policy_hash" in present else "NULL"
+    return f"embedded_policy_hash IS NOT DISTINCT FROM {policy}"
+
+
+def _served(
+    schema: str, present: frozenset[str], projection: Policy | None
+) -> tuple[str, str]:
+    """``messages`` as the serving policy allows, and its vector-ranking predicate.
 
     Without a *projection* it is the table itself. With one, a row whose
     ``policy_hash`` is not the projection's digest (projected under another
@@ -122,16 +166,24 @@ def _served(schema: str, present: frozenset[str], projection: Policy | None) -> 
     hides. Until then it is served degraded: ``one_line`` names only the
     domain, the other redacted columns and every column outside the policy's
     ``fields`` are NULL. Every filter, keyword match, group and lookup runs on
-    the degraded columns, so none can reveal the stored text. Its stored
-    embedding still ranks it.
+    the degraded columns, so none can reveal the stored text. Nor does it rank
+    by its stored embedding, which is of that text: under a projection only a
+    row projected under it and embedded since (:func:`_vector_current`) ranks
+    in a semantic query. Without one, any row whose vector is of its stored
+    text ranks.
+
+    The vector predicate (:func:`_vector_current`) filters rows rather than
+    nulling ``summary_embedding``: an expression around the column would stop
+    the planner using an index on it to order a semantic query.
 
     A column in :data:`COLS` the table lacks (*present* says which it has) is
     read as NULL; a table without ``policy_hash`` has no row projected under
     the current policy.
     """
     table = f"{schema}.messages"
+    ranked = _vector_current(present)
     if projection is None and present >= frozenset(COLS):
-        return table
+        return table, ranked
     exprs = {c: (c if c in present else "NULL") for c in COLS}
     if projection is not None:
         from .sanitize import BOOKKEEPING, REDACTED_COLS
@@ -140,6 +192,7 @@ def _served(schema: str, present: frozenset[str], projection: Policy | None) -> 
         if not _DIGEST.fullmatch(digest):  # it is inlined, so it must be inert
             raise ValueError(f"not a policy digest: {digest!r}")
         current = f"policy_hash = '{digest}'" if "policy_hash" in present else "false"
+        ranked = f"{current} AND {ranked}"
         kept = set(projection.fields) | set(BOOKKEEPING)
         for c in COLS:
             if c not in kept or c in REDACTED_COLS:
@@ -152,7 +205,11 @@ def _served(schema: str, present: frozenset[str], projection: Policy | None) -> 
                 f"ELSE '{PENDING}' || coalesce({domain}, 'other') || ' item' END"
             )
     select = ", ".join(e if e == c else f"{e} AS {c}" for c, e in exprs.items())
-    return f"(SELECT {select}, summary_embedding FROM {table}) AS messages"
+    relation = (
+        f"(SELECT {select}, summary_embedding, {ranked} AS vector_current "
+        f"FROM {table}) AS messages"
+    )
+    return relation, "vector_current"
 
 
 def _ddl(schema: str, dim: int) -> str:
@@ -184,6 +241,7 @@ def _ddl(schema: str, dim: int) -> str:
         enriched_at           timestamptz,
         uri                   text,
         policy_hash           text,
+        embedded_policy_hash  text,
         synced_at             timestamptz NOT NULL DEFAULT now()
     );
     -- Tables created before the column existed; their rows stay NULL until
@@ -194,7 +252,34 @@ def _ddl(schema: str, dim: int) -> str:
     -- the next sync re-projects them, and a serving store degrades them until
     -- then. No reader returns it.
     ALTER TABLE {schema}.messages ADD COLUMN IF NOT EXISTS policy_hash text;
+    -- Every row written before embedded_policy_hash existed was embedded from
+    -- its stored one_line, so its vector is current under its policy_hash: the
+    -- column starts as a copy of it, once, when it is added. Serialized by a
+    -- lock, so two writers opening at once cannot both copy it, the second
+    -- after the first has started re-projecting.
+    DO $$
+    BEGIN
+        PERFORM pg_advisory_xact_lock(hashtext('{schema}.messages embedded_policy_hash'));
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_attribute
+            WHERE attrelid = '{schema}.messages'::regclass
+              AND attname = 'embedded_policy_hash' AND NOT attisdropped
+        ) THEN
+            ALTER TABLE {schema}.messages ADD COLUMN embedded_policy_hash text;
+            -- A row without a policy_hash already reads NULL, so only hashed
+            -- rows are written: no dead tuples, and a shorter hold of the
+            -- ALTER's exclusive lock, which blocks reads.
+            UPDATE {schema}.messages SET embedded_policy_hash = policy_hash
+            WHERE policy_hash IS NOT NULL;
+        END IF;
+    END
+    $$;
     """
+
+
+def _vector(embedding: list[float]) -> str:
+    """*embedding* as a pgvector literal."""
+    return "[" + ",".join(f"{x:.6f}" for x in embedding) + "]"
 
 
 class SanitizedStore(Store):
@@ -230,9 +315,7 @@ class SanitizedStore(Store):
             self._conn.read_only = True
         # The writer's DDL guarantees every column; a reader checks (see _present).
         self._columns: frozenset[str] | None = None if read_only else _ALL
-        self._full_layout = replace(
-            layout(self._schema), table=_served(self._schema, _ALL, projection)
-        )
+        self._full_layout = self._served_layout(_ALL)
         cols = ", ".join(WRITTEN)
         placeholders = ", ".join(["%s"] * len(WRITTEN))
         updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in WRITTEN if c != "id")
@@ -265,15 +348,15 @@ class SanitizedStore(Store):
 
     def save_message(self, row: dict, embedding: list[float]) -> None:
         """Upsert one projected row and its summary embedding."""
-        vec = "[" + ",".join(f"{x:.6f}" for x in embedding) + "]"
-        self._write(self._sql, [row.get(c) for c in WRITTEN] + [vec])
+        self._write(self._sql, [row.get(c) for c in WRITTEN] + [_vector(embedding)])
 
     def update_projections(self, rows: list[dict]) -> int:
         """Rewrite the projected columns of existing rows, keeping their embeddings.
 
-        For a row whose embedded text (``one_line``) is unchanged, so its stored
-        vector still holds. A row whose projection and ``policy_hash`` already
-        match is left untouched. Returns how many rows changed.
+        The stored vector is kept even when ``one_line`` changes; the row's
+        ``embedded_policy_hash`` says whether it still holds. A row whose
+        written columns already match is left untouched. Returns how many rows
+        changed.
         """
         projected = [c for c in WRITTEN if c != "id"]
         changed = 0
@@ -288,17 +371,72 @@ class SanitizedStore(Store):
         """Map id -> ``enriched_at`` already synced, so the sync skips unchanged rows."""
         return {id_: state[0] for id_, state in self.synced_state().items()}
 
-    def synced_state(self) -> dict[str, tuple[object, str | None, str | None]]:
-        """Map id -> (``enriched_at``, ``one_line``, ``policy_hash``) of every synced row.
+    def synced_state(
+        self,
+    ) -> dict[str, tuple[object, str | None, str | None, str | None]]:
+        """Map id -> the sync's state of every synced row.
 
-        ``one_line`` is the text the stored embedding was computed from, so the
-        sync re-embeds a row only when it changes; ``policy_hash`` is the policy
-        the row was projected under, so the sync re-projects it when that changes.
+        The state is (``enriched_at``, ``one_line``, ``policy_hash``,
+        ``embedded_policy_hash``). ``policy_hash`` is the policy the row was projected under, so the sync
+        re-projects it when that changes. When ``embedded_policy_hash`` equals
+        it, the stored embedding was computed from the stored ``one_line``, so
+        a re-projection that leaves ``one_line`` as it is keeps the vector
+        current.
         """
         rows = self._read(
-            f"SELECT id, enriched_at, one_line, policy_hash FROM {self._schema}.messages"
+            f"SELECT id, enriched_at, one_line, policy_hash, embedded_policy_hash "
+            f"FROM {self._schema}.messages"
         )
-        return {r[0]: (r[1], r[2], r[3]) for r in rows}
+        return {r[0]: (r[1], r[2], r[3], r[4]) for r in rows}
+
+    def stale_embeddings(self, digest: str, limit: int = 0) -> list[tuple[str, str | None]]:
+        """The (id, ``one_line``) of rows projected under *digest* but embed-stale.
+
+        Newest first, at most *limit* (0: all). A row still projected under
+        another policy is left out: its ``one_line`` is about to change, so an
+        embedding of it now would be thrown away.
+        """
+        return [
+            (r[0], r[1])
+            for r in self._read(
+                f"SELECT id, one_line FROM {self._schema}.messages "
+                "WHERE policy_hash = %s AND embedded_policy_hash IS DISTINCT FROM policy_hash "
+                "ORDER BY sent_at DESC NULLS LAST, id LIMIT %s",
+                (digest, limit or None),
+            )
+        ]
+
+    def save_embeddings(
+        self, digest: str, rows: list[tuple[str, str | None, list[float]]]
+    ) -> int:
+        """Store each (id, ``one_line``, vector) as current under *digest*.
+
+        A row is written only while it still holds that ``one_line`` under
+        *digest*, so a vector computed before a concurrent re-projection is not
+        stored over the newer text. Returns how many rows were written.
+        """
+        written = 0
+        with self._conn.transaction(), self._conn.cursor() as cur:
+            for id_, one_line, embedding in rows:
+                cur.execute(
+                    f"UPDATE {self._schema}.messages SET summary_embedding = %s::vector, "
+                    "embedded_policy_hash = policy_hash, synced_at = now() "
+                    "WHERE id = %s AND policy_hash = %s AND one_line IS NOT DISTINCT FROM %s",
+                    (_vector(embedding), id_, digest, one_line),
+                )
+                written += cur.rowcount
+        return written
+
+    def backlog(self, digest: str) -> Backlog:
+        """The rows not yet projected, or not yet embedded, under *digest*."""
+        pending, embed_stale = self._read(
+            "SELECT count(*) FILTER (WHERE policy_hash IS DISTINCT FROM %s), "
+            "count(*) FILTER (WHERE policy_hash = %s "
+            "AND embedded_policy_hash IS DISTINCT FROM policy_hash) "
+            f"FROM {self._schema}.messages",
+            (digest, digest),
+        )[0]
+        return Backlog(pending, embed_stale)
 
     def _present(self) -> frozenset[str]:
         """The written columns (:data:`WRITTEN`) the table has.
@@ -330,9 +468,12 @@ class SanitizedStore(Store):
         present = self._present()
         if present == _ALL:
             return self._full_layout
-        return replace(
-            self._full_layout, table=_served(self._schema, present, self._projection)
-        )
+        return self._served_layout(present)
+
+    def _served_layout(self, present: frozenset[str]) -> Layout:
+        """The query layout over the table's *present* columns (see :func:`_served`)."""
+        table, ranked = _served(self._schema, present, self._projection)
+        return replace(layout(self._schema), table=table, ranked=ranked)
 
     def query(
         self, spec: QuerySpec, policy: QueryPolicy, position: Position | None = None

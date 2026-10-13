@@ -150,6 +150,12 @@ def _doc(doc_id, meta, enr, enriched_at=V1):
     return (doc_id, meta, enr, enriched_at)
 
 
+def _counts(**counts):
+    """A run_sync result: *counts*, every other count zero."""
+    keys = ("scanned", "synced", "skipped", "reprojected", "embedded", "pending", "embed_stale")
+    return {k: counts.get(k, 0) for k in keys}
+
+
 @pytest.mark.integration
 def test_run_sync_projects_embeds_upserts(store, embedder, documents):
     docs = documents(
@@ -158,7 +164,7 @@ def test_run_sync_projects_embeds_upserts(store, embedder, documents):
     )
     r = sanitize.run_sync(store, documents=docs, embedder=embedder)
 
-    assert r == {"scanned": 2, "synced": 2, "skipped": 0, "deferred": 0}
+    assert r == _counts(scanned=2, synced=2, embedded=2)
     assert store.synced_versions() == {"d1": V1, "d2": V1}
     assert store.get("d2")["sender_domain"] == "example.org"
     embedder.embed.assert_called_once_with(["hi", "yo"])  # batched
@@ -181,7 +187,7 @@ def test_run_sync_skips_unchanged(store, embedder, documents):
 
     r = sanitize.run_sync(store, documents=documents(doc), embedder=embedder)
 
-    assert r == {"scanned": 1, "synced": 0, "skipped": 1, "deferred": 0}
+    assert r == _counts(scanned=1, skipped=1)
 
 
 @pytest.mark.integration
@@ -205,7 +211,7 @@ def test_run_sync_limit_reaches_past_already_synced_rows(store, embedder, docume
 
     r = sanitize.run_sync(store, documents=documents(*rows), embedder=embedder, limit=2)
 
-    assert r == {"scanned": 4, "synced": 2, "skipped": 2, "deferred": 0}
+    assert r == _counts(scanned=4, synced=2, skipped=2, embedded=2)
     assert set(store.synced_versions()) == {"d0", "d1", "d2", "d3"}
 
 
@@ -224,7 +230,7 @@ def test_run_sync_force_rewrites_nothing_whose_projection_is_unchanged(
 
     r = sanitize.run_sync(store, documents=documents(doc), embedder=embedder, force=True)
 
-    assert r == {"scanned": 1, "synced": 0, "skipped": 1, "deferred": 0}
+    assert r == _counts(scanned=1, skipped=1)
     embedder.embed.assert_not_called()
 
 
@@ -235,7 +241,7 @@ def test_run_sync_default_embedder(monkeypatch, store, documents):
     default.embed.side_effect = lambda texts: [[0.1] * DIM for _ in texts]
     monkeypatch.setattr(sanitize, "Embedder", lambda: default)
     r = sanitize.run_sync(store, documents=documents())
-    assert r == {"scanned": 0, "synced": 0, "skipped": 0, "deferred": 0}
+    assert r == _counts()
 
 
 @pytest.mark.integration
@@ -300,7 +306,7 @@ def test_reproject_keeps_the_embedding_of_unchanged_text(store, embedder, docume
     r = sanitize.run_sync(store, documents=documents(*docs), embedder=embedder, force=True)
 
     embedder.embed.assert_not_called()
-    assert r == {"scanned": 3, "synced": 3, "skipped": 0, "deferred": 0}
+    assert r == _counts(scanned=3, synced=3, reprojected=3)
     assert [store.get(f"d{i}")["uri"] for i in range(3)] == [LINK.format(i) for i in range(3)]
 
 
@@ -329,6 +335,7 @@ def test_an_interrupted_reproject_resumes_without_redoing_finished_rows(
     # dies after two rows.
     docs = [_linked(i) for i in range(4)]
     sanitize.run_sync(store, documents=documents(*docs), embedder=embedder)
+    embedder.embed.reset_mock()
 
     def interrupted(source=None):
         yield from docs[:2]
@@ -339,15 +346,20 @@ def test_an_interrupted_reproject_resumes_without_redoing_finished_rows(
     with pytest.raises(RuntimeError):
         sanitize.run_sync(store, documents=broken, embedder=embedder, force=True, policy=LOW,
                           batch_size=1)
-    embedder.embed.reset_mock()
 
     r = sanitize.run_sync(store, documents=documents(*docs), embedder=embedder, force=True,
                           policy=LOW, batch_size=1)
 
-    assert r == {"scanned": 4, "synced": 2, "skipped": 2, "deferred": 0}
-    embedded = [text for c in embedder.embed.call_args_list for text in c.args[0]]
-    assert embedded == [store.get("d2")["one_line"], store.get("d3")["one_line"]]
+    assert r == _counts(scanned=4, synced=2, skipped=2, reprojected=2, embed_stale=4)
+    embedder.embed.assert_not_called()  # the text phase never embeds
     assert all(store.get(f"d{i}")["one_line"].startswith("[sensitive]") for i in range(4))
+
+    drained = sanitize.run_sync(store, documents=documents(*docs), embedder=embedder,
+                                policy=LOW, reembed_limit=0)
+
+    assert drained == _counts(scanned=4, skipped=4, embedded=4)
+    embedded = [text for c in embedder.embed.call_args_list for text in c.args[0]]
+    assert embedded == [store.get(f"d{i}")["one_line"] for i in range(4)]
 
 
 @pytest.mark.integration
@@ -751,13 +763,18 @@ def test_a_changed_policy_reprojects_on_the_next_sync_keeping_unchanged_embeddin
     r = sanitize.run_sync(store, documents=documents(*docs), embedder=embedder,
                           policy=keep_phones)
 
-    assert r == {"scanned": 3, "synced": 3, "skipped": 0, "deferred": 0}
+    assert r == _counts(scanned=3, synced=3, reprojected=3, embed_stale=1)
+    embedder.embed.assert_not_called()
+
+    again = sanitize.run_sync(store, documents=documents(*docs), embedder=embedder,
+                              policy=keep_phones, reembed_limit=0)
+    assert again == _counts(scanned=3, skipped=3, embedded=1)
     embedder.embed.assert_called_once_with(["a friend asks about item 1 on +44 20 7946 0958"])
     embedder.embed.reset_mock()
 
-    again = sanitize.run_sync(store, documents=documents(*docs), embedder=embedder,
-                              policy=keep_phones)
-    assert again == {"scanned": 3, "synced": 0, "skipped": 3, "deferred": 0}
+    done = sanitize.run_sync(store, documents=documents(*docs), embedder=embedder,
+                             policy=keep_phones, reembed_limit=0)
+    assert done == _counts(scanned=3, skipped=3)
     embedder.embed.assert_not_called()
 
 
@@ -766,16 +783,17 @@ def test_rows_synced_before_the_policy_hash_are_reprojected(pg, store, embedder,
     docs = [_people(0), _people(1)]
     sanitize.run_sync(store, documents=documents(*docs), embedder=embedder,
                       policy=sanitize.STUB_POLICY)
-    store._write("UPDATE corpus.messages SET policy_hash = NULL")
+    store._write("UPDATE corpus.messages SET policy_hash = NULL, embedded_policy_hash = NULL")
     embedder.embed.reset_mock()
 
     r = sanitize.run_sync(store, documents=documents(*docs), embedder=embedder,
                           policy=sanitize.STUB_POLICY)
 
     # Projected again under the same policy: the hash is filled, nothing re-embedded.
-    assert r == {"scanned": 2, "synced": 2, "skipped": 0, "deferred": 0}
+    assert r == _counts(scanned=2, synced=2, reprojected=2)
     embedder.embed.assert_not_called()
-    assert {s[2] for s in store.synced_state().values()} == {sanitize.STUB_POLICY.digest()}
+    digest = sanitize.STUB_POLICY.digest()
+    assert {s[2:] for s in store.synced_state().values()} == {(digest, digest)}
 
 
 @pytest.mark.integration
@@ -785,6 +803,7 @@ def test_an_interrupted_policy_change_resumes_without_redoing_finished_rows(
     docs = [_people(i) for i in range(4)]
     sanitize.run_sync(store, documents=documents(*docs), embedder=embedder,
                       policy=sanitize.STUB_POLICY)
+    embedder.embed.reset_mock()
     initial = Policy(redact=Redaction(person_name="initial"))
 
     def interrupted(source=None):
@@ -796,14 +815,13 @@ def test_an_interrupted_policy_change_resumes_without_redoing_finished_rows(
     with pytest.raises(RuntimeError):
         sanitize.run_sync(store, documents=broken, embedder=embedder, policy=initial,
                           batch_size=1)
-    embedder.embed.reset_mock()
 
     r = sanitize.run_sync(store, documents=documents(*docs), embedder=embedder, policy=initial,
                           batch_size=1)
 
-    assert r == {"scanned": 4, "synced": 2, "skipped": 2, "deferred": 0}
-    embedded = [text for c in embedder.embed.call_args_list for text in c.args[0]]
-    assert embedded == ["K. N. asks about item 2", "K. N. asks about item 3"]
+    assert r == _counts(scanned=4, synced=2, skipped=2, reprojected=2, embed_stale=4)
+    embedder.embed.assert_not_called()
+    assert store.get("d3")["one_line"] == "K. N. asks about item 3"
 
 
 @pytest.mark.integration
@@ -813,7 +831,7 @@ def test_reproject_still_reprojects_rows_under_the_current_policy(store, embedde
 
     r = sanitize.run_sync(store, documents=documents(*docs), embedder=embedder, force=True)
 
-    assert r == {"scanned": 1, "synced": 0, "skipped": 1, "deferred": 0}  # projected, found unchanged
+    assert r == _counts(scanned=1, skipped=1)  # projected, found unchanged
 
 
 @pytest.mark.integration
@@ -879,7 +897,7 @@ def test_credential_placeholders_do_not_read_as_instructions():
     assert envelope.flags(row, UNTRUSTED_COLS) == []
 
 
-# --- bounding a policy change ---------------------------------------------------------------
+# --- re-projecting text now, re-embedding later -------------------------------------------
 
 
 def _stale(store, embedder, documents, docs):
@@ -889,76 +907,257 @@ def _stale(store, embedder, documents, docs):
     embedder.embed.reset_mock()
 
 
+def _served(pg, policy=sanitize.DEFAULT_POLICY):
+    """The index's view of the table: a read-only store serving under *policy*."""
+    return SanitizedStore(dsn=pg, schema="corpus", read_only=True, projection=policy)
+
+
 @pytest.mark.integration
-def test_a_policy_change_reprojects_at_most_the_cap_per_run(store, embedder, documents):
+def test_the_text_phase_replaces_every_placeholder_without_embedding(
+    pg, store, embedder, documents
+):
+    docs = [_people(i) for i in range(3)]
+    _stale(store, embedder, documents, docs)
+    with _served(pg) as index:
+        assert index.get("d0")["one_line"].startswith(PENDING)
+
+        r = sanitize.run_sync(store, documents=documents(*docs), embedder=embedder)
+
+        embedder.embed.assert_not_called()
+        assert r == _counts(scanned=3, synced=3, reprojected=3, embed_stale=3)
+        assert [index.get(f"d{i}")["one_line"] for i in range(3)] == [
+            f"a friend asks about item {i}" for i in range(3)
+        ]
+
+
+@pytest.mark.integration
+def test_a_policy_change_re_embeds_at_most_the_cap_per_run(store, embedder, documents):
     docs = [_people(i) for i in range(5)]
     _stale(store, embedder, documents, docs)
 
-    first = sanitize.run_sync(store, documents=documents(*docs), embedder=embedder,
-                              reproject_limit=2)
-    second = sanitize.run_sync(store, documents=documents(*docs), embedder=embedder,
-                               reproject_limit=2)
-    third = sanitize.run_sync(store, documents=documents(*docs), embedder=embedder,
-                              reproject_limit=2)
+    runs = [sanitize.run_sync(store, documents=documents(*docs), embedder=embedder,
+                              reembed_limit=2) for _ in range(3)]
 
-    assert first == {"scanned": 5, "synced": 2, "skipped": 0, "deferred": 3}
-    assert second == {"scanned": 5, "synced": 2, "skipped": 2, "deferred": 1}
-    assert third == {"scanned": 5, "synced": 1, "skipped": 4, "deferred": 0}
-    # In the reader's stable order, so each run takes the next rows.
+    assert runs == [
+        _counts(scanned=5, synced=5, reprojected=5, embedded=2, embed_stale=3),
+        _counts(scanned=5, skipped=5, embedded=2, embed_stale=1),
+        _counts(scanned=5, skipped=5, embedded=1),
+    ]
+    assert [len(c.args[0]) for c in embedder.embed.call_args_list] == [2, 2, 1]
     embedded = [text for c in embedder.embed.call_args_list for text in c.args[0]]
     assert embedded == [f"a friend asks about item {i}" for i in range(5)]
 
 
 @pytest.mark.integration
-def test_new_and_re_enriched_rows_go_first_and_are_never_capped(store, embedder, documents):
+def test_re_embedding_takes_the_newest_rows_first(store, embedder, documents):
+    docs = [_doc(f"d{i}", {"sent_at": f"2026-01-0{i + 1}T00:00:00+00:00"},
+                 {"one_line": f"Kari Nordmann asks about item {i}", "sensitivity_level": "low",
+                  "people": [KARI], "references": []}) for i in range(3)]
+    _stale(store, embedder, documents, docs)
+
+    sanitize.run_sync(store, documents=documents(*docs), embedder=embedder, reembed_limit=1)
+
+    embedder.embed.assert_called_once_with(["a friend asks about item 2"])
+
+
+@pytest.mark.integration
+def test_new_and_re_enriched_rows_are_embedded_at_once_and_never_capped(
+    store, embedder, documents
+):
     old = [_people(i) for i in range(3)]
     _stale(store, embedder, documents, old)
-    # The stale rows come first in the reader's order, then a re-enriched and two new ones.
     changed = _doc("d0", {}, {"one_line": "Kari Nordmann replies", "sensitivity_level": "low",
                               "people": [KARI], "references": []}, V2)
     new = [_people(i) for i in (8, 9)]
 
     r = sanitize.run_sync(store, documents=documents(*old[1:], changed, *new),
-                          embedder=embedder, reproject_limit=1, batch_size=1)
+                          embedder=embedder, batch_size=1)
 
-    assert r == {"scanned": 5, "synced": 4, "skipped": 0, "deferred": 1}
+    assert r == _counts(scanned=5, synced=5, reprojected=2, embedded=3, embed_stale=2)
     embedded = [text for c in embedder.embed.call_args_list for text in c.args[0]]
     assert embedded == ["a friend replies", "a friend asks about item 8",
-                        "a friend asks about item 9", "a friend asks about item 1"]
+                        "a friend asks about item 9"]
 
 
 @pytest.mark.integration
-def test_the_limit_counts_held_back_stale_rows_as_deferred(store, embedder, documents):
+def test_the_limit_projects_new_rows_before_stale_ones(store, embedder, documents):
     old = [_people(i) for i in range(3)]
     _stale(store, embedder, documents, old)
 
-    r = sanitize.run_sync(store, documents=documents(_people(9), *old), embedder=embedder,
-                          reproject_limit=2, limit=2)
+    r = sanitize.run_sync(store, documents=documents(*old, _people(9)), embedder=embedder,
+                          limit=2)
 
-    assert r == {"scanned": 4, "synced": 2, "skipped": 0, "deferred": 2}
+    # d9 first, then the first stale row; the other two stay placeholders.
+    assert r == _counts(scanned=4, synced=2, reprojected=1, embedded=1, pending=2,
+                        embed_stale=1)
+    embedder.embed.assert_called_once_with(["a friend asks about item 9"])
 
 
 @pytest.mark.integration
-def test_the_rows_left_are_logged(store, embedder, documents, caplog):
+def test_what_is_left_is_logged(store, embedder, documents, caplog):
     docs = [_people(i) for i in range(3)]
     _stale(store, embedder, documents, docs)
 
     with caplog.at_level("INFO", logger="corpus.sanitize"):
         sanitize.run_sync(store, documents=documents(*docs), embedder=embedder,
-                          reproject_limit=1)
+                          reembed_limit=1)
+        sanitize.run_sync(store, documents=documents(docs[0]), embedder=embedder, limit=1,
+                          policy=sanitize.STUB_POLICY)
 
+    assert "2 rows await a new embedding; each sync re-embeds up to 1" in caplog.text
     assert "2 rows still projected under an older policy" in caplog.text
 
 
 @pytest.mark.integration
-def test_reproject_and_no_cap_ignore_the_limit_on_stale_rows(store, embedder, documents):
-    docs = [_people(i) for i in range(3)]
+def test_a_row_whose_text_is_unchanged_keeps_a_current_vector(store, embedder, documents):
+    # A low row keeps its summary verbatim under both policies: only the digest moves.
+    docs = [_people(i) for i in range(2)]
     _stale(store, embedder, documents, docs)
+    verbatim = Policy(redact=sanitize.KEEP_ALL)
 
-    r = sanitize.run_sync(store, documents=documents(*docs), embedder=embedder)
+    r = sanitize.run_sync(store, documents=documents(*docs), embedder=embedder, policy=verbatim)
 
-    assert r == {"scanned": 3, "synced": 3, "skipped": 0, "deferred": 0}
-    _stale(store, embedder, documents, docs)
-    forced = sanitize.run_sync(store, documents=documents(*docs), embedder=embedder,
-                               force=True, reproject_limit=1)
-    assert forced == {"scanned": 3, "synced": 3, "skipped": 0, "deferred": 0}
+    assert r == _counts(scanned=2, synced=2, reprojected=2)
+    embedder.embed.assert_not_called()
+    assert {s[3] for s in store.synced_state().values()} == {verbatim.digest()}
+
+
+@pytest.mark.integration
+def test_a_forced_re_projection_that_changes_the_text_marks_the_row_stale(
+    store, embedder, documents
+):
+    # Under an unchanged policy the digest cannot tell the vectors apart, so a
+    # changed text clears it.
+    doc = _people(0)
+    sanitize.run_sync(store, documents=documents(doc), embedder=embedder)
+    embedder.embed.reset_mock()
+
+    def reworded(doc_id, meta, enr, policy):
+        return {**sanitize.project(doc_id, meta, enr, policy), "one_line": "reworded"}
+
+    r = sanitize.run_sync(store, documents=documents(doc), embedder=embedder, force=True,
+                          projector=reworded)
+
+    assert r == _counts(scanned=1, synced=1, reprojected=1, embed_stale=1)
+    assert store.synced_state()["d0"][3] is None
+    embedder.embed.assert_not_called()
+
+
+@pytest.mark.integration
+def test_reverting_a_policy_finds_the_vectors_current_again(store, embedder, documents):
+    docs = [_people(i) for i in range(2)]
+    sanitize.run_sync(store, documents=documents(*docs), embedder=embedder)
+    embedder.embed.reset_mock()
+    sanitize.run_sync(store, documents=documents(*docs), embedder=embedder,
+                      policy=sanitize.STUB_POLICY)
+
+    r = sanitize.run_sync(store, documents=documents(*docs), embedder=embedder, reembed_limit=0)
+
+    # The vectors were computed under the default for this text; none is redone.
+    assert r == _counts(scanned=2, synced=2, reprojected=2)
+    embedder.embed.assert_not_called()
+
+
+@pytest.mark.integration
+def test_a_re_enriched_embed_stale_row_is_embedded_even_with_the_same_text(
+    store, embedder, documents
+):
+    # Its vector is from an earlier text, so an unchanged one_line proves nothing.
+    sanitize.run_sync(store, documents=documents(_people(0)), embedder=embedder)
+    sanitize.run_sync(store, documents=documents(_people(0)), embedder=embedder,
+                      policy=sanitize.STUB_POLICY)
+    embedder.embed.reset_mock()
+    _, meta, enr, _ = _people(0)
+
+    r = sanitize.run_sync(store, documents=documents(_doc("d0", meta, enr, V2)),
+                          embedder=embedder, policy=sanitize.STUB_POLICY)
+
+    assert r == _counts(scanned=1, synced=1, embedded=1)
+    embedder.embed.assert_called_once_with(["Kari Nordmann asks about item 0"])
+
+
+@pytest.mark.integration
+def test_a_vector_for_text_that_changed_meanwhile_is_not_stored(store, embedder, documents):
+    _stale(store, embedder, documents, [_people(0)])
+    sanitize.run_sync(store, documents=documents(_people(0)), embedder=embedder)
+    digest = sanitize.DEFAULT_POLICY.digest()
+
+    assert store.save_embeddings(digest, [("d0", "an older text", [0.2] * DIM)]) == 0
+    assert store.backlog(digest).embed_stale == 1
+
+
+# --- migrating a table from before embedded_policy_hash --------------------------------------
+
+
+def _legacy(store, policy_hash):
+    """Make the table one from before the column, its rows hashed *policy_hash*."""
+    store._write("ALTER TABLE corpus.messages DROP COLUMN embedded_policy_hash")
+    store._write("UPDATE corpus.messages SET policy_hash = %s", (policy_hash,))
+
+
+@pytest.mark.integration
+def test_a_null_hash_row_is_served_redacted_then_re_embedded(pg, embedder, documents):
+    # Synced before policies: one row a name redaction rewrites, one it leaves be.
+    plain = _doc("d5", {}, {"one_line": "Invoice 5 due", "sensitivity_level": "low",
+                            "people": [], "references": []})
+    docs = [_people(0), plain]
+    with SanitizedStore(dsn=pg, schema="corpus") as first:
+        sanitize.run_sync(first, documents=documents(*docs), embedder=embedder,
+                          policy=sanitize.STUB_POLICY)
+        _legacy(first, None)
+    embedder.embed.reset_mock()
+    digest = sanitize.DEFAULT_POLICY.digest()
+
+    with SanitizedStore(dsn=pg, schema="corpus") as store, _served(pg) as index:
+        assert index.get("d0")["one_line"].startswith(PENDING)
+
+        text = sanitize.run_sync(store, documents=documents(*docs), embedder=embedder)
+
+        embedder.embed.assert_not_called()
+        assert text == _counts(scanned=2, synced=2, reprojected=2, embed_stale=1)
+        assert index.get("d0")["one_line"] == "a friend asks about item 0"
+        assert store.synced_state()["d0"][2:] == (digest, None)  # still embed-stale
+        assert store.synced_state()["d5"][2:] == (digest, digest)  # its text is unchanged
+        with SanitizedStore(dsn=pg, schema="corpus") as reopened:  # the copy runs only once
+            assert reopened.backlog(digest) == (0, 1)
+
+        vectors = sanitize.run_sync(store, documents=documents(*docs), embedder=embedder,
+                                    reembed_limit=0)
+
+        assert vectors == _counts(scanned=2, skipped=2, embedded=1)
+        embedder.embed.assert_called_once_with(["a friend asks about item 0"])
+        assert store.synced_state()["d0"][2:] == (digest, digest)
+
+
+@pytest.mark.integration
+def test_adding_the_column_writes_no_row_without_a_hash(pg, embedder, documents):
+    # The copy runs under the ALTER's exclusive lock; a NULL-hash row stays as it is.
+    with SanitizedStore(dsn=pg, schema="corpus") as first:
+        sanitize.run_sync(first, documents=documents(_people(0), _people(1)),
+                          embedder=embedder, policy=sanitize.STUB_POLICY)
+        _legacy(first, None)
+        first._write("UPDATE corpus.messages SET policy_hash = 'ab' WHERE id = 'd1'")
+        before = dict(first._read("SELECT id, xmin::text FROM corpus.messages"))
+
+    with SanitizedStore(dsn=pg, schema="corpus") as store:
+        after = dict(store._read("SELECT id, xmin::text FROM corpus.messages"))
+        hashes = dict(store._read("SELECT id, embedded_policy_hash FROM corpus.messages"))
+
+    assert after["d0"] == before["d0"] and after["d1"] != before["d1"]
+    assert hashes == {"d0": None, "d1": "ab"}
+
+
+@pytest.mark.integration
+def test_rows_hashed_before_the_column_keep_their_vectors(pg, embedder, documents):
+    docs = [_people(0)]
+    with SanitizedStore(dsn=pg, schema="corpus") as first:
+        sanitize.run_sync(first, documents=documents(*docs), embedder=embedder)
+        _legacy(first, sanitize.DEFAULT_POLICY.digest())
+    embedder.embed.reset_mock()
+
+    with SanitizedStore(dsn=pg, schema="corpus") as store:
+        r = sanitize.run_sync(store, documents=documents(*docs), embedder=embedder,
+                              reembed_limit=0)
+
+    assert r == _counts(scanned=1, skipped=1)
+    embedder.embed.assert_not_called()

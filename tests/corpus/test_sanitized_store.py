@@ -59,25 +59,60 @@ def test_save_message_formats_vector_literal(store, cursor):
 
 
 def test_synced_versions_maps_id_to_enriched_at(store, cursor):
-    cursor.fetchall.return_value = [("d1", "v1", "a", "p1"), ("d2", "v2", None, None)]
+    cursor.fetchall.return_value = [("d1", "v1", "a", "p1", "p1"), ("d2", "v2", None, None, None)]
     assert store.synced_versions() == {"d1": "v1", "d2": "v2"}
 
 
-def test_synced_state_carries_the_embedded_text_and_the_policy(store, cursor):
-    cursor.fetchall.return_value = [("d1", "v1", "Invoice due", "p1"), ("d2", "v2", None, None)]
-    assert store.synced_state() == {"d1": ("v1", "Invoice due", "p1"), "d2": ("v2", None, None)}
+def test_synced_state_carries_the_text_and_both_policies(store, cursor):
+    cursor.fetchall.return_value = [
+        ("d1", "v1", "Invoice due", "p2", "p1"), ("d2", "v2", None, None, None),
+    ]
+    assert store.synced_state() == {
+        "d1": ("v1", "Invoice due", "p2", "p1"), "d2": ("v2", None, None, None),
+    }
 
 
 def test_the_policy_hash_is_written_but_never_served(store, cursor):
     # The sync writes it with every row; the query layout returns only COLS, and
     # a store without a projection policy does not read it at all.
     cursor.execute.reset_mock()
-    store.save_message({"id": "d1", "policy_hash": "p1"}, [0.1])
+    store.save_message({"id": "d1", "policy_hash": "p1", "embedded_policy_hash": "p0"}, [0.1])
     sql, params = cursor.execute.call_args.args
-    assert "policy_hash" in sql and params[-2] == "p1"
-    assert "policy_hash" in store._update_sql
-    assert "policy_hash" not in sanitized_store.COLS
-    assert "policy_hash" not in store._layout.columns
+    assert "policy_hash" in sql and params[-3:-1] == ["p1", "p0"]
+    for col in ("policy_hash", "embedded_policy_hash"):
+        assert col in store._update_sql
+        assert col not in sanitized_store.COLS
+        assert col not in store._layout.columns
+
+
+def test_stale_embeddings_reads_the_newest_rows_under_the_policy(store, cursor):
+    cursor.fetchall.return_value = [("d1", "Invoice due"), ("d2", None)]
+    cursor.execute.reset_mock()
+
+    assert store.stale_embeddings("p1", 2) == [("d1", "Invoice due"), ("d2", None)]
+    assert store.stale_embeddings("p1") == [("d1", "Invoice due"), ("d2", None)]
+
+    (capped_sql, capped), (_, uncapped) = (c.args for c in cursor.execute.call_args_list)
+    assert "embedded_policy_hash IS DISTINCT FROM policy_hash" in capped_sql
+    assert "ORDER BY sent_at DESC" in capped_sql
+    assert (capped, uncapped) == (("p1", 2), ("p1", None))  # LIMIT NULL is no limit
+
+
+def test_save_embeddings_writes_only_rows_whose_text_is_unchanged(store, cursor):
+    cursor.rowcount = 1
+    cursor.execute.reset_mock()
+
+    assert store.save_embeddings("p1", [("d1", "x", [0.5]), ("d2", None, [0.25])]) == 2
+
+    sql, params = cursor.execute.call_args_list[0].args
+    assert "embedded_policy_hash = policy_hash" in sql
+    assert "one_line IS NOT DISTINCT FROM %s" in sql
+    assert params == ("[0.500000]", "d1", "p1", "x")
+
+
+def test_backlog_counts_pending_and_embed_stale_rows(store, cursor):
+    cursor.fetchall.return_value = [(3, 7)]
+    assert store.backlog("p1") == sanitized_store.Backlog(pending=3, embed_stale=7)
 
 
 def test_context_manager_closes(store, conn):
@@ -99,6 +134,10 @@ def test_ddl_adds_new_columns_to_an_existing_table(store, cursor):
     ddl = " ".join(c.args[0] for c in cursor.execute.call_args_list)
     assert "ADD COLUMN IF NOT EXISTS uri text" in ddl
     assert "ADD COLUMN IF NOT EXISTS policy_hash text" in ddl
+    # Added once, starting as a copy of policy_hash: those vectors are current.
+    assert "ADD COLUMN embedded_policy_hash text" in ddl
+    # Only rows with a hash are written: the rest already read NULL.
+    assert "SET embedded_policy_hash = policy_hash\n            WHERE policy_hash IS NOT NULL" in ddl
     assert "uri" in store._sql
 
 
@@ -120,8 +159,36 @@ def test_a_store_with_a_projection_gates_each_free_text_column_on_its_digest(mon
     assert table.endswith("FROM corpus.messages) AS messages")
 
 
+def test_a_served_row_ranks_only_when_its_text_and_vector_are_current(monkeypatch, conn):
+    # A filter, not a CASE around summary_embedding, so an index still orders it.
+    monkeypatch.setattr(store_base.psycopg, "connect", lambda *a, **k: conn)
+    store = sanitized_store.SanitizedStore(
+        dsn=DSN, schema="corpus", read_only=True, projection=DEFAULT_POLICY
+    )
+    current = (
+        f"policy_hash = '{DEFAULT_POLICY.digest()}' "
+        "AND embedded_policy_hash IS NOT DISTINCT FROM policy_hash"
+    )
+    assert f", summary_embedding, {current} AS vector_current FROM" in store._full_layout.table
+    assert store._full_layout.ranked == "vector_current"
+
+
+@pytest.mark.parametrize(
+    ("present", "ranked"),
+    [
+        ({"policy_hash", "embedded_policy_hash"},
+         "embedded_policy_hash IS NOT DISTINCT FROM policy_hash"),
+        ({"policy_hash"}, "true"),  # every vector predates two-phase re-projection
+        ({"embedded_policy_hash"}, "embedded_policy_hash IS NOT DISTINCT FROM NULL"),
+    ],
+)
+def test_the_ranking_predicate_reads_a_missing_hash_column_safely(present, ranked):
+    assert sanitized_store._vector_current(frozenset(present)) == ranked
+
+
 def test_a_store_without_a_projection_reads_the_table_itself(store):
     assert store._full_layout.table == "corpus.messages"
+    assert store._full_layout.ranked == "embedded_policy_hash IS NOT DISTINCT FROM policy_hash"
 
 
 def test_a_digest_that_is_not_hex_is_refused(monkeypatch, conn):

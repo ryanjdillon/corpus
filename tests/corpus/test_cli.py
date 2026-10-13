@@ -141,11 +141,16 @@ def sanitized_store_cls(monkeypatch):
     return cls
 
 
+#: A run_sync result with nothing left to do.
+SYNCED = {"scanned": 0, "synced": 0, "skipped": 0, "reprojected": 0, "embedded": 0,
+          "pending": 0, "embed_stale": 0}
+
+
 @pytest.fixture
 def run_sync(monkeypatch):
     """Autospec ``sanitize.run_sync`` with a neutral default result."""
     mock = create_autospec(
-        sanitize.run_sync, return_value={"synced": 0, "skipped": 0, "scanned": 0, "deferred": 0}
+        sanitize.run_sync, return_value=SYNCED,
     )
     monkeypatch.setattr(sanitize, "run_sync", mock)
     return mock
@@ -231,11 +236,11 @@ def sanitized_dsn(monkeypatch):
 def test_sync_command(
     runner, configure, shutdown, sanitized_store_cls, run_sync, document_store_cls, sanitized_dsn
 ):
-    run_sync.return_value = {"synced": 3, "skipped": 1, "scanned": 4, "deferred": 0}
+    run_sync.return_value = {**SYNCED, "synced": 3, "skipped": 1, "scanned": 4, "embedded": 3}
     result = runner.invoke(cli.main, ["sync"])
     assert result.exit_code == 0, result.output
     assert configure.call_args.args == ("corpus-sync",)
-    assert "synced 3" in result.output
+    assert "synced 3, skipped 1 of 4 scanned; re-projected 0, embedded 3" in result.output
     # Everything comes from the sanitized tier: its store, its projection's
     # source tier and policy.
     dst = tier("sanitized")
@@ -245,17 +250,21 @@ def test_sync_command(
     kwargs = run_sync.call_args.kwargs
     assert (kwargs["source"], kwargs["force"]) == (None, False)
     assert kwargs["policy"] == dst.projection.policy
-    assert kwargs["reproject_limit"] == settings.sync_reproject_limit == 500
+    assert kwargs["reembed_limit"] == settings.sync_reembed_limit == 500
     assert "older policy" not in result.output
+    assert "await a new embedding" not in result.output
 
 
-def test_sync_reports_rows_left_under_an_older_policy(
+def test_sync_reports_what_is_left_to_re_project_and_re_embed(
     runner, configure, shutdown, sanitized_store_cls, run_sync, document_store_cls, sanitized_dsn
 ):
-    run_sync.return_value = {"synced": 500, "skipped": 0, "scanned": 1700, "deferred": 1200}
+    run_sync.return_value = {**SYNCED, "scanned": 1700, "reprojected": 1700, "embedded": 500,
+                             "pending": 12, "embed_stale": 1200}
     result = runner.invoke(cli.main, ["sync"])
     assert result.exit_code == 0, result.output
-    assert "1200 rows still projected under an older policy" in result.output
+    assert "re-projected 1700, embedded 500" in result.output
+    assert "12 rows still projected under an older policy" in result.output
+    assert "1200 rows await a new embedding; each sync re-embeds up to 500" in result.output
 
 
 @pytest.mark.parametrize("flag", ["--reproject", "--force"])
@@ -266,7 +275,26 @@ def test_sync_reproject_re_projects_every_row(
     result = runner.invoke(cli.main, ["sync", flag])
     assert result.exit_code == 0, result.output
     assert run_sync.call_args.kwargs["force"] is True
-    assert run_sync.call_args.kwargs["reproject_limit"] == 0  # an explicit full run
+    # Text only: the embedding phase keeps its usual cap.
+    assert run_sync.call_args.kwargs["reembed_limit"] == settings.sync_reembed_limit
+
+
+@pytest.mark.parametrize(("value", "shown"), [("0", "all"), ("50", "50")])
+def test_sync_reembed_limit_overrides_the_setting(
+    runner, configure, shutdown, sanitized_store_cls, run_sync, document_store_cls, sanitized_dsn,
+    value, shown,
+):
+    run_sync.return_value = {**SYNCED, "embed_stale": 9}
+    result = runner.invoke(cli.main, ["sync", "--reembed-limit", value])
+    assert result.exit_code == 0, result.output
+    assert run_sync.call_args.kwargs["reembed_limit"] == int(value)
+    assert f"re-embeds up to {shown}" in result.output
+
+
+def test_sync_refuses_a_negative_reembed_limit(runner, configure, run_sync, sanitized_dsn):
+    result = runner.invoke(cli.main, ["sync", "--reembed-limit", "-1"])
+    assert result.exit_code == 2
+    run_sync.assert_not_called()
 
 
 def test_sync_without_the_sanitized_dsn_fails_naming_it(
