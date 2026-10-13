@@ -33,6 +33,17 @@ jobs:
       - name: Architecture drift gate
         run: python3 scripts/architecture_gate.py "origin/${{ github.base_ref }}"
 
+  # Lints and renders the chart and checks its output, as `just helm-check` does.
+  helm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+        with:
+          version: v3.20.2
+      - name: Lint, render and check the chart
+        run: bash deploy/helm/scripts/check.sh
+
   test:
     runs-on: ubuntu-latest
     steps:
