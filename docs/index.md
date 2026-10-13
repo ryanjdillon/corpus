@@ -38,6 +38,7 @@ sanitized tier.
 - [Query model](query.md) — the structured query spec, each tier's query policy, and paging.
 - [MCP results](mcp-results.md) — the result envelope every MCP tool returns, and which fields to trust.
 - [Message ids](message-ids.md) — the `corpus.id/v1` message reference other services share, with test vectors.
+- [Helm chart](deployment/helm.md) — deploying on Kubernetes: one release per security domain, values that are the config file.
 - [Enrichment](enrichment.md) — structured per-document metadata and the secret audit.
 - [Enrichment evaluation](evaluation.md) — compare enrichment models on a labelled synthetic set.
 - [Detectors](detect.md) — `corpus-detect`, the PII and credential detectors and redaction, packaged alone.

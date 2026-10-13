@@ -65,4 +65,6 @@ nav:
   - Enrichment evaluation: evaluation.md
   - Detectors: detect.md
   - Observability: observability.md
+  - Deployment:
+      - Helm chart: deployment/helm.md
   - Development: development.md
