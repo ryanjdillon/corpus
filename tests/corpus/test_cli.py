@@ -7,6 +7,8 @@ tests override the return value and assert on the parsed arguments.
 
 from __future__ import annotations
 
+import runpy
+import sys
 import textwrap
 from unittest.mock import create_autospec
 
@@ -199,6 +201,15 @@ def test_serve_command(runner, configure, register_gauge, serve, args, tier, ser
 def test_the_old_server_commands_are_deprecated(runner, configure, register_gauge, serve, alias):
     result = runner.invoke(cli.main, [alias])
     assert "deprecated" in result.output.lower()
+
+
+@pytest.mark.filterwarnings("ignore:'corpus.cli' found in sys.modules:RuntimeWarning")
+def test_the_module_runs_as_a_script(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["corpus", "--help"])
+    with pytest.raises(SystemExit) as exit_info:
+        runpy.run_module("corpus.cli", run_name="__main__")
+    assert exit_info.value.code == 0
+    assert "serve" in capsys.readouterr().out
 
 
 def test_serve_refuses_an_unknown_tier(runner, serve):
