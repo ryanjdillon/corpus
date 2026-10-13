@@ -38,6 +38,7 @@ def _detector_fingerprint() -> str:
         sorted(type(r).__name__ for r in pii._RECOGNIZERS),
         sorted(pii._ENTITY_NAMES.items()),
         sorted(pii._CONTEXT_REQUIRED),
+        sorted(pii._EXTRA_CONTEXT.items()),
         pii._MIN_SCORE,
         pii._NO_NATIONAL_ID.pattern,
         [(name, pattern.pattern) for name, pattern in leaks._RULES],

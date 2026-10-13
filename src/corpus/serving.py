@@ -118,8 +118,16 @@ def open_documents(t: Tier) -> DocumentStore:
 
 
 def open_index_store(t: Tier) -> SanitizedStore:
-    """Open a projected tier's store read-only, as its reader role if it has one."""
-    return SanitizedStore(t.serving_dsn(), t.schema, read_only=True)
+    """Open a projected tier's store read-only, as its reader role if it has one.
+
+    The store knows the tier's projection policy, so a row the sync has not yet
+    re-projected under it is served degraded, never as last projected.
+    """
+    if t.projection is None:
+        raise ValueError(f"{t.name!r} is a source tier; it has no projected store")
+    return SanitizedStore(
+        t.serving_dsn(), t.schema, read_only=True, projection=t.projection.policy
+    )
 
 
 def now_utc() -> datetime:

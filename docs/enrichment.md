@@ -65,8 +65,10 @@ valid record once closed, is rejected as before.
 
 Fields the model never reached fail closed where it matters:
 `sensitivity_level` becomes `high` (`UNREACHED_ENRICHMENT`), so the sanitized
-tier withholds the record's free text rather than publishing it as
-non-sensitive. Other fields take their schema defaults. A recovered record is
+tier treats the record as high-sensitivity rather than as non-sensitive: it
+stubs the free text, or, under `gate_action: redact`, redacts it, and stubs it
+anyway when the model never reached `people` or `references` (see
+[Tiers](tiers.md#at-the-gate-and-failing-closed)). Other fields take their schema defaults. A recovered record is
 stored under `RECOVERED_SCHEMA_VERSION` (`<SCHEMA_VERSION>+recovered`), which
 counts as stale, and the run log reports how many were recovered.
 `--redo-recovered` enriches only those records again, in full, whichever
@@ -135,14 +137,19 @@ from untrusted mail, so it is free text like the summaries: it is in
 `FREE_TEXT_FIELDS` and is checked for instruction-like text.
 
 Which tier sees `people` names and `references` values is decided by the
-projection, not here; this change only makes the structure available. Typed
-facts (such as travel itineraries) are a later change, as they also touch the
-query model.
+tier's projection, not here (see [Tiers](tiers.md#redaction)). The lists are
+also what the projection redacts by: it finds each person's name in the
+summaries and replaces it with the role, initials or nothing, and masks each
+reference value, whether or not the model kept to the prompt. On the sanitized
+tier by default, a name becomes the role and a reference `[booking ••••42]`.
+Typed facts (such as travel itineraries) are a later change, as they also touch
+the query model.
 
 Dropping `people` and `references` does not remove every name. The prompt asks
 only the three summaries to speak in roles, so a name can still appear in
-`key_points`, `appointments[].who`, `topics`, and `locations`. A tier policy
-that must not show names has to redact or exclude those fields too.
+`key_points`, `appointments[].who`, `topics`, and `locations`. None of these is
+a column of the sanitized tier, so no projection can expose them; a tier that
+ever projects one has to redact it too (`sanitize.REDACTED_COLS`).
 
 **Older records.** The change to `people` and the new `references` field change
 `SCHEMA_VERSION`, so only newly enriched mail gets the new shape. A stored

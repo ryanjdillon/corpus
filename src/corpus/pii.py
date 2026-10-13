@@ -58,6 +58,14 @@ _MIN_SCORE = 0.4
 _CONTEXT_REQUIRED = {"us_ssn", "credit_card", "us_bank_number"}
 _CONTEXT_WINDOW = 48
 
+# Presidio's context words are English only. Norwegian mail names a card or an
+# account in Norwegian, so these count as context too. A US SSN has no
+# Norwegian name; it is found only beside "ssn" or "social security".
+_EXTRA_CONTEXT = {
+    "credit_card": ("kort", "kortet", "kortnummer", "bankkort", "kredittkort", "betalingskort"),
+    "us_bank_number": ("konto", "kontoen", "kontonummer", "kontonr", "bankkonto"),
+}
+
 # Pattern recognizers used standalone (no AnalyzerEngine / spaCy model). Driver's
 # license and passport are deliberately excluded — near-zero precision on prose.
 _RECOGNIZERS = [
@@ -224,7 +232,8 @@ def _iter_spans(text: str, *, for_egress: bool) -> Iterator[Span]:
             if name in _CONTEXT_REQUIRED:
                 # A plausible match AND a context word right beside it — this is what
                 # separates a real disclosure from an incidental number.
-                if res.score >= 0.05 and _context_near(text, res.start, res.end, ctx_words):
+                words = [*ctx_words, *_EXTRA_CONTEXT.get(name, ())]
+                if res.score >= 0.05 and _context_near(text, res.start, res.end, words):
                     yield Span(res.start, res.end, name, "pii")
             elif res.score >= _MIN_SCORE:
                 yield Span(res.start, res.end, name, "pii")

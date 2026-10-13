@@ -151,6 +151,7 @@ def _check_sync(ctx: Context) -> None:
 
 
 def _sync(ctx: Context) -> Counts:
+    from .config import settings
     from .sanitize import run_sync
     from .sanitized_store import SanitizedStore
     from .store import DocumentStore
@@ -162,7 +163,7 @@ def _sync(ctx: Context) -> Counts:
             DocumentStore(src.store_dsn(), src.schema) as documents:
         return run_sync(
             store, documents=documents, source=ctx.source.id, limit=ctx.options.limit,
-            gate=dst.projection.sensitivity_gate, fields=dst.projection.fields,
+            policy=dst.projection.policy, reproject_limit=settings.sync_reproject_limit,
         )
 
 

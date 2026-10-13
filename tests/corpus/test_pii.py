@@ -30,6 +30,23 @@ def test_credit_card_requires_adjacent_context():
     assert "credit_card" not in no_ctx.secret_types
 
 
+@pytest.mark.parametrize(("text", "kind"), [
+    ("Betalt med kort 4111 1111 1111 1111 i går.", "credit_card"),
+    ("Kortnummer: 4111111111111111", "credit_card"),
+    ("Overfør til kontonummer 12345678903.", "us_bank_number"),
+])
+def test_norwegian_context_words_count(text, kind):
+    assert [s.entity_type for s in pii.scan_spans(text)] == [kind]
+
+
+@pytest.mark.parametrize("text", [
+    "Ordrenummer 4111 1111 1111 1111 er sendt.",
+    "Kontoret ringte om sak 12345678903.",
+])
+def test_a_norwegian_word_that_only_starts_like_one_is_not_context(text):
+    assert pii.scan_spans(text) == []
+
+
 def test_iban_counts_on_format_alone():
     # IBAN carries its own checksum and is specific enough to trust without context.
     result = pii.scan("Please wire to GB82 WEST 1234 5698 7654 32 by Friday.")

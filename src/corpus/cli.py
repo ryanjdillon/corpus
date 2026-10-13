@@ -138,8 +138,8 @@ def enrich(
 @click.option("--limit", default=0, type=int, help="sync at most N documents (0 = all)")
 @click.option(
     "--reproject", "--force", "reproject", is_flag=True,
-    help="re-project every document, e.g. after the projection changed; re-embeds only "
-    "rows whose summary changed; --force is the old name",
+    help="re-project every document, even those projected under the current policy; "
+    "re-embeds only rows whose summary changed; --force is the old name",
 )
 @click.option(
     "--tier", "tier_name", default="sanitized", show_default=True,
@@ -149,8 +149,9 @@ def sync(source: str | None, limit: int, reproject: bool, tier_name: str) -> Non
     """Project enriched documents into a projected tier (default: sanitized).
 
     A projected tier is a trust-downgraded store a cloud consumer may query.
-    Its projection (source tier, columns, sensitivity gate) comes from the tiers
-    file. Drops raw content/subject/sender; gates summaries by sensitivity.
+    Its projection (source tier, columns, gate, redaction) comes from the tiers
+    file. Drops raw content/subject/sender; redacts names, ids and contact
+    details in the summaries. A changed projection re-projects on the next sync.
     """
     from .tiers import projected
 
@@ -160,6 +161,7 @@ def sync(source: str | None, limit: int, reproject: bool, tier_name: str) -> Non
     except (ValueError, RuntimeError) as exc:
         raise click.ClickException(str(exc)) from exc
     telemetry.configure("corpus-sync")
+    from .config import settings
     from .sanitize import run_sync
     from .sanitized_store import SanitizedStore
     from .store import DocumentStore
@@ -169,9 +171,15 @@ def sync(source: str | None, limit: int, reproject: bool, tier_name: str) -> Non
                 DocumentStore(src_dsn, src.schema) as documents:
             r = run_sync(
                 store, documents=documents, source=source, limit=limit, force=reproject,
-                gate=dst.projection.sensitivity_gate, fields=dst.projection.fields,
+                policy=dst.projection.policy,
+                reproject_limit=0 if reproject else settings.sync_reproject_limit,
             )
         click.echo(f"synced {r['synced']}, skipped {r['skipped']} of {r['scanned']} scanned")
+        if r["deferred"]:
+            click.echo(
+                f"{r['deferred']} rows still projected under an older policy; the next syncs "
+                "continue (or run with --reproject)"
+            )
     finally:
         telemetry.shutdown()
 
