@@ -64,6 +64,7 @@ export CORPUS_OPENAI_API_BASE=https://…/v1     # embedding endpoint
 export CORPUS_OPENAI_API_KEY=…
 
 corpus ingest imap:example   # sync one source
+corpus pipeline imap:example # ingest, enrich and sync it in one resumable run
 corpus serve sensitive       # MCP server, full surface   (default :9000)
 corpus serve sanitized       # MCP server, sanitized tier (corpus-index)
 ```

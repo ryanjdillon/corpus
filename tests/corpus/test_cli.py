@@ -19,6 +19,7 @@ from corpus import (
     enrich_store,
     export,
     ingest,
+    pipeline,
     sanitize,
     sanitized_store,
     scan,
@@ -158,6 +159,14 @@ def export_archive(monkeypatch):
         return_value={"scanned": 0, "written": 0, "unchanged": 0},
     )
     monkeypatch.setattr(export, "export_archive", mock)
+    return mock
+
+
+@pytest.fixture
+def pipeline_run(monkeypatch):
+    """Autospec ``pipeline.run`` with a neutral default result."""
+    mock = create_autospec(pipeline.run, return_value={})
+    monkeypatch.setattr(pipeline, "run", mock)
     return mock
 
 
@@ -449,3 +458,97 @@ def test_serve_refuses_a_tier_the_file_does_not_define(runner, serve, three_tier
     assert result.exit_code != 0
     assert "no tier named 'raw'" in result.output
     serve.assert_not_called()
+
+
+def test_pipeline_command(runner, configure, shutdown, pipeline_run):
+    pipeline_run.return_value = {
+        "ingest": {"ingested": 3},
+        "sync": {"scanned": 3, "synced": 2, "skipped": 1},
+    }
+    result = runner.invoke(
+        cli.main, ["pipeline", "imap:test", "--stages", "ingest,sync", "--limit", "5",
+                   "--batch-size", "16", "--tier", "partner"],
+    )
+    assert result.exit_code == 0, result.output
+    assert configure.call_args.args == ("corpus-pipeline",)
+    assert pipeline_run.call_args.args == ("imap:test", ("ingest", "sync"))
+    assert pipeline_run.call_args.kwargs == {
+        "options": pipeline.Options(limit=5, batch_size=16, tier="partner")
+    }
+    assert "ingest: ingested 3" in result.output
+    assert "sync: scanned 3, synced 2, skipped 1" in result.output
+    shutdown.assert_called_once()
+
+
+def test_pipeline_runs_every_stage_by_default(runner, configure, shutdown, pipeline_run):
+    result = runner.invoke(cli.main, ["pipeline", "imap:test"])
+    assert result.exit_code == 0, result.output
+    assert pipeline_run.call_args.args == ("imap:test", ("ingest", "enrich", "sync"))
+    assert pipeline_run.call_args.kwargs == {"options": pipeline.Options()}
+
+
+def test_pipeline_ingests_in_the_same_batches_as_ingest_by_default(
+    runner, configure, shutdown, pipeline_run, ingest_fn
+):
+    assert runner.invoke(cli.main, ["ingest", "imap:test"]).exit_code == 0
+    assert runner.invoke(cli.main, ["pipeline", "imap:test"]).exit_code == 0
+
+    assert (pipeline_run.call_args.kwargs["options"].batch_size
+            == ingest_fn.call_args.kwargs["batch_size"])
+
+
+def test_pipeline_refuses_a_batch_size_below_one(runner, configure, shutdown, pipeline_run):
+    result = runner.invoke(cli.main, ["pipeline", "imap:test", "--batch-size", "0"])
+    assert result.exit_code == 2
+    pipeline_run.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("stages", "message"),
+    [
+        ("sync,ingest", "must be in the order ingest,enrich,sync"),
+        ("ingest,export", "unknown stage(s) export"),
+        ("enrich,audit", "'audit' is not a stage"),
+        (",", "no stages selected"),
+    ],
+)
+def test_pipeline_refuses_a_bad_stage_list(
+    runner, configure, shutdown, pipeline_run, stages, message
+):
+    result = runner.invoke(cli.main, ["pipeline", "imap:test", "--stages", stages])
+    assert result.exit_code == 2  # a usage error
+    assert message in result.output
+    pipeline_run.assert_not_called()
+
+
+def test_pipeline_exits_non_zero_when_a_stage_fails(runner, configure, shutdown, pipeline_run):
+    failed = pipeline.StageFailedError("enrich", {"ingest": {"ingested": 3}})
+    failed.__cause__ = RuntimeError("endpoint unavailable")
+    pipeline_run.side_effect = failed
+    result = runner.invoke(cli.main, ["pipeline", "imap:test"])
+    assert result.exit_code == 1
+    assert "ingest: ingested 3" in result.output  # what completed is reported
+    assert "enrich failed: endpoint unavailable" in result.output
+    assert "Traceback" not in result.output
+    shutdown.assert_called_once()  # flushed even on failure
+
+
+@pytest.mark.parametrize(
+    "refusal",
+    [
+        ValueError("source 'youtube:@chan' is not declared enrichable"),
+        ValueError("no tier named 'nope'"),
+        RuntimeError("CORPUS_SANITIZED_DATABASE_URL not set"),
+    ],
+)
+def test_pipeline_exits_2_when_the_run_is_refused(
+    runner, configure, shutdown, pipeline_run, refusal
+):
+    # A refusal before any stage runs is a usage error (2), distinct from a stage
+    # failure (1), so a scheduler can tell the job's configuration is wrong.
+    pipeline_run.side_effect = refusal
+    result = runner.invoke(cli.main, ["pipeline", "youtube:@chan"])
+    assert result.exit_code == 2
+    assert str(refusal) in result.output
+    assert "Traceback" not in result.output
+    shutdown.assert_called_once()

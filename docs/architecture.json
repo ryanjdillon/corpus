@@ -31,7 +31,11 @@
       "sources": [
         {
           "path": "src/corpus/cli.py",
-          "label": "serve <tier>|ingest|scan|scan-gate|enrich|sync"
+          "label": "serve <tier>|pipeline|ingest|scan|scan-gate|enrich|sync"
+        },
+        {
+          "path": "src/corpus/pipeline.py",
+          "label": "pipeline <source>: ingest → enrich → sync, resumable"
         },
         {
           "path": "src/corpus/export.py",

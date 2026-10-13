@@ -7,8 +7,10 @@ in `src/corpus/config.py`; the common ones:
 |---|---|
 | `CORPUS_DATABASE_URL` | Postgres DSN (pgvector) |
 | `CORPUS_DB_SCHEMA` | schema for the document table (default `corpus`) |
-| `CORPUS_OPENAI_API_BASE` | OpenAI-compatible embedding endpoint (`…/v1`) |
+| `CORPUS_OPENAI_API_BASE` | OpenAI-compatible endpoint (`…/v1`) for embedding and enrichment |
 | `CORPUS_OPENAI_API_KEY` | key for that endpoint |
+| `CORPUS_EMBED_API_BASE`, `CORPUS_EMBED_API_KEY` | the embedder's own endpoint and key (default: the two above) |
+| `CORPUS_ENRICH_API_BASE`, `CORPUS_ENRICH_API_KEY` | enrichment's and the secret audit's own endpoint and key (default: the two above) |
 | `CORPUS_EMBEDDING_MODEL` | embedding model name (default `local-embed`) |
 | `CORPUS_EMBEDDING_DIMENSIONS` | vector dimension (default `1024`) |
 | `CORPUS_ENRICH_MODEL` | model for batch enrichment (empty disables it) |
@@ -22,6 +24,35 @@ in `src/corpus/config.py`; the common ones:
 The embedding endpoint is any OpenAI-compatible API. Point it at a local model
 and nothing leaves your network; point it at a hosted provider and the pipeline
 is unchanged.
+
+## Endpoints and keys
+
+Two clients call the model endpoint: the embedder (ingest, the sanitized sync,
+and every `search` query) and the enricher (enrichment and its secret audit).
+Each has its own base and key, and each falls back to the shared one when unset:
+
+| Client | Base | Key |
+|---|---|---|
+| embedder | `CORPUS_EMBED_API_BASE`, else `CORPUS_OPENAI_API_BASE` | `CORPUS_EMBED_API_KEY`, else `CORPUS_OPENAI_API_KEY` |
+| enricher, secret audit | `CORPUS_ENRICH_API_BASE`, else `CORPUS_OPENAI_API_BASE` | `CORPUS_ENRICH_API_KEY`, else `CORPUS_OPENAI_API_KEY` |
+
+A deployment that sets only `CORPUS_OPENAI_API_BASE` and `CORPUS_OPENAI_API_KEY`
+uses them for both. Set the per-client keys when the gateway scopes keys by
+client, so each stage holds only the access it needs: a key that may only embed,
+and another that may enrich. `corpus pipeline` runs both clients in one process,
+so it is the case this exists for; give it both keys rather than one key allowed
+to do both.
+
+## Running a source
+
+`corpus pipeline <source>` ingests, enriches and syncs one source in one
+resumable run; schedule one per source. It needs the settings of all three
+stages: the fetcher's, the database and embedding settings above, the enrichment
+model, and the sync tier's DSN (see [Sanitized tier](#sanitized-tier)). See
+[Pipeline](pipeline.md) for the stage order, `--stages`, `--limit`,
+`--batch-size` and how a failed run resumes. Its embedding and enrichment stages
+can present separate keys (see [Endpoints and keys](#endpoints-and-keys)). `corpus ingest`, `corpus enrich` and `corpus sync` still run
+one stage each.
 
 ## Serving
 
@@ -42,7 +73,8 @@ default:
 | `CORPUS_MCP_PORT` | listen port (default `9000`); the MCP endpoint is `/mcp` |
 
 Both tiers' `search` tool embeds its text, so a server needs the embedding
-settings above (`CORPUS_OPENAI_API_BASE`, `CORPUS_OPENAI_API_KEY`,
+settings above (the embedder's endpoint and key — `CORPUS_EMBED_API_BASE` and
+`CORPUS_EMBED_API_KEY`, else the `CORPUS_OPENAI_API_*` pair — and
 `CORPUS_EMBEDDING_MODEL`), pointing at the model the tier's vectors came from.
 A query embedding makes one attempt within `CORPUS_EMBED_QUERY_TIMEOUT`
 seconds (default `15`), so a down embedder fails a search at once; batch

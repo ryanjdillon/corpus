@@ -67,6 +67,16 @@ def _audit_windowed(audit, text: str, content: str, candidates, model: str):
     return results[0] if len(results) == 1 else merge_audits(results)
 
 
+def require_enrichable(source: str) -> None:
+    """Raise ``ValueError`` naming the enrichable kinds if *source* may not be enriched."""
+    if not may_enrich(source):
+        raise ValueError(
+            f"source {source!r} is not declared enrichable; "
+            f"enrichable kinds are {', '.join(enrichable_kinds()) or '(none)'}. "
+            "Declare it in corpus.fetchers.policy.POLICIES to enable enrichment."
+        )
+
+
 def run_enrich(
     store,
     *,
@@ -107,12 +117,8 @@ and ``documents`` an open DocumentStore, whose lifecycles the caller owns.
     connection. A per-record ``EnrichError`` (a bad message) is skipped so it can't
     abort a long backfill; an ``EnrichUnavailableError`` still propagates.
     """
-    if source is not None and not may_enrich(source):
-        raise ValueError(
-            f"source {source!r} is not declared enrichable; "
-            f"enrichable kinds are {', '.join(enrichable_kinds()) or '(none)'}. "
-            "Declare it in corpus.fetchers.policy.POLICIES to enable enrichment."
-        )
+    if source is not None:
+        require_enrichable(source)
 
     concurrency = concurrency or settings.enrich_concurrency
     own = enricher is None

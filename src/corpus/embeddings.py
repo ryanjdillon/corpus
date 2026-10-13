@@ -51,8 +51,8 @@ class Embedder:
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self._client = client or httpx.Client(
-            base_url=settings.openai_api_base,
-            headers={"Authorization": f"Bearer {settings.openai_api_key}"},
+            base_url=settings.embed_endpoint.base,
+            headers={"Authorization": f"Bearer {settings.embed_endpoint.key}"},
             timeout=settings.embed_timeout if timeout is None else timeout,
         )
         self._attempts = max(1, attempts)

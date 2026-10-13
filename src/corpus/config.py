@@ -2,7 +2,16 @@
 
 from __future__ import annotations
 
+from typing import NamedTuple
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Endpoint(NamedTuple):
+    """An OpenAI-compatible base URL and the key a client presents to it."""
+
+    base: str
+    key: str
 
 
 class Settings(BaseSettings):
@@ -22,6 +31,14 @@ class Settings(BaseSettings):
     # a cloud provider.
     openai_api_base: str = "http://localhost:8080/v1"
     openai_api_key: str = ""
+    # Per-client overrides of the two above, each falling back to it when empty.
+    # A gateway that scopes keys by client can then give embedding a key that may
+    # only embed, and enrichment (with the secret audit) a key of its own, while
+    # one process (``corpus pipeline``) runs both.
+    embed_api_base: str = ""
+    embed_api_key: str = ""
+    enrich_api_base: str = ""
+    enrich_api_key: str = ""
     embedding_model: str = "local-embed"
     embedding_dimensions: int = 1024
     # Generous: a slow endpoint may take a while for a batch under load.
@@ -121,6 +138,22 @@ class Settings(BaseSettings):
     tier_access: dict[str, list[str]] = {}
     # The sanitized tier's sensitivity gate (projection.sensitivity_gate).
     index_sensitivity_gate: str = "high"
+
+    @property
+    def embed_endpoint(self) -> Endpoint:
+        """Where the embedder sends batch and query embeddings, and with which key."""
+        return Endpoint(
+            self.embed_api_base or self.openai_api_base,
+            self.embed_api_key or self.openai_api_key,
+        )
+
+    @property
+    def enrich_endpoint(self) -> Endpoint:
+        """Where enrichment and the secret audit send chat completions, and with which key."""
+        return Endpoint(
+            self.enrich_api_base or self.openai_api_base,
+            self.enrich_api_key or self.openai_api_key,
+        )
 
 
 settings = Settings()
