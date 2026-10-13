@@ -148,11 +148,21 @@ def enrich(
     "while a GPU embedder is available)  [default: CORPUS_SYNC_REEMBED_LIMIT, else 500]",
 )
 @click.option(
+    "--reembed-wait", is_flag=True,
+    help="wait for another sync of the tier to finish re-embedding instead of skipping "
+    "the phase (for a drain, with --reembed-limit 0)",
+)
+@click.option(
     "--tier", "tier_name", default="sanitized", show_default=True,
     help="the projected tier to sync into (one with a projection in the config file)",
 )
 def sync(
-    source: str | None, limit: int, reproject: bool, reembed_limit: int | None, tier_name: str
+    source: str | None,
+    limit: int,
+    reproject: bool,
+    reembed_limit: int | None,
+    reembed_wait: bool,
+    tier_name: str,
 ) -> None:
     """Project enriched documents into a projected tier (default: sanitized).
 
@@ -162,6 +172,10 @@ def sync(
     details in the summaries. A changed projection re-projects every row's text
     on the next sync; the summaries it changed are re-embedded over this and
     later syncs, at most --reembed-limit a run.
+
+    One sync re-embeds a tier at a time; another skips its re-embedding, or
+    with --reembed-wait waits for the lock. A run given --reembed-limit whose
+    re-embedding was skipped exits 1, so a drain never fails silently.
     """
     from .tiers import projected
 
@@ -172,10 +186,11 @@ def sync(
         raise click.ClickException(str(exc)) from exc
     telemetry.configure("corpus-sync")
     from .config import settings
-    from .sanitize import run_sync
+    from .sanitize import REEMBED_SKIPPED, REEMBED_WAITING, run_sync
     from .sanitized_store import SanitizedStore
     from .store import DocumentStore
 
+    explicit = reembed_limit is not None
     if reembed_limit is None:
         reembed_limit = settings.sync_reembed_limit
     try:
@@ -184,6 +199,7 @@ def sync(
             r = run_sync(
                 store, documents=documents, source=source, limit=limit, force=reproject,
                 policy=dst.projection.policy, reembed_limit=reembed_limit,
+                reembed_wait=reembed_wait, on_reembed_wait=lambda: click.echo(REEMBED_WAITING),
             )
         click.echo(
             f"synced {r['synced']}, skipped {r['skipped']} of {r['scanned']} scanned; "
@@ -194,10 +210,18 @@ def sync(
                 f"{r['pending']} rows still projected under an older policy, served as "
                 "placeholders; the next sync re-projects them"
             )
+        if r.get("reembed_skipped"):
+            click.echo(REEMBED_SKIPPED)
         if r["embed_stale"]:
             click.echo(
                 f"{r['embed_stale']} rows await a new embedding; each sync re-embeds up to "
                 f"{reembed_limit or 'all'} (--reembed-limit 0 does all now)"
+            )
+        if explicit and r.get("reembed_skipped"):
+            # A scheduled sync skipping is routine; a requested drain is not.
+            raise click.ClickException(
+                "the requested re-embedding did not run; rerun with --reembed-wait to "
+                "wait for the other sync"
             )
     finally:
         telemetry.shutdown()
@@ -267,8 +291,13 @@ def pipeline(
 
 
 def _echo_counts(counts: dict[str, dict[str, int]]) -> None:
+    from .sanitize import REEMBED_SKIPPED
+
     for stage, c in counts.items():
-        click.echo(f"{stage}: " + ", ".join(f"{k} {v}" for k, v in c.items()))
+        shown = {k: v for k, v in c.items() if k != "reembed_skipped"}
+        click.echo(f"{stage}: " + ", ".join(f"{k} {v}" for k, v in shown.items()))
+        if c.get("reembed_skipped"):
+            click.echo(f"{stage}: {REEMBED_SKIPPED}")
 
 
 @main.command()

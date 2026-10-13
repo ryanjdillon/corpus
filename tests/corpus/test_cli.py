@@ -267,6 +267,59 @@ def test_sync_reports_what_is_left_to_re_project_and_re_embed(
     assert "1200 rows await a new embedding; each sync re-embeds up to 500" in result.output
 
 
+def test_sync_reports_a_re_embedding_skipped_for_another_sync(
+    runner, configure, shutdown, sanitized_store_cls, run_sync, document_store_cls, sanitized_dsn
+):
+    run_sync.return_value = {**SYNCED, "embed_stale": 9, "reembed_skipped": 1}
+    result = runner.invoke(cli.main, ["sync"])
+    assert result.exit_code == 0, result.output
+    assert "embedded 0" in result.output
+    assert sanitize.REEMBED_SKIPPED in result.output
+
+
+def test_sync_says_nothing_of_the_lock_when_it_re_embeds(
+    runner, configure, shutdown, sanitized_store_cls, run_sync, document_store_cls, sanitized_dsn
+):
+    result = runner.invoke(cli.main, ["sync"])
+    assert result.exit_code == 0, result.output
+    assert "skipped:" not in result.output
+
+
+@pytest.mark.parametrize("limit", ["0", "50"])
+def test_sync_fails_when_a_requested_re_embedding_is_skipped(
+    runner, configure, shutdown, sanitized_store_cls, run_sync, document_store_cls, sanitized_dsn,
+    limit,
+):
+    run_sync.return_value = {**SYNCED, "embed_stale": 9, "reembed_skipped": 1}
+    result = runner.invoke(cli.main, ["sync", "--reembed-limit", limit])
+    assert result.exit_code == 1, result.output
+    assert sanitize.REEMBED_SKIPPED in result.output
+    assert "rerun with --reembed-wait" in result.output
+    shutdown.assert_called_once()
+
+
+def test_sync_does_not_wait_for_the_re_embed_lock_by_default(
+    runner, configure, shutdown, sanitized_store_cls, run_sync, document_store_cls, sanitized_dsn
+):
+    result = runner.invoke(cli.main, ["sync", "--reembed-limit", "0"])
+    assert result.exit_code == 0, result.output
+    assert run_sync.call_args.kwargs["reembed_wait"] is False
+
+
+def test_sync_reembed_wait_waits_and_says_so(
+    runner, configure, shutdown, sanitized_store_cls, run_sync, document_store_cls, sanitized_dsn
+):
+    def blocked(*args, **kwargs):
+        kwargs["on_reembed_wait"]()  # the lock was held elsewhere
+        return {**SYNCED, "embedded": 9}
+
+    run_sync.side_effect = blocked
+    result = runner.invoke(cli.main, ["sync", "--reembed-limit", "0", "--reembed-wait"])
+    assert result.exit_code == 0, result.output
+    assert run_sync.call_args.kwargs["reembed_wait"] is True
+    assert result.output.index(sanitize.REEMBED_WAITING) < result.output.index("embedded 9")
+
+
 @pytest.mark.parametrize("flag", ["--reproject", "--force"])
 def test_sync_reproject_re_projects_every_row(
     runner, configure, shutdown, sanitized_store_cls, run_sync, document_store_cls, sanitized_dsn,
@@ -568,6 +621,16 @@ def test_pipeline_command(runner, configure, shutdown, pipeline_run):
     assert "ingest: ingested 3" in result.output
     assert "sync: scanned 3, synced 2, skipped 1" in result.output
     shutdown.assert_called_once()
+
+
+def test_pipeline_reports_a_re_embedding_skipped_for_another_sync(
+    runner, configure, shutdown, pipeline_run
+):
+    pipeline_run.return_value = {"sync": {"scanned": 3, "embedded": 0, "reembed_skipped": 1}}
+    result = runner.invoke(cli.main, ["pipeline", "imap:test", "--stages", "sync"])
+    assert result.exit_code == 0, result.output
+    assert "sync: scanned 3, embedded 0\n" in result.output
+    assert f"sync: {sanitize.REEMBED_SKIPPED}" in result.output
 
 
 def test_pipeline_runs_every_stage_by_default(runner, configure, shutdown, pipeline_run):

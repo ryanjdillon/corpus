@@ -10,8 +10,12 @@ cannot retrieve them.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager, suppress
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, NamedTuple
+
+import psycopg
 
 from .config import settings
 from .query import (
@@ -426,6 +430,44 @@ class SanitizedStore(Store):
                 )
                 written += cur.rowcount
         return written
+
+    @contextmanager
+    def reembed_lock(
+        self, wait: bool = False, on_wait: Callable[[], None] | None = None
+    ) -> Iterator[bool]:
+        """Hold the tier's re-embed lock for the block, unless another session holds it.
+
+        Yields whether this store took it. Several syncs can share one tier,
+        and each would otherwise pick and embed the same newest embed-stale
+        rows, of which the compare-and-set in :meth:`save_embeddings` keeps one
+        write. A session-level advisory lock, keyed on the table, lets one sync
+        re-embed at a time; another skips the phase rather than wait. It is not
+        a transaction or row lock, so the text phase's writes never wait on a
+        slow embedder.
+
+        With ``wait``, a lock held elsewhere is waited for instead (a blocking
+        ``pg_advisory_lock`` on the same key), so this always yields True: an
+        explicit drain must not be skipped. ``on_wait`` is called first, only
+        when the lock is held elsewhere, so a caller can say why it blocks.
+
+        The lock lives on this store's own connection, which stays open for the
+        block, and is released when the block exits, even on error. A
+        connection lost meanwhile has released it already, so a failure to
+        unlock then is not raised over the block's own error.
+        """
+        key = f"{self._schema}.messages reembed"
+        held = self._read("SELECT pg_try_advisory_lock(hashtext(%s))", (key,))[0][0]
+        if not held and wait:
+            if on_wait is not None:
+                on_wait()
+            self._read("SELECT pg_advisory_lock(hashtext(%s))", (key,))
+            held = True
+        try:
+            yield held
+        finally:
+            if held:
+                with suppress(psycopg.OperationalError):
+                    self._read("SELECT pg_advisory_unlock(hashtext(%s))", (key,))
 
     def backlog(self, digest: str) -> Backlog:
         """The rows not yet projected, or not yet embedded, under *digest*."""

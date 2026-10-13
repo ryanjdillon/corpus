@@ -575,6 +575,12 @@ def project(
     return {col: (value if col in keep else None) for col, value in row.items()}
 
 
+#: Why a sync embedded nothing in its embedding phase (``reembed_skipped``).
+REEMBED_SKIPPED = "re-embedding skipped: another sync of this tier holds the re-embed lock"
+#: What a sync that waits for the re-embed lock (``reembed_wait``) reports first.
+REEMBED_WAITING = "waiting for the re-embed lock held by another sync of this tier…"
+
+
 def run_sync(
     store,
     *,
@@ -584,6 +590,8 @@ def run_sync(
     force: bool = False,
     policy: Policy = DEFAULT_POLICY,
     reembed_limit: int | None = None,
+    reembed_wait: bool = False,
+    on_reembed_wait: Callable[[], None] | None = None,
     embedder: Embedder | None = None,
     batch_size: int = 64,
     projector: Callable[[str, dict | None, dict | None, Policy], dict] = project,
@@ -596,7 +604,12 @@ def run_sync(
     reaches every row without a flag; ``force`` re-projects every row
     regardless. The **embedding phase** then re-embeds rows whose text the
     text phase changed, at most ``reembed_limit`` of them (0: all; ``None``
-    skips the phase).
+    skips the phase). One sync re-embeds a tier at a time: when another holds
+    the tier's re-embed lock (``SanitizedStore.reembed_lock``), the phase is
+    skipped, and the counts say so with ``reembed_skipped`` (1). With
+    ``reembed_wait`` the phase waits for the lock instead, and is never
+    skipped; ``on_reembed_wait`` is called before it blocks, only if it must.
+    The text phase takes no such lock.
 
     A new or re-enriched row is embedded in the text phase when its
     ``one_line`` (the embedded text) changed, as part of keeping the tier
@@ -624,7 +637,8 @@ def run_sync(
     ``embedded`` (vectors stored, in either phase), and, after the run,
     ``pending`` (rows still projected under another policy, which a reader
     serves as a placeholder) and ``embed_stale`` (rows still awaiting a new
-    vector).
+    vector). ``reembed_skipped`` is present only when the embedding phase was
+    skipped for another sync's lock.
     """
     embedder = embedder or Embedder()
     digest = policy.digest()
@@ -701,7 +715,12 @@ def run_sync(
         done = queue(*row)
     flush()
     if reembed_limit is not None:
-        counts["embedded"] += _reembed(store, digest, embedder, reembed_limit, batch_size)
+        with store.reembed_lock(wait=reembed_wait, on_wait=on_reembed_wait) as held:
+            if held:
+                counts["embedded"] += _reembed(store, digest, embedder, reembed_limit, batch_size)
+            else:
+                counts["reembed_skipped"] = 1
+                log.info(REEMBED_SKIPPED)
     counts["pending"], counts["embed_stale"] = store.backlog(digest)
     log.info(
         "synced %d, skipped %d of %d scanned; re-projected %d, embedded %d",

@@ -215,8 +215,9 @@ columns, redaction and sensitivity gate come from the `sanitized` tier's
 `projection` (see [Tiers](tiers.md#redaction)). A changed projection policy
 re-projects every row's text on the next sync, and the summaries it changed
 are re-embedded over the following syncs, at most `CORPUS_SYNC_REEMBED_LIMIT`
-a run (`corpus sync --reembed-limit 0` does all at once). Until re-embedded,
-such a row is left out of `search` but stays reachable by keyword and filter.
+a run (`corpus sync --reembed-limit 0 --reembed-wait` does all at once). Until
+re-embedded, such a row is left out of `search` but stays reachable by keyword
+and filter.
 `corpus sync --reproject` re-projects every row even under an unchanged
 policy, and `corpus sync --tier <name>` syncs into another projected tier the
 file defines.
