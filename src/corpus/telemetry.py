@@ -197,10 +197,11 @@ class SyncMetrics:
     sources share a tier (and its backlog), so no source is attached; a gauge
     labelled by source would report the same tier-wide value under each.
 
-    Every instrument is a gauge holding the last sync's value. A sync is a
-    one-shot process whose instruments start from nothing and export about
-    once, and the syncs of a tier write one series, so a counter's rate would
-    read the difference between two runs' work rather than either run's.
+    Every instrument is a gauge holding the sync's value. A sync is a one-shot
+    process whose instruments start from nothing and export about once, under
+    the process's own ``service.instance.id``, so each run is its own series
+    and a counter's rate over it would see a single sample. Readers aggregate a
+    tier's runs (docs/observability.md).
     """
 
     def __init__(self, meter: Meter) -> None:
