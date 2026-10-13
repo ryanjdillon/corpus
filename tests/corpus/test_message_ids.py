@@ -62,7 +62,7 @@ def test_imap_parts_is_only_for_imap():
         parse_id(gmail["id"]).imap_parts()
 
 
-@pytest.mark.parametrize("source", ["imap:Kbl", "imap:kbl.post", "gmail:" + "a" * 33])
+@pytest.mark.parametrize("source", ["imap:Inbox-C", "imap:inbox.b", "gmail:" + "a" * 33])
 def test_a_source_name_outside_the_grammar_is_refused(source):
     from corpus.sources import Registry
 

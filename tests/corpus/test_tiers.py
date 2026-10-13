@@ -36,7 +36,7 @@ tiers:
       text: true
       semantic: false
   - name: sanitized
-    store: {dsn_env: CORPUS_SANITIZED_DATABASE_URL, reader_dsn_env: CORPUS_INDEX_DATABASE_URL, schema: kbl}
+    store: {dsn_env: CORPUS_SANITIZED_DATABASE_URL, reader_dsn_env: CORPUS_INDEX_DATABASE_URL, schema: shared}
     projection: {from: sensitive, fields: [one_line, domain], sensitivity_gate: medium}
     serve: {server_name: corpus-index-example, access: [orchestrator, pi]}
     query:
@@ -99,10 +99,10 @@ def test_the_default_tiers_are_the_configuration_before_the_file():
 
 def test_the_default_follows_the_source_schema():
     # As before: an unset sanitized schema is CORPUS_DB_SCHEMA.
-    conf = Settings(database_url=RAW_DSN, db_schema="mbx_post")
+    conf = Settings(database_url=RAW_DSN, db_schema="mbx_inbox_b")
     reg = tiers.Registry(tiers.load(None, conf), conf, ENV)
 
-    assert reg.tier("sanitized").schema == reg.tier("sensitive").schema == "mbx_post"
+    assert reg.tier("sanitized").schema == reg.tier("sensitive").schema == "mbx_inbox_b"
 
 
 def test_the_process_registry_is_the_default_without_a_file():
@@ -115,26 +115,26 @@ def test_the_process_registry_is_the_default_without_a_file():
 
 def test_the_deprecated_variables_override_the_default(caplog):
     reg = registry(
-        index_server_name="corpus-index-kbl", sanitized_db_schema="kbl",
+        index_server_name="corpus-index-shared", sanitized_db_schema="shared",
         index_sensitivity_gate="medium", tier_access={"sanitized": ["orchestrator"]},
     )
     sanitized = reg.tier("sanitized")
 
-    assert (sanitized.server_name, sanitized.schema) == ("corpus-index-kbl", "kbl")
+    assert (sanitized.server_name, sanitized.schema) == ("corpus-index-shared", "shared")
     assert sanitized.projection.policy.sensitivity_gate is SensitivityLevel.medium
     assert (sanitized.access, reg.tier("sensitive").access) == (("orchestrator",), ())
     assert "deprecated" in caplog.text and "CORPUS_INDEX_SERVER_NAME" in caplog.text
 
 
 def test_an_override_wins_over_the_file(tiers_file):
-    reg = registry(tiers_file(FILE), index_server_name="corpus-index-kbl")
+    reg = registry(tiers_file(FILE), index_server_name="corpus-index-shared")
 
-    assert reg.tier("sanitized").server_name == "corpus-index-kbl"
+    assert reg.tier("sanitized").server_name == "corpus-index-shared"
     assert reg.tier("sanitized").access == ("orchestrator", "pi")  # not overridden
 
 
 def test_an_empty_sanitized_schema_does_not_override(tiers_file):
-    assert registry(tiers_file(FILE), sanitized_db_schema="").tier("sanitized").schema == "kbl"
+    assert registry(tiers_file(FILE), sanitized_db_schema="").tier("sanitized").schema == "shared"
 
 
 def test_access_is_parsed_from_json_in_the_environment(monkeypatch):
@@ -160,7 +160,7 @@ def test_a_file_defines_every_part_of_a_tier(tiers_file):
 
     assert (sensitive.server_name, sensitive.access) == ("corpus-local", ("pi-local",))
     assert sensitive.policy.orders == {"newest"} and sensitive.policy.semantic is False
-    assert (sanitized.server_name, sanitized.schema) == ("corpus-index-example", "kbl")
+    assert (sanitized.server_name, sanitized.schema) == ("corpus-index-example", "shared")
     assert (sanitized.policy.max_limit, sanitized.policy.search_depth) == (20, 100)
     assert sanitized.projection == tiers.Projection(
         "sensitive", Policy(fields=("one_line", "domain"), sensitivity_gate=SensitivityLevel.medium)
@@ -270,7 +270,7 @@ def test_an_unknown_tier_is_refused_naming_the_defined_ones():
          r"missing required field `text` - at `\$.tiers\[0\].query`"),
         (lambda f: f.replace("name: sanitized", "name: archive").replace("    store: {dsn_env: CORPUS_SANITIZED_DATABASE_URL", "    other: {dsn_env: X"),
          r"unknown field `other`"),
-        (lambda f: f.replace("schema: kbl}", "schema: kbl, colour: red}"),
+        (lambda f: f.replace("schema: shared}", "schema: shared, colour: red}"),
          r"unknown field `colour` - at `\$.tiers\[1\].store`"),
         (lambda f: "- tiers\n", r"Expected `object`, got `array`"),
         (lambda f: "tiers: {name: sensitive}\n", r"Expected `array \| null`, got `object` - at `\$.tiers`"),
@@ -340,7 +340,7 @@ MINIMAL = """\
 tiers:
   - name: sensitive
   - name: sanitized
-    serve: {server_name: corpus-index-kbl, access: [orchestrator, pi]}
+    serve: {server_name: corpus-index-shared, access: [orchestrator, pi]}
 """
 
 #: A complete file equal to the built-in default: every key written out,
@@ -403,7 +403,7 @@ def test_a_minimal_built_in_tier_keeps_its_policies_and_digest(tiers_file):
     default = registry().tier("sanitized")
     sensitive, sanitized = registry(tiers_file(MINIMAL)).tiers()
 
-    assert (sanitized.server_name, sanitized.access) == ("corpus-index-kbl", ("orchestrator", "pi"))
+    assert (sanitized.server_name, sanitized.access) == ("corpus-index-shared", ("orchestrator", "pi"))
     assert sanitized.policy == SANITIZED_POLICY
     assert sanitized.projection == default.projection
     assert sanitized.projection.policy.digest() == DEFAULT_POLICY.digest()

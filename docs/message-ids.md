@@ -14,7 +14,7 @@ the other's code.
 | Part | Grammar | Meaning |
 | --- | --- | --- |
 | `kind` | `[a-z0-9_-]{1,32}`; v1 defines `gmail`, `imap`, `jmap` and `graph` | the provider protocol |
-| `mailbox` | `[a-z0-9_-]{1,32}` | the configured source name, e.g. `personal` or `kbl-post`; corpus refuses to build a source whose name is outside this grammar |
+| `mailbox` | `[a-z0-9_-]{1,32}` | the configured source name, e.g. `personal` or `inbox-b`; corpus refuses to build a source whose name is outside this grammar |
 | `::` | | separates the source from the provider's uid |
 | `provider-uid` | per kind, below | the provider's own id for the message |
 
@@ -30,7 +30,7 @@ Provider uid, per kind:
 | Kind | Uid | Example |
 | --- | --- | --- |
 | `gmail` | the Gmail API message id, `[0-9a-f]{8,32}` | `18c2f4a9b0d1e7f3` |
-| `imap` | `<folder>:<uidvalidity>:<uid>`; the folder is the Unicode name (IMAPClient decodes modified UTF-7), non-empty, without control characters, and may contain `/`, `.`, spaces, `:` or `::`, so the two integers are read from the right; both are non-zero and written without leading zeros (RFC 9051), so a reference has one spelling | `Styret/Lønn:1:7` |
+| `imap` | `<folder>:<uidvalidity>:<uid>`; the folder is the Unicode name (IMAPClient decodes modified UTF-7), non-empty, without control characters, and may contain `/`, `.`, spaces, `:` or `::`, so the two integers are read from the right; both are non-zero and written without leading zeros (RFC 9051), so a reference has one spelling | `Arkiv/Året:1:7` |
 | `jmap` | the JMAP Email id, `[A-Za-z0-9_-]{1,255}` (inferred; no JMAP source yet) | `Mf3a9b2c1-d4e5_f6` |
 | `graph` | the Microsoft Graph immutable id (`Prefer: IdType="ImmutableId"`), `[A-Za-z0-9_=+/-]{1,512}` (inferred; no Graph source yet) | `AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0AAAA=` |
 

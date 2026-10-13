@@ -124,9 +124,9 @@ def test_context_manager_closes(store, conn):
 def test_schema_parameter_names_the_table(monkeypatch, conn, cursor):
     # Several raw mailbox schemas can project into one shared sanitized schema.
     monkeypatch.setattr(store_base.psycopg, "connect", lambda *a, **k: conn)
-    store = sanitized_store.SanitizedStore(dsn=DSN, schema="kbl")
-    assert "INSERT INTO kbl.messages" in store._sql
-    assert any("kbl.messages" in c.args[0] for c in cursor.execute.call_args_list)
+    store = sanitized_store.SanitizedStore(dsn=DSN, schema="shared")
+    assert "INSERT INTO shared.messages" in store._sql
+    assert any("shared.messages" in c.args[0] for c in cursor.execute.call_args_list)
 
 
 def test_ddl_adds_new_columns_to_an_existing_table(store, cursor):
