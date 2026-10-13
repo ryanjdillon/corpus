@@ -60,8 +60,9 @@ class Options:
 
     Attributes:
         limit: Passed to the stages that take one, with each one's meaning:
-            enrich sends at most this many documents to the model, sync projects
-            at most this many rows. Ingest has no cap; it resumes from its
+            enrich sends at most this many documents to the model, sync embeds
+            at most this many new or re-enriched rows (its re-projection for a
+            changed policy is uncapped). Ingest has no cap; it resumes from its
             cursor. ``0`` means no limit.
         batch_size: The records ingest embeds in one request, and so how often
             it commits its cursor. Smaller batches keep each request inside a

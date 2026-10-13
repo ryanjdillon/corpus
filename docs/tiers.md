@@ -381,8 +381,8 @@ The digest covers `facts` only through `fields`, and `place_name` only when
 keeps its digest and is not re-projected. A tier on
 the default `fields` gains the column, so its digest changes and every row is
 stale after the upgrade. Its `one_line`s do not change, so re-projecting embeds
-nothing: run `corpus sync --reproject` once per source store after the
-upgrade, rather than serve placeholders until the next scheduled sync (see
+nothing, and the next sync re-projects every row whatever its `--limit`, in
+each source store (see
 [Rolling out a policy change](#rolling-out-a-policy-change)).
 
 ## The message link: `uri`
@@ -502,15 +502,26 @@ creates is replaced on the next sync. Embedding is the expensive part (about
 200 ms a text on a CPU embedder, hours for the whole archive), and is the part
 the cap spreads over runs.
 
-`--limit` still caps the rows the text phase projects; new and re-enriched rows
-are projected before rows stale only by policy, so a capped run keeps the tier
-current first.
+`--limit` caps only the text phase's embedding calls, for new rows and
+re-enriched rows whose `one_line` changed. It bounds the embedder's load per
+run, so it counts rows queued for embedding, not rows scanned: the read order
+is stable, and a scan cap would re-read the same synced prefix on every run.
+A new row past the cap is not written and is counted as `capped`; it has no
+stored row, so nothing is served for it, and the next run takes it, newest
+first. A re-enriched row past the cap gets its new text now, keeps its old
+vector, and is left embed-stale (out of vector ranking) for the embedding
+phase, like a policy re-projection. Every other row keeps its vector, so
+`--limit` never holds it back: a capped scheduled sync
+(`corpus pipeline --limit 400`) still replaces every placeholder a policy
+change created.
 
 Each run reports its counts: `scanned`, `synced` (rows written), `skipped`,
 `reprojected` (rows rewritten only because of the policy or `--reproject`),
-`embedded` (vectors stored, in either phase), and what is left after it:
+`embedded` (vectors stored, in either phase), `capped` (new rows `--limit`
+left for a later run), and what is left after it:
 `pending` (rows still projected under an older policy, served as
-placeholders; non-zero only after a run cut short by `--limit`) and
+placeholders; non-zero only for rows the run did not scan, such as another
+source's, or after one that failed part-way) and
 `embed_stale` (rows awaiting a new vector). `corpus sync` prints them;
 `corpus pipeline` prints its sync stage's. `SanitizedStore.backlog(digest)`
 returns the last two, for a gauge.
@@ -612,7 +623,7 @@ Rows whose written columns are unchanged are not rewritten: the update's
 what makes a re-projection resumable. Each batch commits as it goes; run again
 after an interruption, the rows already done carry the new digest, so they are
 neither written nor embedded, and are counted as skipped. `--limit` counts
-those rows too, so a resumed run with a limit spends it on rows already done:
-resume without one, or split the work by `--source`. The embedding phase
+only rows it embeds, so a resumed run spends none of it on rows already done.
+The embedding phase
 resumes the same way: a stored vector clears the row's staleness, so the next
 run takes the rows after it.

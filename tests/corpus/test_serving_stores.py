@@ -217,6 +217,29 @@ def test_an_embed_stale_row_is_left_out_of_search_until_re_embedded(pg, projecte
     assert ids("search", text="the ferry") == ["cur"]
 
 
+def test_a_row_the_sync_limit_left_unembedded_ranks_after_the_re_embed_phase(pg, projected_index):
+    # A re-enriched row past the text phase's limit gets its new text with no
+    # embedded_policy_hash: its stored vector is of the old enrichment.
+    with psycopg.connect(pg, autocommit=True) as conn:
+        conn.execute(f"UPDATE {SCHEMA}.messages SET embedded_policy_hash = NULL WHERE id = 'cur'")
+
+    def ids(tool: str, **args) -> list[str]:
+        return [r["id"] for r in call(projected_index, tool, **args)["rows"]]
+
+    assert ids("search", text="the ferry") == []
+    assert ids("query", spec={"text": "ferry"}) == ["cur"]
+    assert ids("query", spec={"filters": {"organization": "Fjordline"}}) == ["cur"]
+
+    embedder = create_autospec(Embedder, instance=True)
+    embedder.embed.side_effect = lambda texts: [_vec(1.0) for _ in texts]
+    with SanitizedStore(dsn=pg, schema=SCHEMA) as store:
+        stored = sanitize._reembed(store, DEFAULT_POLICY.digest(), embedder, 0, 10)
+
+    assert stored == 1
+    embedder.embed.assert_called_once_with([SERVED["cur"][0]])
+    assert ids("search", text="the ferry") == ["cur"]
+
+
 def _document(uid: str, sent_at: str, label: str = "personal"):
     record = Record(
         source="imap:test", source_uid=uid, kind="email", account="me@example.com",

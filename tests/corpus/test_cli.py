@@ -143,7 +143,7 @@ def sanitized_store_cls(monkeypatch):
 
 #: A run_sync result with nothing left to do.
 SYNCED = {"scanned": 0, "synced": 0, "skipped": 0, "reprojected": 0, "embedded": 0,
-          "pending": 0, "embed_stale": 0}
+          "capped": 0, "pending": 0, "embed_stale": 0}
 
 
 @pytest.fixture
@@ -259,10 +259,11 @@ def test_sync_reports_what_is_left_to_re_project_and_re_embed(
     runner, configure, shutdown, sanitized_store_cls, run_sync, document_store_cls, sanitized_dsn
 ):
     run_sync.return_value = {**SYNCED, "scanned": 1700, "reprojected": 1700, "embedded": 500,
-                             "pending": 12, "embed_stale": 1200}
+                             "capped": 3, "pending": 12, "embed_stale": 1200}
     result = runner.invoke(cli.main, ["sync"])
     assert result.exit_code == 0, result.output
     assert "re-projected 1700, embedded 500" in result.output
+    assert "3 new rows held back by --limit" in result.output
     assert "12 rows still projected under an older policy" in result.output
     assert "1200 rows await a new embedding; each sync re-embeds up to 500" in result.output
 

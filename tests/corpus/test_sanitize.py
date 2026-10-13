@@ -154,8 +154,89 @@ def _doc(doc_id, meta, enr, enriched_at=V1):
 
 def _counts(**counts):
     """A run_sync result: *counts*, every other count zero."""
-    keys = ("scanned", "synced", "skipped", "reprojected", "embedded", "pending", "embed_stale")
+    keys = ("scanned", "synced", "skipped", "reprojected", "embedded", "capped", "pending",
+            "embed_stale")
     return {k: counts.get(k, 0) for k in keys}
+
+
+def _low(doc_id, text, enriched_at=V1):
+    return _doc(doc_id, {}, {"one_line": text, "sensitivity_level": "low"}, enriched_at)
+
+
+def _state_store(state):
+    """A spec-bound SanitizedStore whose synced rows are *state* (id: ``_State``).
+
+    ``store.updated`` maps the id of each row rewritten keeping its vector to
+    its ``embedded_policy_hash``, in call order; run_sync reuses its batch
+    list, so the call args do not keep the rows.
+    """
+    store = create_autospec(SanitizedStore, instance=True)
+    store.synced_state.return_value = state
+    store.updated = {}
+
+    def update(rows):
+        store.updated |= {row["id"]: row["embedded_policy_hash"] for row in rows}
+        return len(rows)
+
+    store.update_projections.side_effect = update
+    store.backlog.return_value = Backlog(0, 0)
+    return store
+
+
+def _written(store):
+    """The ids passed to update_projections, and to save_message, in call order."""
+    return list(store.updated), [c.args[0]["id"] for c in store.save_message.call_args_list]
+
+
+def _embedded(embedder):
+    return [text for c in embedder.embed.call_args_list for text in c.args[0]]
+
+
+STALE = [_low(f"s{i}", f"item {i}") for i in range(10)]
+NEW = [_low(f"n{i}", f"new item {i}") for i in range(3)]
+
+
+def test_the_limit_caps_embeds_but_never_a_policy_re_projection(embedder, documents):
+    store = _state_store({f"s{i}": (V1, f"item {i}", "old", "old") for i in range(10)})
+
+    r = sanitize.run_sync(store, documents=documents(NEW[0], *STALE, *NEW[1:]),
+                          embedder=embedder, limit=2)
+
+    assert r == _counts(scanned=13, synced=12, reprojected=10, embedded=2, capped=1)
+    assert _written(store) == ([f"s{i}" for i in range(10)], ["n0", "n1"])
+    assert _embedded(embedder) == ["new item 0", "new item 1"]
+
+
+def test_the_next_capped_run_takes_the_capped_rows(embedder, documents):
+    digest = sanitize.DEFAULT_POLICY.digest()
+    done = {f"s{i}": (V1, f"item {i}", digest, digest) for i in range(10)}
+    done |= {f"n{i}": (V1, f"new item {i}", digest, digest) for i in range(2)}
+    store = _state_store(done)
+
+    r = sanitize.run_sync(store, documents=documents(NEW[0], *STALE, *NEW[1:]),
+                          embedder=embedder, limit=2)
+
+    assert r == _counts(scanned=13, synced=1, skipped=12, embedded=1)
+    assert _written(store) == ([], ["n2"])
+    assert _embedded(embedder) == ["new item 2"]
+
+
+def test_the_limit_holds_back_only_new_rows(embedder, documents):
+    # A re-enriched row costs no embedding past the cap: one whose one_line is
+    # unchanged keeps a current vector, one whose one_line changed gets its new
+    # text with its old vector, embed-stale. Only a new row waits.
+    digest = sanitize.DEFAULT_POLICY.digest()
+    store = _state_store({f"r{i}": (V1, f"item {i}", digest, digest) for i in range(4)})
+    same = [_low(f"r{i}", f"item {i}", V2) for i in range(3)]
+    changed = _low("r3", "item 3, revised", V2)
+
+    r = sanitize.run_sync(store, documents=documents(*NEW[:2], *same, changed),
+                          embedder=embedder, limit=1)
+
+    assert r == _counts(scanned=6, synced=5, embedded=1, capped=1)
+    assert _written(store) == (["r0", "r1", "r2", "r3"], ["n0"])
+    assert store.updated == {"r0": digest, "r1": digest, "r2": digest, "r3": None}
+    assert _embedded(embedder) == ["new item 0"]
 
 
 @pytest.mark.integration
@@ -213,7 +294,7 @@ def test_run_sync_limit_reaches_past_already_synced_rows(store, embedder, docume
 
     r = sanitize.run_sync(store, documents=documents(*rows), embedder=embedder, limit=2)
 
-    assert r == _counts(scanned=4, synced=2, skipped=2, embedded=2)
+    assert r == _counts(scanned=5, synced=2, skipped=2, embedded=2, capped=1)
     assert set(store.synced_versions()) == {"d0", "d1", "d2", "d3"}
 
 
@@ -1133,17 +1214,49 @@ def test_new_and_re_enriched_rows_are_embedded_at_once_and_never_capped(
 
 
 @pytest.mark.integration
-def test_the_limit_projects_new_rows_before_stale_ones(store, embedder, documents):
+def test_a_capped_sync_clears_every_placeholder_of_a_policy_change(
+    pg, store, embedder, documents
+):
     old = [_people(i) for i in range(3)]
     _stale(store, embedder, documents, old)
+    new = [_people(i) for i in (8, 9)]
 
-    r = sanitize.run_sync(store, documents=documents(*old, _people(9)), embedder=embedder,
-                          limit=2)
+    r = sanitize.run_sync(store, documents=documents(*new, *old), embedder=embedder, limit=1)
 
-    # d9 first, then the first stale row; the other two stay placeholders.
-    assert r == _counts(scanned=4, synced=2, reprojected=1, embedded=1, pending=2,
-                        embed_stale=1)
+    # d8 is embedded, d9 waits for the next run; every stale row is re-projected.
+    assert r == _counts(scanned=5, synced=4, reprojected=3, embedded=1, capped=1,
+                        embed_stale=3)
+    embedder.embed.assert_called_once_with(["a friend asks about item 8"])
+    with _served(pg) as index:
+        assert not any(index.get(f"d{i}")["one_line"].startswith(PENDING) for i in range(3))
+
+
+@pytest.mark.integration
+def test_a_re_enrichment_past_the_limit_is_served_now_and_re_embedded_later(
+    pg, store, embedder, documents
+):
+    old = [_people(i) for i in range(2)]
+    sanitize.run_sync(store, documents=documents(*old), embedder=embedder)
+    embedder.embed.reset_mock()
+    changed = _doc("d0", {}, {"one_line": "Kari Nordmann replies", "sensitivity_level": "low",
+                              "people": [KARI], "references": []}, V2)
+
+    r = sanitize.run_sync(store, documents=documents(_people(9), changed, old[1]),
+                          embedder=embedder, limit=1)
+
+    assert r == _counts(scanned=3, synced=2, skipped=1, embedded=1, embed_stale=1)
     embedder.embed.assert_called_once_with(["a friend asks about item 9"])
+    digest = sanitize.DEFAULT_POLICY.digest()
+    assert store.synced_state()["d0"] == (V2, "a friend replies", digest, None)
+    with _served(pg) as index:
+        assert index.get("d0")["one_line"] == "a friend replies"
+
+    embedder.embed.reset_mock()
+    r = sanitize.run_sync(store, documents=documents(_people(9), changed, old[1]),
+                          embedder=embedder, limit=1, reembed_limit=0)
+
+    assert r == _counts(scanned=3, skipped=3, embedded=1)
+    embedder.embed.assert_called_once_with(["a friend replies"])
 
 
 @pytest.mark.integration

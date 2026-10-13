@@ -135,7 +135,12 @@ def enrich(
 
 @main.command()
 @click.option("--source", default=None, help="filter by source id, e.g. gmail:personal")
-@click.option("--limit", default=0, type=int, help="sync at most N documents (0 = all)")
+@click.option(
+    "--limit", default=0, type=int,
+    help="embed at most N new or re-enriched rows in the text phase (0 = all); new ones "
+    "past it wait for the next sync; re-projection is never capped, and the re-embed "
+    "phase has its own cap (--reembed-limit)",
+)
 @click.option(
     "--reproject", "--force", "reproject", is_flag=True,
     help="re-project the text of every document now, even those projected under the "
@@ -205,6 +210,10 @@ def sync(
             f"synced {r['synced']}, skipped {r['skipped']} of {r['scanned']} scanned; "
             f"re-projected {r['reprojected']}, embedded {r['embedded']}"
         )
+        if r.get("capped"):
+            click.echo(
+                f"{r['capped']} new rows held back by --limit; the next sync takes them"
+            )
         if r["pending"]:
             click.echo(
                 f"{r['pending']} rows still projected under an older policy, served as "
@@ -245,7 +254,9 @@ def _stage_names(ctx: click.Context, param: click.Parameter, value: str) -> tupl
 )
 @click.option(
     "--limit", default=None, type=click.IntRange(min=0),
-    help="enrich at most N documents and sync at most N rows (0 = all); ingest is uncapped  "
+    help="enrich at most N documents and have sync's text phase embed at most N new or "
+    "re-enriched rows (0 = all); ingest and sync's re-projection are uncapped, and sync's "
+    "re-embed phase has its own cap (CORPUS_SYNC_REEMBED_LIMIT)  "
     "[default: the source's pipeline.limit, else 0]",
 )
 @click.option(

@@ -182,7 +182,7 @@ def test_every_stage_runs_in_order_with_counts(stores, fetcher, enricher):
     assert counts["ingest"] == {"ingested": 3}
     assert (counts["enrich"]["scanned"], counts["enrich"]["enriched"]) == (3, 3)
     assert counts["sync"] == {
-        "scanned": 3, "synced": 3, "skipped": 0, "reprojected": 0, "embedded": 3,
+        "scanned": 3, "synced": 3, "skipped": 0, "reprojected": 0, "embedded": 3, "capped": 0,
         "pending": 0, "embed_stale": 0,
     }
     assert len(_synced(stores)) == 3
