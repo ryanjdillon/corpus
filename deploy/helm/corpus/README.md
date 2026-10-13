@@ -90,6 +90,7 @@ chart default, set it to `null` in a values file, e.g.
 | `podSecurityContext`, `securityContext` | all | Default: non-root uid 1000, RuntimeDefault seccomp, no privilege escalation, all capabilities dropped. See [Root init containers](#root-init-containers). |
 | `serviceAccountName`, `automountServiceAccountToken` | all | Default: the namespace's default account, token not mounted. |
 | `containerName` | all | `server`, `pipeline`, `job` by default. |
+| `command` | all | The container command, `[corpus]` (the image's `ENTRYPOINT`) by default. Always rendered and never empty; see [Adopting existing objects](#adopting-existing-objects). |
 | `resources` | all | Container resources. |
 | `env` | all | Plain variables, `NAME: "value"`. Strings only: quote numbers (see below). |
 | `secretEnv` | all | `NAME: {name: <secret>, key: <key>}`, a `secretKeyRef` each. |
@@ -101,7 +102,7 @@ chart default, set it to `null` in a values file, e.g.
 | `schedule`, `timeZone`, `suspend`, `concurrencyPolicy`, `successfulJobsHistoryLimit`, `failedJobsHistoryLimit`, `backoffLimit`, `activeDeadlineSeconds`, `restartPolicy` | pipeline, jobs | CronJob and Job fields. `concurrencyPolicy` defaults to `Forbid`. |
 | `namePrefix` | `defaults.pipeline` | Default CronJob name prefix. |
 | `name`, `mode`, `extraArgs` | `sources[].runtime` | Name override, `cronjob` (`worker` is not implemented yet), arguments after `pipeline <kind>:<name>`. |
-| `command`, `args`, `initContainers`, `extraVolumes`, `extraVolumeMounts` | jobs | A job's command. `args` is required, and `suspend` defaults to `true`. An init container without `image` gets the chart's image, and runs under the pod's `podSecurityContext`. |
+| `args`, `initContainers`, `extraVolumes`, `extraVolumeMounts` | jobs | The job's arguments. `args` is required, and `suspend` defaults to `true`. An init container is a container spec and must set `command`. One without `image` gets the chart's image, and runs under the pod's `podSecurityContext`. |
 
 ### Release-wide
 
@@ -146,6 +147,17 @@ defaults:
     securityContext: null
     automountServiceAccountToken: null
 ```
+
+## Adopting existing objects
+
+When the release takes over objects that already exist, Helm patches them
+against the render rather than replacing them, so a field set only on the live
+object survives. A live `command: [sh, -c]` would wrap the chart's arguments
+and break the container. The chart therefore always renders `command`, and
+requires it on init containers. ConfigMap data keys behave the same way: a
+key the values no longer set stays in the adopted ConfigMap. Compare each live
+object (`kubectl get -o yaml`) with the render before adopting; see
+[Live-only fields survive adoption](../../../docs/deployment/helm.md#live-only-fields-survive-adoption).
 
 ## Examples
 
