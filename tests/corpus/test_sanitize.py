@@ -13,7 +13,7 @@ from unittest.mock import create_autospec
 import psycopg
 import pytest
 
-from corpus import envelope, sanitize, tiers
+from corpus import envelope, sanitize, telemetry, tiers
 from corpus.embeddings import Embedder
 from corpus.enrich_store import EnrichStore
 from corpus.enrichment import SensitivityLevel
@@ -1453,6 +1453,26 @@ def test_a_tier_another_sync_is_re_embedding_is_skipped(locked_store, embedder, 
     assert r == {**_counts(embed_stale=3), "reembed_skipped": 1}
     embedder.embed.assert_not_called()
     locked_store.stale_embeddings.assert_not_called()
+
+
+def test_a_sync_records_its_counts_as_the_tiers_metrics(locked_store, embedder, documents):
+    locked_store.reembed_lock.return_value.__enter__.return_value = False
+    metrics = create_autospec(telemetry.SyncMetrics, instance=True)
+    sanitized = tiers.tier("sanitized")
+
+    r = sanitize.run_sync(locked_store, documents=documents(), embedder=embedder,
+                          reembed_limit=0, tier=sanitized, metrics=metrics)
+
+    metrics.record.assert_called_once_with(r, sanitized)
+    assert (r["embed_stale"], r["reembed_skipped"]) == (3, 1)  # the backlog is recorded
+
+
+def test_a_sync_given_no_tier_records_nothing(locked_store, embedder, documents):
+    metrics = create_autospec(telemetry.SyncMetrics, instance=True)
+
+    sanitize.run_sync(locked_store, documents=documents(), embedder=embedder, metrics=metrics)
+
+    metrics.record.assert_not_called()
 
 
 def test_the_re_embed_lock_is_held_across_the_phase(locked_store, embedder, documents):

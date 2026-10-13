@@ -2,8 +2,9 @@
 
 No-op unless OTEL_EXPORTER_OTLP_ENDPOINT is set, so local runs and tests do not
 export. Traces cover outgoing httpx calls; metrics add ingest counters and
-histograms, MCP tool-call counts, and a corpus-size gauge. Heavy SDK/exporter imports are deferred to configure() so importing this
-module (for the metric instruments) stays cheap.
+histograms, MCP tool-call counts, a corpus-size gauge, and each sync's backlog
+(:class:`SyncMetrics`). Heavy SDK/exporter imports are deferred to configure()
+so importing this module (for the metric instruments) stays cheap.
 """
 
 from __future__ import annotations
@@ -19,9 +20,14 @@ import os
 import re
 import time
 from collections.abc import Callable, Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from opentelemetry import metrics
+
+if TYPE_CHECKING:
+    from opentelemetry.metrics import Meter
+
+    from .tiers import Tier
 
 log = logging.getLogger("corpus.telemetry")
 audit_log = logging.getLogger("corpus.audit")
@@ -182,6 +188,70 @@ mcp_duration = _meter.create_histogram(
     unit="ms",
     description="MCP tool call latency, by server, tier and tool.",
 )
+
+
+class SyncMetrics:
+    """The instruments a sync reports its backlog and work on, from *meter*.
+
+    One set of attributes per projected tier: its name and schema. Several
+    sources share a tier (and its backlog), so no source is attached; a gauge
+    labelled by source would report the same tier-wide value under each.
+
+    Every instrument is a gauge holding the last sync's value. A sync is a
+    one-shot process whose instruments start from nothing and export about
+    once, and the syncs of a tier write one series, so a counter's rate would
+    read the difference between two runs' work rather than either run's.
+    """
+
+    def __init__(self, meter: Meter) -> None:
+        self.deferred = meter.create_gauge(
+            "corpus.sync.deferred",
+            unit="{row}",
+            description="Rows still projected under another policy after a sync, "
+            "served as placeholders.",
+        )
+        self.embed_stale = meter.create_gauge(
+            "corpus.sync.embed_stale",
+            unit="{row}",
+            description="Rows awaiting a new vector after a sync, left out of semantic search.",
+        )
+        self.reembed_skipped = meter.create_gauge(
+            "corpus.sync.reembed_skipped",
+            unit="{run}",
+            description="1 if the last sync skipped its re-embedding because another sync "
+            "of the tier held the re-embed lock, else 0.",
+        )
+        self.reprojected = meter.create_gauge(
+            "corpus.sync.reprojected",
+            unit="{row}",
+            description="Rows the last sync rewrote only because of the policy or a forced "
+            "re-projection.",
+        )
+        self.embedded = meter.create_gauge(
+            "corpus.sync.embedded",
+            unit="{row}",
+            description="Vectors the last sync stored, in either phase.",
+        )
+        self.capped = meter.create_gauge(
+            "corpus.sync.capped",
+            unit="{row}",
+            description="New rows the last sync held back for its embedding limit, "
+            "left for a later sync.",
+        )
+
+    def record(self, counts: Mapping[str, int], tier: Tier) -> None:
+        """Record one sync's *counts* (``sanitize.run_sync``) into *tier*."""
+        attrs = {"tier": tier.name, "schema": tier.schema}
+        self.deferred.set(counts["pending"], attrs)
+        self.embed_stale.set(counts["embed_stale"], attrs)
+        self.reembed_skipped.set(counts.get("reembed_skipped", 0), attrs)
+        self.reprojected.set(counts["reprojected"], attrs)
+        self.embedded.set(counts["embedded"], attrs)
+        self.capped.set(counts["capped"], attrs)
+
+
+#: The sync instruments on the process's meter provider.
+sync_metrics = SyncMetrics(_meter)
 
 
 # --- MCP tool-call audit -------------------------------------------------------

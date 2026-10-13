@@ -251,8 +251,10 @@ def test_sync_command(
     assert (kwargs["source"], kwargs["force"]) == (None, False)
     assert kwargs["policy"] == dst.projection.policy
     assert kwargs["reembed_limit"] == settings.sync_reembed_limit == 500
+    assert kwargs["tier"] == dst  # the backlog metrics are the tier's
     assert "older policy" not in result.output
     assert "await a new embedding" not in result.output
+    shutdown.assert_called_once()  # a one-shot sync flushes its metrics before exit
 
 
 def test_sync_reports_what_is_left_to_re_project_and_re_embed(
