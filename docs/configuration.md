@@ -163,7 +163,7 @@ file defines.
 
 | Variable | Purpose |
 |---|---|
-| `CORPUS_CONFIG_FILE` | path of the config file (`tiers:` and `sources:`); unset means the built-in default tiers and the deprecated pre-file sources. `CORPUS_TIERS_FILE` is its deprecated name |
+| `CORPUS_CONFIG_FILE` | path of the config file (`tiers:` and `sources:`); unset means the built-in default tiers and the deprecated pre-file sources. A declared `sensitive` or `sanitized` tier takes each key it leaves out from the built-in one ([Tiers](tiers.md#built-in-tiers-fill-what-is-left-out)). `CORPUS_TIERS_FILE` is its deprecated name |
 | `CORPUS_SYNC_REEMBED_LIMIT` | most embed-stale rows (text re-projected, vector from an earlier summary) one sync, or one `corpus pipeline` sync stage, re-embeds (default 500; 0: no cap). `corpus sync --reembed-limit` overrides it. It caps neither re-projecting text nor embedding new and re-enriched rows (`--limit` caps the latter). Replaces `CORPUS_SYNC_REPROJECT_LIMIT`, which capped the re-projection itself and is no longer read: its `0` would now mean an uncapped re-embedding on every sync. See [Tiers](tiers.md#text-now-embeddings-later) |
 | `CORPUS_SANITIZED_DATABASE_URL` | DSN the sync writes to (the default tiers' `dsn_env`) |
 | `CORPUS_INDEX_DATABASE_URL` | DSN the index server reads with, a read-only role (the default tiers' `reader_dsn_env`) |
