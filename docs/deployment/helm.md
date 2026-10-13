@@ -95,16 +95,20 @@ offers a value that keeps them:
 - **Rollout on config change.** Server pods carry `checksum/config`, the sha256
   of both rendered ConfigMaps (the config file and the shared environment), so
   a change to either rolls them.
+- **Explicit command.** Every container the chart renders sets `command`,
+  `[corpus]` (the image's `ENTRYPOINT`) unless a layer overrides it, and the
+  schema requires one on every init container. See
+  [Live-only fields survive adoption](#live-only-fields-survive-adoption).
 - **Secrets by name.** Environment variable names and `secretKeyRef`s are
   exactly what the values say. Secret contents never pass through the chart.
 - **Network policy.** `networkPolicies.<name>` is a NetworkPolicy `spec`,
   rendered as written. That covers default-deny and egress to pinned IPs
   (a policy cannot match a hostname).
 - **Pod details.** Node selectors, tolerations, resources, security contexts,
-  probes, schedules, time zones, suspend flags, deadlines, backoff and restart
-  policy, grace periods and the image tag can all be set per workload. The
-  exception is the concurrency policy: it defaults to `Forbid` and can be
-  overridden, but a pipeline should not run twice at once.
+  probes, commands, schedules, time zones, suspend flags, deadlines, backoff
+  and restart policy, grace periods and the image tag can all be set per
+  workload. The exception is the concurrency policy: it defaults to `Forbid`
+  and can be overridden, but a pipeline should not run twice at once.
 
 ## Not in the chart
 
@@ -134,8 +138,9 @@ Move one domain at a time, starting with the personal domain:
    It matches objects by kind and name, ignores Helm and kustomize bookkeeping
    and Secret payloads, and compares the config file by content. Expect
    differences only in Secrets and the Namespace (not rendered),
-   `checksum/config`, and the standard `app.kubernetes.io/*` labels on object
-   metadata.
+   `checksum/config`, the standard `app.kubernetes.io/*` labels on object
+   metadata, and a `command: [corpus]` on containers whose manifests left it
+   to the image.
 3. Replace the Flux `Kustomization` path for the workloads with a
    `HelmRelease` of this chart, in the same namespace. Keep the Secrets
    (SOPS) and anything listed under [Not in the chart](#not-in-the-chart)
@@ -156,3 +161,28 @@ Move one domain at a time, starting with the personal domain:
 
    Then check that the gateway routes resolve and that the next pipeline
    run succeeds.
+
+### Live-only fields survive adoption
+
+An adopting install or upgrade does not replace the live objects. Helm
+three-way-patches each one, with the chart's render standing in for the
+"original" manifest. A field that is set on the live object but absent from
+the render is therefore never removed: the patch has no record that Helm ever
+owned it. Two cases matter here:
+
+- **Container fields.** A live CronJob whose container carries
+  `command: [sh, -c]` keeps it if the render sets no `command`, so the
+  container would run `sh -c pipeline ...` and fail. The chart therefore
+  renders `command` on every container, `[corpus]` by default, and the schema
+  requires it on every init container. The same holds for any other container
+  field the chart leaves out, such as a live-only `workingDir` or probe.
+- **ConfigMap data keys.** A key in the live shared-environment ConfigMap that
+  the chart's `commonEnv.vars` no longer has stays in the ConfigMap, and so in
+  every container's environment. A stale variable survives the switch.
+
+Before adopting, check each live object against the render, not only the old
+manifests against the render: `kubectl get <kind> <name> -o yaml` shows what
+`kubectl edit` or an earlier apply added. Then either set the field in the
+values, or remove it from the live object (`kubectl patch --type=json` with a
+`remove` op) before the adopting upgrade. After it, `helm get manifest` and
+the live objects should agree.
