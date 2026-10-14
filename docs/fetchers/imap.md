@@ -100,6 +100,66 @@ fetched again (by listing it in `folders`), the fetch resumes after the mail
 already seen there instead of re-downloading the folder from UID 1, which would
 bring back the mail a purge removed.
 
+## Purging mail from excluded folders
+
+Mail ingested from a junk folder before it was skipped (or before a folder was
+added to `exclude_folders`) stays stored and served until it is removed:
+
+```
+corpus purge-excluded-folders [SOURCE] [--yes]
+```
+
+SOURCE is an IMAP source id, e.g. `imap:inbox-a`; without it, every IMAP source
+the config file declares. Run it with the same config file and source
+environment (`CORPUS_IMAP_<NAME>_*`, including `FOLDERS`) as ingest, e.g. a
+Kubernetes Job built from the ingest job's spec: the policy it applies is read
+from them, and a different one would judge different folders excluded. For each source the command reads the folder of every
+stored document from its [message id](../message-ids.md)
+(`imap:<mailbox>::<folder>:<uidvalidity>:<uid>`) and judges it by the source's
+**current** folder policy, the same `FolderPolicy` the fetcher uses, against the
+server's current folder list. It logs in to each source's server to read the
+special-use attributes, so it needs the source's credential variables. A stored
+folder the server no longer lists is judged by the same rule, against the rest
+of the listing (with no listing at all, by its whole name). A folder in an explicit
+`folders` list is never purged, and one left out of the list is purged only if
+it is junk, trash or drafts: narrowing the list is not a reason to delete mail.
+
+Without `--yes` it is a dry run: it prints, per source and per excluded folder,
+how many documents are stored, and how many vault files `corpus export` wrote
+for them. It prints no ids and no content, and changes nothing:
+
+```
+imap:inbox-a: 3 documents in 2 excluded folders
+  Junk Mail: 2
+  Quarantine: 1
+dry run: 3 documents, 0 vault files; --yes deletes them
+```
+
+With `--yes` it deletes those documents from:
+
+- every projected tier's store (`sanitized` by default): their `messages` rows;
+- the vault: the files `corpus export` wrote for them, if any;
+- the sensitive store: the `documents` rows (content, metadata and embedding)
+  and their `enrichments` rows (enrichment and secret audit, candidates
+  included).
+
+Each store deletes in one transaction; the stores are separate databases, so
+no transaction spans them. The tiers go first and the sensitive documents last:
+the documents are what the next run plans from, so a run interrupted part way
+fails visibly and is finished by running it again. The other order could
+strand tier rows for good, since projection does not remove orphans. A vault
+file that resolves outside the vault directory (through a symlink) is left in
+place, with a warning. If a server cannot be reached or refuses the login, the
+command fails before deleting anything. It then prints the counts deleted per store:
+
+```
+deleted: tier:sanitized 3, vault 0, documents 3, enrichments 3
+```
+
+A repeat deletes nothing. `--yes` needs every projected tier's DSN variable
+set, and refuses to start without one, so no tier keeps serving purged mail.
+The cursor is left as it is (see [Cursor](#cursor)).
+
 ## Ids and links
 
 A record's id is `<folder>:<UIDVALIDITY>:<UID>`, and its `uri` is the RFC 5092

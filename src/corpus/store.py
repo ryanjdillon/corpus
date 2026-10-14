@@ -11,7 +11,7 @@ manage its table there.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Collection, Iterator
 from contextlib import closing
 from typing import Any
 
@@ -247,6 +247,33 @@ class DocumentStore(Store):
             groups = self._read(built.sql, built.params)
             total = self._read(built.count_sql, built.count_params)[0][0]
         return built.result(groups, total)
+
+    def delete(self, ids: Collection[str]) -> dict[str, int]:
+        """Delete the documents *ids* and every row keyed by them, in one transaction.
+
+        That is the document (its content, metadata and embedding) and its
+        ``enrichments`` row (the enrichment and the secret audit, candidates
+        included). Returns the rows deleted per table, ``documents`` and
+        ``enrichments``; an id no longer stored counts nothing, so a repeat is a
+        no-op. A table not created yet has nothing to delete.
+        """
+        counts = {"documents": 0, "enrichments": 0}
+        if not ids:
+            return counts
+        # The derived row first, in the same transaction: the delete is all or nothing.
+        targets = (
+            ("enrichments", f"{self._schema}.enrichments", "doc_id"),
+            ("documents", self._table, "id"),
+        )
+        with self._conn.transaction(), self._conn.cursor() as cur:
+            for key, table, column in targets:
+                cur.execute("SELECT to_regclass(%s)", (table,))
+                row = cur.fetchone()
+                if row is None or row[0] is None:
+                    continue
+                cur.execute(f"DELETE FROM {table} WHERE {column} = ANY(%s)", (list(ids),))
+                counts[key] = cur.rowcount
+        return counts
 
     def get(self, id: str) -> dict[str, Any] | None:
         """Fetch one document by id (``GET_KEYS``: full content and all metadata), or None."""

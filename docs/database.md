@@ -31,5 +31,8 @@ source_uid)`, so re-ingesting an item overwrites its row rather than adding a
 duplicate.
 
 The derived enrichment and secret-audit records live in a separate `enrichments`
-table, created lazily on first write. The [architecture diagram](architecture.html)
+table, created lazily on first write. Rows are deleted only by
+`corpus purge-excluded-folders` (see [IMAP](fetchers/imap.md#purging-mail-from-excluded-folders)):
+`DocumentStore.delete` removes a document and its `enrichments` row in one
+transaction, and `SanitizedStore.delete` its projected row. The [architecture diagram](architecture.html)
 shows how the derived branches relate to the source-of-truth documents.
