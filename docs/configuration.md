@@ -135,7 +135,10 @@ A text longer than the audit model's context window therefore fails its audit;
 the enrichment is kept and the audit is counted as `audit_failed`.
 
 Per-source variables are namespaced by fetcher name — see [IMAP](fetchers/imap.md)
-and [Gmail](fetchers/gmail.md).
+and [Gmail](fetchers/gmail.md). Neither ingests spam: Gmail leaves spam and trash
+out, and IMAP discovery skips junk, trash and drafts folders, because the server
+already filtered that mail and surfacing it in briefings is noise and a phishing
+vector (see [IMAP folder selection](fetchers/imap.md#folder-selection)).
 
 ## scan-gate
 

@@ -37,7 +37,8 @@ sources:
 | Kind | `options` key | Meaning |
 | --- | --- | --- |
 | `gmail` | `labels` | Label names to fetch. Unset: `<prefix>_LABELS`, and all mail if that is unset too. |
-| `imap` | `folders` | Folders to fetch. Unset: `<prefix>_FOLDERS`, and every selectable folder if that is unset too. |
+| `imap` | `folders` | Folders to fetch, exactly as given (a junk folder listed here is fetched). Unset: `<prefix>_FOLDERS`, and if that is unset too, every selectable folder except junk, trash and drafts (see [IMAP folder selection](imap.md#folder-selection)). |
+| `imap` | `exclude_folders` | More folders to skip when discovering, on top of the junk, trash and drafts defaults; each name matches a folder's whole name, case-insensitively, and the folders beneath it. Not allowed with `folders`. |
 
 A source's id is `<kind>:<name>`, e.g. `gmail:personal`. It is the argument to
 `corpus ingest` and `corpus pipeline`, the `--source` filter of the other
@@ -84,7 +85,8 @@ error that names the problem:
 - `kind` must be `gmail` or `imap`, and `options` may hold only that kind's keys;
 - `name` must match the message-id grammar, and `enrich` must be given;
 - a source declared twice (the same kind and name) is an error;
-- `labels` and `folders`, when given, must list at least one name;
+- `labels`, `folders` and `exclude_folders`, when given, must list at least one
+  name, and `folders` and `exclude_folders` may not both be set;
   `pipeline.batch_size` must be at least 1 and `pipeline.limit` at least 0.
 
 A source not in the file is refused by `ingest` and `pipeline`, and its stored

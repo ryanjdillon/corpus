@@ -133,3 +133,26 @@ def test_catalogs_all_folders(greenmail):
     assert by_folder["Archive"].subject == "Archived item"
     # Ids are unique across folders even when per-folder UIDs coincide.
     assert len({r.source_uid for r in records}) == len(records)
+
+
+def test_discovery_skips_junk_and_keeps_sent(greenmail):
+    # GreenMail lists no special-use attributes, so the names decide.
+    env = _configure(greenmail["imap_port"], folders="all")
+    greenmail["send"](USER, "Inbox item", "in the inbox")
+
+    from imapclient import IMAPClient
+
+    with IMAPClient("127.0.0.1", port=greenmail["imap_port"], ssl=False) as client:
+        client.login(USER, "test")
+        for folder, subject in (("Junk Mail", "Filtered item"), ("Sent", "Sent item")):
+            client.create_folder(folder)
+            client.append(
+                folder,
+                f"From: {USER}\r\nSubject: {subject}\r\n\r\nsynthetic body\r\n".encode(),
+            )
+
+    fetcher = build_fetcher(SOURCE, environ=env)
+    records = _fetch_with_retry(fetcher, None, expected=2)
+
+    assert {r.folder for r in records} == {"INBOX", "Sent"}
+    assert "Junk Mail" not in (fetcher.next_cursor() or "")

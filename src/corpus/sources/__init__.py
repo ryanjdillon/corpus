@@ -145,11 +145,24 @@ class ImapOptions(_Strict):
     """What an IMAP source fetches.
 
     Attributes:
-        folders: Folders to fetch; unset falls back to ``<prefix>_FOLDERS``, and
-            every selectable folder when that is unset too.
+        folders: Folders to fetch, as given (a junk folder listed here is
+            fetched); unset falls back to ``<prefix>_FOLDERS``, and every
+            selectable folder but the junk, trash and drafts ones when that is
+            unset too (``fetchers.imap.FolderPolicy``).
+        exclude_folders: More folders to skip when discovering, on top of the
+            defaults. Only for discovery, so it may not be set with ``folders``.
+            No option turns the defaults off: an explicit ``folders`` list does.
     """
 
     folders: _Selection | None = None
+    exclude_folders: _Selection | None = None
+
+    def __post_init__(self) -> None:
+        if self.folders is not None and self.exclude_folders is not None:
+            raise ValueError(
+                "set folders or exclude_folders, not both: an explicit folders list "
+                "is fetched as given"
+            )
 
 
 class ImapSource(Source, tag="imap"):

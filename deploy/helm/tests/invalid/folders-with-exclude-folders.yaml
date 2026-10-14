@@ -1,0 +1,9 @@
+# Must fail: an explicit `folders` list is fetched as given, so `exclude_folders`
+# (which refines discovery) may not be set with it.
+sources:
+  - name: inbox-a
+    kind: imap
+    enrich: true
+    options:
+      folders: [INBOX]
+      exclude_folders: [Newsletters]
