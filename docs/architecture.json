@@ -40,6 +40,10 @@
         {
           "path": "src/corpus/export.py",
           "label": "export → vault"
+        },
+        {
+          "path": "src/corpus/purge.py",
+          "label": "purge-excluded-folders: delete by FolderPolicy"
         }
       ]
     },

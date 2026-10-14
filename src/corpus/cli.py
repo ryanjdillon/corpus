@@ -1,7 +1,7 @@
 """Command-line entrypoints for the corpus service.
 
 Subcommands: serve <tier>, pipeline, ingest, scan, enrich, sync,
-audit-secrets, export. ``mcp`` and ``index`` are deprecated aliases of ``serve``.
+audit-secrets, export, purge-excluded-folders. ``mcp`` and ``index`` are deprecated aliases of ``serve``.
 """
 
 from __future__ import annotations
@@ -329,6 +329,68 @@ def export(source: str | None, account: str | None, limit: int, force: bool) -> 
         click.echo(f"wrote {r['written']}, unchanged {r['unchanged']} of {r['scanned']} scanned")
     finally:
         telemetry.shutdown()
+
+
+@main.command(name="purge-excluded-folders")
+@click.argument("source", required=False)
+@click.option("--yes", is_flag=True, help="delete; without it, only report what would go")
+def purge_excluded_folders(source: str | None, yes: bool) -> None:
+    """Delete stored mail from the folders an IMAP SOURCE's folder policy skips.
+
+    SOURCE is an IMAP source id, e.g. 'imap:example'; without it, every IMAP
+    source in the config file. A document's folder is judged by the source's
+    current policy (junk, trash and drafts, plus its exclude_folders) against the
+    server's folder list, so the run logs in to each source's server.
+
+    Without --yes this is a dry run: it prints how many documents each excluded
+    folder holds and changes nothing. With --yes it deletes them from the
+    sensitive store (documents and their enrichment and secret-audit rows), from
+    every projected tier, and their vault files, then prints the counts deleted
+    per store. A repeat deletes nothing.
+    """
+    import imaplib
+    from contextlib import ExitStack
+
+    from . import purge
+    from .config import settings
+    from .sanitized_store import SanitizedStore
+    from .store import DocumentStore
+
+    try:
+        entries = purge.imap_sources(source)
+        projected = purge.projected_tiers() if yes else []
+    except (ValueError, RuntimeError) as exc:
+        raise click.UsageError(str(exc)) from exc
+    with DocumentStore() as documents:
+        plans = []
+        for entry in entries:
+            try:
+                plans.append(purge.plan(entry, documents))
+            except ValueError as exc:  # a source's IMAP credentials are unset
+                raise click.ClickException(str(exc)) from exc
+            except (imaplib.IMAP4.error, OSError) as exc:
+                # The type alone: a server's reply to a failed login may echo the user.
+                raise click.ClickException(
+                    f"{entry.id}: could not connect or log in to the IMAP server "
+                    f"({type(exc).__name__}); nothing was deleted"
+                ) from exc
+        for p in plans:
+            total = sum(len(ids) for ids in p.folders.values())
+            click.echo(f"{p.source}: {total} documents in {len(p.folders)} excluded folders")
+            for folder, ids in p.folders.items():
+                click.echo(f"  {folder}: {len(ids)}")
+        ids = [doc_id for p in plans for doc_id in p.ids]
+        if not yes:
+            files = len(purge.vault_files(ids, settings.vault_path))
+            click.echo(f"dry run: {len(ids)} documents, {files} vault files; --yes deletes them")
+            return
+        with ExitStack() as stack:
+            stores = {
+                t.name: stack.enter_context(SanitizedStore(t.store_dsn(), t.schema))
+                for t in projected
+            }
+            counts = purge.apply(plans, documents, stores, vault_root=settings.vault_path)
+    click.echo("deleted: " + ", ".join(f"{store} {n}" for store, n in counts.items()))
 
 
 @main.command(name="audit-secrets")

@@ -10,7 +10,7 @@ cannot retrieve them.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Collection, Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, NamedTuple
@@ -409,6 +409,14 @@ class SanitizedStore(Store):
                 cur.execute(self._update_sql, [*values, row["id"], *values])
                 changed += cur.rowcount
         return changed
+
+    def delete(self, ids: Collection[str]) -> int:
+        """Delete the rows *ids*, in one transaction; returns how many there were."""
+        if not ids:
+            return 0
+        with self._conn.transaction(), self._conn.cursor() as cur:
+            cur.execute(f"DELETE FROM {self._schema}.messages WHERE id = ANY(%s)", (list(ids),))
+            return cur.rowcount
 
     def synced_versions(self) -> dict[str, object]:
         """Map id -> ``enriched_at`` already synced, so the sync skips unchanged rows."""
