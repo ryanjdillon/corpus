@@ -964,6 +964,13 @@
                   "type": "string"
                 },
                 "minItems": 1
+              },
+              "exclude_folders": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "minItems": 1
               }
             }
           },
@@ -1241,7 +1248,14 @@
                 "options": {
                   "propertyNames": {
                     "enum": [
-                      "folders"
+                      "folders",
+                      "exclude_folders"
+                    ]
+                  },
+                  "not": {
+                    "required": [
+                      "folders",
+                      "exclude_folders"
                     ]
                   }
                 }
