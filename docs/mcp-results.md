@@ -33,11 +33,12 @@ registers the tool, so no tool can return rows without it.
 | `untrusted` | Whether any field in `untrusted_fields` exists for this tool. |
 | `untrusted_fields` | The row keys that hold third-party text. Fixed per tool, so a row that omits a key never shortens it. |
 | `notice` | A fixed sentence telling a model how to treat untrusted fields. |
-| `count` | Rows on this page, always `len(rows)`. |
+| `count` | Rows on this page: `len(rows)`, plus the rows in `sections` on `index_briefing`. |
 | `total` | Every match, when cheap to know (`aggregate` and the stats tools); otherwise `null`. |
 | `next_cursor` | Opaque cursor for the next page; `null` on the last page (see [Paging](#paging)). |
-| `truncated` | Only on `aggregate`: more groups exist than `limit`. Counts are not paged, so narrow the filters or raise `limit`. Absent on every other tool. |
-| `rows` | Always a list. A single-record tool (`get`, `corpus_get`, `index_summary`) returns 0 or 1 rows. Each row has `flags`. |
+| `truncated` | On `aggregate`: more groups exist than `limit`. Counts are not paged, so narrow the filters or raise `limit`. On `index_briefing`: rows were dropped to fit its size cap. Absent on every other tool. |
+| `rows` | Always a list. A single-record tool (`get`, `corpus_get`, `index_summary`) returns 0 or 1 rows. Each row has `flags`. Empty on `index_briefing`, whose rows are in `sections`. |
+| `sections`, `counts`, `dropped` | Only on `index_briefing` (see [The briefing](#the-briefing)). |
 
 A tool that fails returns an MCP error (`isError`) with a plain-text message,
 not an envelope.
@@ -55,6 +56,7 @@ skipping or repeating rows.
 | Tool | Most rows per call | Pages by | Paging stops after |
 | --- | --- | --- | --- |
 | `index_action_items`, `index_due_soon`, `index_waiting_on`, `index_by_domain` | 100 | offset in the priority order (ties broken by id) | 1000 rows |
+| `index_briefing` | 50 per section, within 24 KiB of text (about twice that on the wire, see [the briefing](query.md#the-briefing)) | not paged: one call per briefing | — |
 | `query` | 100 | keyset on `(sent_at, id)` for `newest`/`oldest`; otherwise offset | never (keyset); 1000 rows (offset) |
 | `corpus_query` | 100 | keyset on `(sent_at, id)`, newest first | never |
 | `search`, `corpus_search` | 50 | offset in the ranking (each page re-embeds and re-runs the search) | 200 rows, the most one vector search ranks (`query.SEMANTIC_DEPTH`) |
@@ -123,7 +125,8 @@ tool declares its untrusted fields when `serving.build_mcp` registers it:
 
 | Tool | Untrusted fields |
 | --- | --- |
-| sanitized row tools: `query`, `search`, `get`, `index_*` (not `index_stats`) | `UNTRUSTED_COLS` |
+| sanitized row tools: `query`, `search`, `get`, `index_*` (not `index_stats` or `index_briefing`) | `UNTRUSTED_COLS` |
+| `index_briefing` | `one_line`, its only column from `UNTRUSTED_COLS` |
 | sanitized `aggregate` | `organization`, `sender_domain`: group keys read from mail headers or a model's extraction. The `facts.travel` dimensions are trusted: a country is two letters (the projection keeps no other), a year four digits. |
 | sensitive `query`, `search`, `corpus_query` | `from_addr`, `subject` |
 | `corpus_search` | `from_addr`, `snippet`, `subject` |
@@ -169,3 +172,17 @@ quotes SDK or API documentation (an `<invoke name=…>` example, an OpenAI
 `"function": {"name": …}` item) is flagged too. That is an accepted trade-off:
 mail that quotes tool-call syntax is rare, and an agent reading such a row
 loses nothing by treating it as suspicious.
+
+## The briefing
+
+`index_briefing` returns its rows in `sections`, an object of three named lists
+(`due_soon`, `action_items`, `waiting_on_me`), with `rows` empty. Each section
+row is flagged like any other row. A briefing is read as a whole by an agent
+that composes a message from it, so a flagged row there withholds its
+`one_line`, which reads `[withheld: instruction_like]` (`envelope.WITHHELD`).
+The row still lists its id, domain, dates and enums, so the item reaches the
+owner, marked. The flag is computed from the text before it is withheld, over
+the briefing row's own untrusted field: the briefing serves no
+`action_summary` or `organizations`, so text there cannot reach the agent
+through it. `envelope.wrap` does the withholding, for the fields a tool names
+when it is registered, as it does the flagging.
