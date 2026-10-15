@@ -27,13 +27,16 @@ clock are the collaborators injected.
 import copy
 import functools
 import inspect
-from collections.abc import Callable, Mapping
+from bisect import bisect_left
+from collections import Counter
+from collections.abc import Callable, Iterable, Mapping
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
 import msgspec
+import pydantic_core
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field, WithJsonSchema
 
@@ -41,7 +44,14 @@ from . import search as semantic
 from .config import settings
 from .embeddings import embed_query
 from .enricher import inline_refs
-from .envelope import CURSOR_HELP, clamp, decode_cursor, encode_cursor, offset_of, wrap
+from .envelope import (
+    CURSOR_HELP,
+    clamp,
+    decode_cursor,
+    encode_cursor,
+    offset_of,
+    wrap,
+)
 from .query import (
     FILTERS,
     RANGES,
@@ -55,7 +65,7 @@ from .query import (
     parse_spec,
     relative_cutoff,
 )
-from .sanitized_store import UNTRUSTED_COLS, SanitizedStore
+from .sanitized_store import UNTRUSTED_COLS, SanitizedStore, deadline_key, priority_key
 from .store import DocumentStore
 from .telemetry import audited
 from .tiers import Tier
@@ -91,6 +101,42 @@ GET_UNTRUSTED = ("content", "meta")
 #: owner's own account.
 GROUP_UNTRUSTED = ("organization", "sender_domain")
 
+#: ``index_briefing``'s sections, highest first: a row is listed only in the
+#: first that holds it.
+BRIEFING_SECTIONS = ("due_soon", "action_items", "waiting_on_me")
+#: A briefing row's columns: enough to list the item, and no long free text.
+BRIEFING_FIELDS = (
+    "id", "source", "sent_at", "domain", "category", "importance", "action_type",
+    "deadline", "waiting_on", "one_line",
+)
+#: The briefing's untrusted columns: its own among the projection's.
+BRIEFING_UNTRUSTED = tuple(c for c in UNTRUSTED_COLS if c in BRIEFING_FIELDS)
+#: What a briefing row flagged ``instruction_like`` withholds: its only free text.
+BRIEFING_WITHHOLD = ("one_line",)
+#: The most bytes a briefing's envelope serializes to as FastMCP's text content
+#: (``indent=2``); the lowest-ranked rows are dropped to fit. The wire carries
+#: the envelope twice, as that text and as compact ``structuredContent``, so a
+#: full briefing is at most about twice this (under 50 KB) on the wire.
+BRIEFING_MAX_BYTES = 24 * 1024
+#: How many domains and sources ``counts`` names; the rest sum under
+#: ``BRIEFING_OTHER``, so the counts cannot outgrow the size cap.
+BRIEFING_TOP = 20
+BRIEFING_OTHER = "(other)"
+#: The bounds on the briefing's arguments. One call is the whole briefing, so a
+#: larger value is refused rather than clamped into a different briefing.
+BRIEFING_MAX_DAYS = 31
+BRIEFING_MAX_RECENT_DAYS = 90
+BRIEFING_MAX_LIMIT = 50
+#: How long a missed deadline stays in view, and how far ahead a deadline keeps
+#: an action item or a reply owed in view whenever it was sent.
+BRIEFING_OVERDUE = timedelta(days=7)
+BRIEFING_AHEAD = timedelta(days=30)
+#: The most rows one briefing query reads, the paging ceiling of the presets;
+#: ``counts.complete`` says whether every query read all its matches.
+BRIEFING_SCAN = MAX_OFFSET
+#: Stands in for the server and tier names when a briefing measures its envelope:
+#: longer than either, so the measure is an upper bound.
+_FRAME_NAME = "x" * 64
 
 
 def index_presets_policy(policy: QueryPolicy) -> QueryPolicy:
@@ -112,6 +158,8 @@ class Result:
     total: int | None = None
     next_cursor: str | None = None
     truncated: bool | None = None
+    sections: Mapping[str, list[dict[str, Any]]] | None = None
+    extra: Mapping[str, Any] | None = None
 
 
 def open_documents(t: Tier) -> DocumentStore:
@@ -148,9 +196,9 @@ class _Surface:
     get_untrusted: tuple[str, ...]
     group_untrusted: tuple[str, ...]
     instructions: str
-    presets: Callable[..., list[tuple[Callable[..., Result], tuple[str, ...]]]] = field(
-        repr=False
-    )
+    #: Each preset: the tool, its untrusted fields, and optionally the fields a
+    #: flagged row withholds (see ``envelope.mark``).
+    presets: Callable[..., list[tuple[Any, ...]]] = field(repr=False)
 
 
 # --- relative bounds, frozen in the cursor -----------------------------------
@@ -487,6 +535,72 @@ def _index_presets(policy: QueryPolicy, open_store: OpenStore, embed: Embed, now
         ]
         return Result(rows, total=counts[0].total)
 
+    def index_briefing(
+        days: Annotated[
+            int, Field(ge=1, le=BRIEFING_MAX_DAYS, description="due_soon: deadlines up to this many days ahead")
+        ] = 3,
+        limit: Annotated[
+            int, Field(ge=1, le=BRIEFING_MAX_LIMIT, description="max rows per section")
+        ] = 15,
+        recent_days: Annotated[
+            int,
+            Field(ge=1, le=BRIEFING_MAX_RECENT_DAYS, description="how far back mail counts as recent"),
+        ] = 14,
+    ) -> Result:
+        """Everything a daily briefing needs, in one call: use it instead of paging
+        index_due_soon, index_action_items and index_waiting_on.
+
+        ``sections`` holds three ranked lists, each at most ``limit`` rows, and a
+        row appears only in the first that holds it:
+
+        - ``due_soon``: a deadline from 7 days ago to ``days`` ahead, or
+          time-sensitive mail from the last ``recent_days``; overdue first, then
+          by deadline;
+        - ``action_items``: needs an action from you; by importance, then urgency;
+        - ``waiting_on_me``: someone awaits your reply; ranked the same way.
+
+        The last two hold mail from the last ``recent_days``, or with a deadline
+        from 7 days ago to 30 days ahead. ``counts`` gives each section's size
+        before ``limit``, and the rows per domain and per source across all
+        three. Rows carry no long free text; a flagged row's ``one_line`` is
+        withheld. The result stays under 24 KiB as text: past that the
+        lowest-ranked rows are dropped, ``truncated`` is true and ``dropped``
+        says how many.
+        """
+        specs = _briefing_specs(now(), days, recent_days)
+        found, complete = {}, True
+        with open_store() as store:
+            for name, (queries, key) in specs.items():
+                merged: dict[str, dict[str, Any]] = {}
+                for spec in queries:
+                    page = store.query(spec, scan)
+                    complete = complete and page.next_cursor is None
+                    for row in page.rows:
+                        merged.setdefault(row["id"], row)
+                found[name] = sorted(merged.values(), key=key)
+        sections = _distinct(found)
+        counts = _counts(sections, complete)
+        listed = {
+            name: [{c: row.get(c) for c in BRIEFING_FIELDS} for row in rows[:limit]]
+            for name, rows in sections.items()
+        }
+        total = sum(map(len, sections.values()))
+
+        def size(kept: Mapping[str, list[dict[str, Any]]], dropped: int) -> int:
+            return _size(wrap(
+                [], server=_FRAME_NAME, tool="index_briefing", tier=_FRAME_NAME,
+                untrusted_fields=BRIEFING_UNTRUSTED, total=total, truncated=dropped > 0,
+                sections=kept, withhold=BRIEFING_WITHHOLD,
+                extra={"counts": counts, "dropped": dropped},
+            ))
+
+        kept, dropped = _fit(listed, size)
+        return Result(
+            [], total=total, truncated=dropped > 0, sections=kept,
+            extra={"counts": counts, "dropped": dropped},
+        )
+
+    scan = msgspec.structs.replace(presets, max_limit=BRIEFING_SCAN)
     return [
         (index_action_items, UNTRUSTED_COLS),
         (index_due_soon, UNTRUSTED_COLS),
@@ -494,7 +608,122 @@ def _index_presets(policy: QueryPolicy, open_store: OpenStore, embed: Embed, now
         (index_by_domain, UNTRUSTED_COLS),
         (index_summary, UNTRUSTED_COLS),
         (index_stats, ()),
+        (index_briefing, BRIEFING_UNTRUSTED, BRIEFING_WITHHOLD),
     ]
+
+
+# --- the briefing ----------------------------------------------------------------------
+
+Key = Callable[[Mapping[str, Any]], tuple]
+
+
+def _briefing_specs(
+    moment: datetime, days: int, recent_days: int
+) -> dict[str, tuple[tuple[QuerySpec, ...], Key]]:
+    """Each briefing section's queries, whose rows it merges, and its sort key.
+
+    Filters combine with AND, so a section matching one window OR another is
+    two queries, each at the most rows a briefing scans. The windows are
+    absolute dates and times from *moment*, so every query shares one "now".
+    """
+    today = moment.astimezone(UTC).date()
+    recent = Range(since=(moment - timedelta(days=recent_days)).isoformat())
+
+    def deadlines(ahead: timedelta) -> Range:
+        # A date-only end at midnight excludes its day, so the next day bounds it.
+        return Range(
+            since=(today - BRIEFING_OVERDUE).isoformat(),
+            until=(today + ahead + timedelta(days=1)).isoformat(),
+        )
+
+    due, ahead = deadlines(timedelta(days=days)), deadlines(BRIEFING_AHEAD)
+
+    def spec(order: str, **filters: Any) -> QuerySpec:
+        return QuerySpec(filters=Filters(**filters), order=order, limit=BRIEFING_SCAN)
+
+    return {
+        "due_soon": (
+            (spec("deadline", deadline=due), spec("deadline", time_sensitive=True, sent_at=recent)),
+            deadline_key,
+        ),
+        "action_items": (
+            (spec("priority", requires_action=True, sent_at=recent),
+             spec("priority", requires_action=True, deadline=ahead)),
+            priority_key,
+        ),
+        "waiting_on_me": (
+            (spec("priority", waiting_on="me", sent_at=recent),
+             spec("priority", waiting_on="me", deadline=ahead)),
+            priority_key,
+        ),
+    }
+
+
+def _distinct(found: Mapping[str, list[dict[str, Any]]]) -> dict[str, list[dict[str, Any]]]:
+    """Each section's rows less those a higher section (``BRIEFING_SECTIONS``) holds."""
+    seen: set[str] = set()
+    sections = {}
+    for name in BRIEFING_SECTIONS:
+        sections[name] = [row for row in found[name] if row["id"] not in seen]
+        seen.update(row["id"] for row in sections[name])
+    return sections
+
+
+def _tally(values: Iterable[str | None]) -> dict[str, int]:
+    """How often each value occurs, most first (ties by value); none is ``unknown``.
+
+    Only the ``BRIEFING_TOP`` most common are named; the rest sum under
+    ``BRIEFING_OTHER``, last.
+    """
+    counted = Counter(value or "unknown" for value in values)
+    ranked = sorted(counted.items(), key=lambda kv: (-kv[1], kv[0]))
+    top, rest = ranked[:BRIEFING_TOP], ranked[BRIEFING_TOP:]
+    return dict(top) | ({BRIEFING_OTHER: sum(n for _, n in rest)} if rest else {})
+
+
+def _counts(sections: Mapping[str, list[dict[str, Any]]], complete: bool) -> dict[str, Any]:
+    """Each section's size, and the rows per domain and per source across them."""
+    rows = [row for listed in sections.values() for row in listed]
+    return {
+        **{name: len(listed) for name, listed in sections.items()},
+        "by_domain": _tally(row.get("domain") for row in rows),
+        "by_source": _tally(row.get("source") for row in rows),
+        "complete": complete,
+    }
+
+
+def _size(value: Any) -> int:
+    """*value*'s size, in bytes, as FastMCP serializes a tool's result to text."""
+    return len(pydantic_core.to_json(value, fallback=str, indent=2))
+
+
+def _fit(
+    sections: Mapping[str, list[dict[str, Any]]],
+    size: Callable[[Mapping[str, list[dict[str, Any]]], int], int],
+) -> tuple[dict[str, list[dict[str, Any]]], int]:
+    """*sections* less their lowest-ranked rows, until the envelope fits
+    ``BRIEFING_MAX_BYTES``, and how many rows were dropped.
+
+    The lowest-ranked row is the deepest in its section, the lower section first
+    at a tie, so every section keeps its top rows. ``size(kept, dropped)`` is the
+    envelope's size; it only shrinks as rows are dropped, so the fewest drops
+    that fit are found by bisection. If no rows fit, none are kept.
+    """
+    lowest_first = sorted(
+        ((i, rank, name) for rank, name in enumerate(BRIEFING_SECTIONS)
+         for i in range(len(sections[name]))),
+        reverse=True,
+    )
+
+    def without(dropped: int) -> dict[str, list[dict[str, Any]]]:
+        gone = Counter(name for _, _, name in lowest_first[:dropped])
+        return {name: rows[: len(rows) - gone[name]] for name, rows in sections.items()}
+
+    dropped = bisect_left(
+        range(len(lowest_first)), True,
+        key=lambda n: size(without(n), n) <= BRIEFING_MAX_BYTES,
+    )
+    return without(dropped), dropped
 
 
 # --- the sensitive tier's presets -------------------------------------------------
@@ -713,7 +942,8 @@ _PROJECTED = _Surface(
         "Sanitized priority signal over the owner's private corpus. You receive "
         "secret-free summaries and classification only — never raw message bodies. "
         "Use it to build a prioritized plan: what needs action, what's due, what's "
-        "awaiting a reply. Rows carry a uri, when one exists, that opens the message "
+        "awaiting a reply. For a daily briefing, call index_briefing once rather "
+        "than paging the other presets. Rows carry a uri, when one exists, that opens the message "
         "for the owner. query, search, aggregate and get take a structured spec "
         "for anything the index_* presets do not cover, such as counts per month."
     ),
@@ -734,13 +964,16 @@ def _registrar(mcp: FastMCP, tier: str) -> Callable[[Callable[..., Result], tupl
     """Register tools on *mcp*: each result enveloped, each call audited."""
     audit = audited(server=mcp.name, tier=tier)
 
-    def register(fn: Callable[..., Result], untrusted: tuple[str, ...]) -> None:
+    def register(
+        fn: Callable[..., Result], untrusted: tuple[str, ...], withhold: tuple[str, ...] = ()
+    ) -> None:
         @functools.wraps(fn)
         def tool(**kwargs: Any) -> dict[str, Any]:
             r = fn(**kwargs)
             return wrap(
                 r.rows, server=mcp.name, tool=fn.__name__, tier=tier, untrusted_fields=untrusted,
                 total=r.total, next_cursor=r.next_cursor, truncated=r.truncated,
+                sections=r.sections, withhold=withhold, extra=r.extra,
             )
 
         # The description is the docstring, which nesting indents.
@@ -790,8 +1023,8 @@ def build_mcp(
         *_generic(surface, t.name, t.policy, opener, embed, now),
         *surface.presets(t.policy, opener, embed, now),
     )
-    for fn, untrusted in tools:
-        register(fn, untrusted)
+    for fn, untrusted, *withhold in tools:
+        register(fn, untrusted, *withhold)
     return mcp
 
 

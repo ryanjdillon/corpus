@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, date, datetime, timedelta, timezone
+from unittest.mock import create_autospec
 
 import psycopg
 import pytest
@@ -22,7 +23,7 @@ from corpus.query import (
     parse_spec,
 )
 from corpus.sanitize import DEFAULT_POLICY, Policy
-from corpus.sanitized_store import COLS, SanitizedStore
+from corpus.sanitized_store import COLS, SanitizedStore, deadline_key, priority_key
 from corpus.store import DocumentStore, to_document
 
 pytestmark = pytest.mark.integration
@@ -426,6 +427,72 @@ def test_the_presets_run_on_the_reader(reader_dsn):
         ("domain", "banking", 2), ("domain", "other", 2), ("domain", "travel", 6),
         ("domain", "work", 2), ("disposition", "keep", 12),
     }
+
+
+#: Rows whose importance or time_sensitive is NULL, each tied with a ``ROWS``
+#: row on every earlier sort column, so the keys must place NULL as the SQL does.
+UNRANKED = [
+    ("u1", {"importance": None, "time_sensitive": None, "sent_at": _at("2025-03-02T10:00"),
+            "deadline": date(2025, 3, 10)}),
+    ("u2", {"importance": None, "time_sensitive": True, "sent_at": None}),
+    ("u3", {"importance": "high", "time_sensitive": None, "sent_at": _at("2025-03-02T10:00"),
+            "deadline": date(2025, 3, 10)}),
+    ("u4", {"importance": None, "time_sensitive": False, "sent_at": None}),
+    ("u5", {"importance": "medium", "time_sensitive": None, "sent_at": None}),
+]
+
+
+@pytest.mark.parametrize(("order", "key"), [("priority", priority_key), ("deadline", deadline_key)])
+def test_the_python_sort_keys_agree_with_the_sql_orders(sanitized, reader, order, key):
+    for id_, overrides in UNRANKED:
+        sanitized.save_message({c: None for c in COLS} | {"id": id_} | overrides, _vec(1.0))
+    rows = reader.query(QuerySpec(order=order, limit=100), SANITIZED_POLICY).rows
+    assert {id_ for id_, _ in UNRANKED} <= set(_ids(rows))
+    assert _ids(sorted(rows, key=key)) == _ids(rows)
+
+
+def _briefing(reader_dsn):
+    """The index on the reader, its clock at ``NOW``: each briefing's ids per section."""
+    registry = tiers.Registry(tiers.DEFAULT, settings, {"CORPUS_INDEX_DATABASE_URL": reader_dsn})
+    clock = create_autospec(serving.now_utc, return_value=NOW)
+    index = serving.build_mcp("sanitized", config=registry.tier("sanitized"), now=clock)
+
+    def sections(**args) -> dict[str, list[str]]:
+        out = asyncio.run(index.call_tool("index_briefing", args))[1]
+        return {name: _ids(rows) for name, rows in out["sections"].items()}
+
+    return sections
+
+
+def test_the_briefing_reads_only_its_windows(reader_dsn):
+    sections = _briefing(reader_dsn)
+
+    # b1's deadline is 5 days ahead; b2's passed 20 days ago, and the 2025 action
+    # items (w1, w2) and time-sensitive t4 are long past every window.
+    assert sections(days=5) == {"due_soon": ["b1"], "action_items": [], "waiting_on_me": []}
+    assert sections(days=4)["due_soon"] == []
+
+
+def test_the_briefing_windows_include_their_lower_edge(sanitized, reader_dsn):
+    today, edge = NOW.date(), NOW - timedelta(days=14)
+    for id_, overrides in [
+        ("due-7", {"deadline": today - timedelta(days=7)}),
+        ("due-8", {"deadline": today - timedelta(days=8)}),
+        ("urgent-edge", {"time_sensitive": True, "sent_at": edge}),
+        ("urgent-past", {"time_sensitive": True, "sent_at": edge - timedelta(seconds=1)}),
+        ("act-edge", {"requires_action": True, "sent_at": edge}),
+        ("act-past", {"requires_action": True, "sent_at": edge - timedelta(seconds=1)}),
+        ("act-due-7", {"requires_action": True, "deadline": today - timedelta(days=7)}),
+        ("act-due-8", {"requires_action": True, "deadline": today - timedelta(days=8)}),
+    ]:
+        row = {c: None for c in COLS} | DEFAULTS | {"id": id_, "sent_at": None} | overrides
+        sanitized.save_message(row, _vec(1.0))
+
+    found = _briefing(reader_dsn)(days=1, recent_days=14)
+
+    # act-due-7 is in due_soon's window too, so it is listed there
+    assert sorted(found["due_soon"]) == ["act-due-7", "due-7", "urgent-edge"]
+    assert found["action_items"] == ["act-edge"]
 
 
 # --- the sensitive tier: the documents table's JSONB meta ---

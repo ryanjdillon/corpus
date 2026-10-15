@@ -10,9 +10,10 @@ cannot retrieve them.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Collection, Iterator
+from collections.abc import Callable, Collection, Iterator, Mapping
 from contextlib import contextmanager, suppress
 from dataclasses import replace
+from datetime import date
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 import psycopg
@@ -112,6 +113,31 @@ PRIORITY = (
     "CASE importance WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END, "
     "time_sensitive DESC NULLS LAST, sent_at DESC NULLS LAST, id"
 )
+_IMPORTANCE_RANK = {"high": 0, "medium": 1}
+
+
+def priority_key(row: Mapping[str, Any]) -> tuple:
+    """:data:`PRIORITY` as a sort key over served rows.
+
+    It merges the rows of several queries into the order one query would give.
+    A store test holds it to the SQL, so the two cannot drift apart.
+    """
+    sent, urgent = row.get("sent_at"), row.get("time_sensitive")
+    return (
+        _IMPORTANCE_RANK.get(row.get("importance"), 2),
+        2 if urgent is None else 0 if urgent else 1,
+        sent is None,
+        -sent.timestamp() if sent is not None else 0.0,
+        row["id"],
+    )
+
+
+def deadline_key(row: Mapping[str, Any]) -> tuple:
+    """The ``deadline`` order (deadline ascending, none last, then
+    :data:`PRIORITY`) as a sort key over served rows, like :func:`priority_key`."""
+    deadline = row.get("deadline")
+    return (deadline is None, deadline or date.min, *priority_key(row))
+
 
 def layout(schema: str) -> Layout:
     """The query model's view of *schema*'s ``messages`` table: each dimension's SQL."""

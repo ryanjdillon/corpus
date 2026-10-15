@@ -248,12 +248,55 @@ names, arguments and results as before:
   queries use. Its row cap is `serving.MAX_LIMIT` (100), the most a preset
   page returns; the store fetches the one row beyond a page itself, to learn
   whether another page exists.
+- **The briefing** (`corpus-index`): `index_briefing(days=3, limit=15,
+  recent_days=14)`, one compact call for a daily briefing. Call it once per
+  briefing instead of paging `index_due_soon`, `index_action_items` and
+  `index_waiting_on`; see [below](#the-briefing).
 - **Sensitive** (`corpus`): `corpus_query` (a `newest` spec over
   `DocumentStore.query_spec`, whose keyset position the cursor carries),
   `corpus_search` (vector search, its `query` bounded like `search`'s `text`),
   `corpus_get` and `corpus_stats`. `corpus_query`'s `after` and `before`, like
   `since`, may be a duration before now; each is resolved on the first page
   and frozen in the cursor, as the generic tools' relative bounds are.
+
+### The briefing
+
+`index_briefing` answers a daily briefing in one call, bounded in size. The
+other presets rank across every year of mail, so a briefing agent pages them
+and filters what it gets, which can run to many calls and a megabyte of rows.
+The briefing windows its queries instead, so the rows it ranks are current:
+
+| Section | Holds | Ranked by |
+| --- | --- | --- |
+| `due_soon` | A deadline from 7 days ago to `days` ahead (at most 31), or time-sensitive mail sent in the last `recent_days` (at most 90) | Deadline ascending, so overdue first; none last; then the priority order |
+| `action_items` | `requires_action`, sent in the last `recent_days` or with a deadline from 7 days ago to 30 days ahead | The priority order, as `index_action_items` |
+| `waiting_on_me` | `waiting_on = me` (the sender awaits the owner's reply, as `index_waiting_on(who="me")`), in the same windows | The priority order |
+
+A row is listed only in the highest section that holds it, in that order.
+Filters combine with AND, so each section is two queries, one per window,
+merged by id and sorted with `sanitized_store.priority_key` or `deadline_key`:
+the `priority` and `deadline` orders as Python sort keys, kept beside the SQL
+they mirror and held to it by a store test. Each query reads at most
+`serving.BRIEFING_SCAN` (1000) rows, in its section's order.
+
+Each section is cut to `limit` rows (at most 50). A row carries only `id`,
+`source`, `sent_at`, `domain`, `category`, `importance`, `action_type`,
+`deadline`, `waiting_on`, `one_line` and `flags`: no `action_summary`,
+`organizations` or `facts`. `one_line` is its only untrusted field, and a row
+flagged `instruction_like` withholds it (see
+[MCP results](mcp-results.md#the-briefing)). The result also carries:
+
+| Key | Meaning |
+| --- | --- |
+| `counts` | Each section's rows before `limit` (after de-duplication), the rows per `domain` and per `source` across the three (`unknown` for none), and `complete`: false when a query reached its scan ceiling, so the counts are a floor. Each of `by_domain` and `by_source` names at most `serving.BRIEFING_TOP` (20) values, the most common; the rest sum under `(other)`, so the counts alone cannot outgrow the size cap. |
+| `total` | The rows across the sections before `limit`. |
+| `truncated`, `dropped` | The envelope is kept within `serving.BRIEFING_MAX_BYTES` (24 KiB) as FastMCP serializes it to text content (`indent=2` JSON). Past that the lowest-ranked rows are dropped, the deepest in any section first (the lower section first at a tie), so each section keeps its top rows; `truncated` is then true and `dropped` says how many. The call never fails for size. |
+
+"Today" and "now" come from the server's injected clock, in UTC.
+
+The cap is on the text, but the wire carries the envelope twice: FastMCP sends
+a tool's result as that text content and again as compact `structuredContent`.
+A full briefing is about 1.9 times the cap on the wire, under 50 KB.
 
 The index reads through its tier's reader DSN (`CORPUS_INDEX_DATABASE_URL` by
 default) as a read-only role. It opens
