@@ -244,6 +244,20 @@ def _mapping_strings(value: Any) -> Iterable[str]:
             yield from _mapping_strings(v)
 
 
+#: What a withheld field reads as in a row flagged ``instruction_like``.
+WITHHELD = "[withheld: instruction_like]"
+
+
+def mark(
+    row: Mapping[str, Any], untrusted_fields: Iterable[str], withhold: Iterable[str] = ()
+) -> dict[str, Any]:
+    """*row* with its ``flags``; in a flagged row each *withhold* field that holds
+    a value reads :data:`WITHHELD` instead. The flags are from the text as stored."""
+    found = flags(row, untrusted_fields)
+    held = {f: WITHHELD for f in withhold if found and row.get(f) is not None}
+    return {**row, **held, "flags": found}
+
+
 def wrap(
     rows: Iterable[Mapping[str, Any]],
     *,
@@ -254,17 +268,28 @@ def wrap(
     total: int | None = None,
     next_cursor: str | None = None,
     truncated: bool | None = None,
+    sections: Mapping[str, Iterable[Mapping[str, Any]]] | None = None,
+    withhold: Iterable[str] = (),
+    extra: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Wrap one page of *rows* as a ``corpus.result/v1`` envelope.
 
     ``count`` is the rows on this page; ``total`` is the full match count when it
     is cheap to know, else ``None``. ``next_cursor`` is ``None`` on the last page.
-    ``truncated`` is given only by a count that is not paged (an aggregate): it
-    says more groups exist than were returned, and is omitted everywhere else.
+    ``truncated`` is given only by a result that is not paged (an aggregate, a
+    briefing): it says more existed than were returned, and is omitted everywhere
+    else. *sections* are named lists of rows, marked like *rows* and counted in
+    ``count``; *withhold* names the fields a flagged row withholds (see
+    :func:`mark`). *extra* adds tool-specific keys before the rows.
     """
     fields = sorted(untrusted_fields)
-    out = [{**row, "flags": flags(row, fields)} for row in rows]
-    extra = {} if truncated is None else {"truncated": truncated}
+    held = tuple(withhold)
+    out = [mark(row, fields, held) for row in rows]
+    marked = {
+        name: [mark(row, fields, held) for row in group]
+        for name, group in (sections or {}).items()
+    }
+    more = {} if truncated is None else {"truncated": truncated}
     return {
         "kind": KIND,
         "server": server,
@@ -273,11 +298,13 @@ def wrap(
         "untrusted": bool(fields),
         "untrusted_fields": fields,
         "notice": NOTICE,
-        "count": len(out),
+        "count": len(out) + sum(len(group) for group in marked.values()),
         "total": total,
         "next_cursor": next_cursor,
-        **extra,
+        **more,
+        **(extra or {}),
         "rows": out,
+        **({} if sections is None else {"sections": marked}),
     }
 
 
