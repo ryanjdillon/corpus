@@ -189,7 +189,9 @@ and ``documents`` an open DocumentStore, whose lifecycles the caller owns.
             # CORPUS_AUDIT_MODEL), e.g. one with a smaller context window. Its
             # per-record failure must not discard the enrichment or abort the run:
             # the document would then never be marked done and every later run
-            # would fail on it again.
+            # would fail on it again. An unavailable audit endpoint (outage, spent
+            # budget) still aborts the run; this document's enrichment is then
+            # dropped and redone with it on the next run.
             try:
                 result = _audit_windowed(audit, text, content, candidates, audit_model)
             except EnrichError as exc:

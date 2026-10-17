@@ -138,6 +138,110 @@ def test_server_error_retries_then_raises_unavailable(client, monkeypatch):
     assert client.post.call_count == 3  # enrich_retries attempts
 
 
+def test_rate_limit_retries_then_raises_unavailable_not_a_rejection(client, monkeypatch):
+    # A 429 is the endpoint's state, not the document's: an EnrichError here would
+    # record the document as rejected, and no later run would send it again.
+    monkeypatch.setattr(enricher_mod.settings, "enrich_retries", 3)
+    monkeypatch.setattr(enricher_mod.time, "sleep", lambda *_: None)
+    client.post.return_value = _response(429, text="budget exhausted")
+
+    with pytest.raises(EnrichUnavailableError):
+        Enricher(model="local", client=client).enrich("x")
+    assert client.post.call_count == 3
+
+
+def test_rate_limit_recovers_within_the_retry_budget(client, monkeypatch):
+    monkeypatch.setattr(enricher_mod.time, "sleep", lambda *_: None)
+    client.post.side_effect = [
+        _response(429, text="slow down"),
+        _response(200, json_body=_COMPLETION),
+    ]
+
+    doc = Enricher(model="local", client=client).enrich("x")
+
+    assert doc.category is Category.personal
+    assert client.post.call_count == 2
+
+
+def _one_wait(client, monkeypatch, first: httpx.Response) -> list[float]:
+    """Waits taken when *first* is followed by a success, under a 4 s cap."""
+    waits: list[float] = []
+    monkeypatch.setattr(enricher_mod.settings, "enrich_retry_max_wait", 4.0)
+    monkeypatch.setattr(enricher_mod.time, "sleep", waits.append)
+    client.post.side_effect = [first, _response(200, json_body=_COMPLETION)]
+    Enricher(model="local", client=client).enrich("x")
+    return waits
+
+
+def test_rate_limit_waits_at_least_retry_after_within_the_cap(client, monkeypatch):
+    first = _response(429, text="slow down", headers={"retry-after": "3"})
+
+    [wait] = _one_wait(client, monkeypatch, first)
+
+    assert 3.0 <= wait <= 4.0  # jitter goes on top of the minimum, still capped
+
+
+@pytest.mark.parametrize(
+    ("headers", "low", "high"),
+    [
+        ({}, 0.5, 1.0),  # no Retry-After: the first backoff step, jittered
+        ({"retry-after": "Wed, 21 Oct 2026 07:28:00 GMT"}, 0.5, 1.0),  # a date: backoff
+        ({"retry-after": "0"}, 0.0, 0.0),
+    ],
+    ids=["absent", "http-date", "zero"],
+)
+def test_rate_limit_without_a_usable_retry_after_backs_off(client, monkeypatch, headers, low, high):
+    first = _response(429, text="slow down", headers=headers)
+
+    [wait] = _one_wait(client, monkeypatch, first)
+
+    assert low <= wait <= high
+
+
+def test_retry_after_on_a_server_error_is_honoured(client, monkeypatch):
+    first = _response(503, text="overloaded", headers={"retry-after": "2"})
+
+    [wait] = _one_wait(client, monkeypatch, first)
+
+    assert 2.0 <= wait <= 3.0
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [{"x-envoy-ratelimited": "true"}, {"retry-after": "600"}, {"x-ratelimit-reset": "3600"}],
+    ids=["gateway-budget", "retry-after-past-cap", "reset-past-cap"],
+)
+def test_a_spent_budget_is_unavailable_at_once(client, monkeypatch, headers):
+    # Retrying cannot outlast a daily budget: abort the run on the first 429.
+    monkeypatch.setattr(enricher_mod.settings, "enrich_retry_max_wait", 60.0)
+    monkeypatch.setattr(enricher_mod.time, "sleep", lambda *_: pytest.fail("must not wait"))
+    client.post.return_value = _response(429, text="budget exhausted", headers=headers)
+
+    with pytest.raises(EnrichUnavailableError):
+        Enricher(model="local", client=client).enrich("x")
+    assert client.post.call_count == 1
+
+
+@pytest.mark.parametrize("status", [408, 425])
+def test_timeout_and_too_early_are_retried(client, monkeypatch, status):
+    monkeypatch.setattr(enricher_mod.time, "sleep", lambda *_: None)
+    client.post.side_effect = [_response(status), _response(200, json_body=_COMPLETION)]
+
+    Enricher(model="local", client=client).enrich("x")
+
+    assert client.post.call_count == 2
+
+
+@pytest.mark.parametrize("status", [401, 403, 404])
+def test_key_or_route_errors_are_unavailable_not_rejections(client, status):
+    # Every document would fail the same way; rejecting each one would bury them.
+    client.post.return_value = _response(status, text="no")
+
+    with pytest.raises(EnrichUnavailableError):
+        Enricher(model="local", client=client).enrich("x")
+    assert client.post.call_count == 1
+
+
 def test_server_error_recovers_within_the_retry_budget(client, monkeypatch):
     monkeypatch.setattr(enricher_mod.time, "sleep", lambda *_: None)
     client.post.side_effect = [

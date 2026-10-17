@@ -216,6 +216,9 @@ _ATTRIBUTION_HEADERS = (
     "server",
     "via",
     "retry-after",
+    "x-envoy-ratelimited",
+    "x-ratelimit-remaining",
+    "x-ratelimit-reset",
     "x-envoy-upstream-service-time",
     "x-request-id",
 )
@@ -315,6 +318,41 @@ def decode_stalled[T](content: str, type_: type[T], unreached: dict[str, Any]) -
         return None
 
 
+#: Statuses that are the endpoint's state rather than the request's fault, so a
+#: retry can succeed: a timeout, "too early", and a rate limit.
+_RETRYABLE_CLIENT_STATUS = frozenset({408, 425, 429})
+
+#: Statuses that say the key or route is wrong (unauthenticated, forbidden, no
+#: such route or model). Every document would fail the same way, so the run is
+#: aborted at once instead of recording each document as rejected.
+_UNAVAILABLE_CLIENT_STATUS = frozenset({401, 403, 404})
+
+
+def _retry_after(exc: Exception | None) -> float | None:
+    """Seconds a numeric ``Retry-After`` (or ``x-ratelimit-reset``) asks for, else None."""
+    if not isinstance(exc, httpx.HTTPStatusError):
+        return None
+    for header in ("retry-after", "x-ratelimit-reset"):
+        value = exc.response.headers.get(header, "")
+        if value.isdigit():
+            return float(value)
+    return None
+
+
+def _budget_spent(exc: httpx.HTTPStatusError, max_wait: float) -> bool:
+    """Whether a 429 is a limit that retrying within this run cannot outlast.
+
+    Envoy marks its own rate-limit responses with ``x-envoy-ratelimited``; on the
+    gateway that is a client's token budget, which resets daily. An endpoint that
+    names a wait longer than the per-attempt cap is saying the same. A bare 429 (a
+    provider's short-term limit) is still retried.
+    """
+    if "x-envoy-ratelimited" in exc.response.headers:
+        return True
+    after = _retry_after(exc)
+    return after is not None and after > max_wait
+
+
 def chat_completion(client: httpx.Client, payload: dict) -> str:
     """POST one chat completion and return the assistant message content.
 
@@ -323,11 +361,20 @@ def chat_completion(client: httpx.Client, payload: dict) -> str:
     not die with it: each such failure is retried with exponential backoff, capped
     per wait at ``CORPUS_ENRICH_RETRY_MAX_WAIT``, over ``CORPUS_ENRICH_RETRIES``
     attempts. Only once that budget is spent is the endpoint called unavailable.
-    Every such failure is logged with its attribution detail (see ``_describe``),
-    since riding one out hides which layer shed the request.
+    A numeric ``Retry-After`` replaces the backoff for that wait. Every such
+    failure is logged with its attribution detail (see ``_describe``), since riding
+    one out hides which layer shed the request.
 
     A 4xx is this request's own fault -- retrying it would only repeat it -- so it
-    surfaces immediately as an ``EnrichError``.
+    surfaces immediately as an ``EnrichError``, which records the document as
+    rejected by the model. The exceptions are the endpoint's state, not the
+    document's, and must not be recorded that way, or later runs would never send
+    the document again:
+
+    - 408, 425 and 429 are retried like a 5xx. A 429 from a spent budget (see
+      ``_budget_spent``) raises ``EnrichUnavailableError`` at once instead of
+      waiting out every attempt.
+    - 401, 403 and 404 raise ``EnrichUnavailableError`` at once.
     """
     # Both knobs are clamped: a zero or negative value is a misconfiguration, and
     # degrading to "try once" / "do not wait" beats failing the request with a
@@ -346,18 +393,29 @@ def chat_completion(client: httpx.Client, payload: dict) -> str:
             # as unparseable, instead of failing the run on a None.
             return resp.json()["choices"][0]["message"]["content"] or ""
         except httpx.HTTPStatusError as exc:
-            if exc.response.status_code < 500:
-                raise EnrichError(f"{exc.response.status_code}: {exc.response.text[:200]}") from exc
+            status = exc.response.status_code
+            if status in _UNAVAILABLE_CLIENT_STATUS or (
+                status == 429 and _budget_spent(exc, max_wait)
+            ):
+                detail = _describe(exc, time.monotonic() - started)
+                raise EnrichUnavailableError(detail) from exc
+            if status < 500 and status not in _RETRYABLE_CLIENT_STATUS:
+                raise EnrichError(f"{status}: {exc.response.text[:200]}") from exc
             last = exc
         except httpx.TransportError as exc:  # timeouts, connection resets
             last = exc
         detail = _describe(last, time.monotonic() - started)
         if attempt + 1 < attempts:
-            wait = min(2**attempt, max_wait)
+            after = _retry_after(last)
+            wait = min(2**attempt if after is None else after, max_wait)
             # Half the wait is jittered: concurrent workers hit the blip together,
             # and backing off in lockstep would re-converge on the endpoint in one
-            # burst the moment it recovers.
-            wait = wait / 2 + random.uniform(0, wait / 2)
+            # burst the moment it recovers. A Retry-After is a minimum, so its
+            # jitter goes on top, still within the cap.
+            if after is None:
+                wait = wait / 2 + random.uniform(0, wait / 2)
+            else:
+                wait = min(wait + random.uniform(0, wait / 2), max_wait)
             log.warning(
                 "endpoint unavailable (attempt %d/%d), retrying in %.1fs: %s",
                 attempt + 1,

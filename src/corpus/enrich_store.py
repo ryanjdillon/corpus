@@ -115,9 +115,17 @@ class EnrichStore(Store):
         )
 
     def rejected_ids(self, model: str) -> set[str]:
-        """Return doc ids that *model* rejected, so a run on it can pass them over."""
+        """Return doc ids that *model* rejected, so a run on it can pass them over.
+
+        A 429 is a rate limit, not a rejection, and is no longer recorded as one;
+        rows recorded for it before that are ignored, so those documents are
+        enriched again.
+        """
         rows = self._read(
-            f"SELECT doc_id FROM {self._table} WHERE rejected_model = %s", (model,)
+            f"SELECT doc_id FROM {self._table} "
+            "WHERE rejected_model = %s "
+            "AND (rejected_reason IS NULL OR rejected_reason NOT LIKE '429:%%')",
+            (model,),
         )
         return {row[0] for row in rows}
 

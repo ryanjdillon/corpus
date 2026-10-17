@@ -63,6 +63,16 @@ def test_rejection_is_per_model_and_cleared_by_a_later_enrichment(pg):
         assert est.enriched_ids() == {"d1"}
 
 
+def test_a_rate_limit_recorded_as_a_rejection_is_not_passed_over(pg):
+    # Rows from before a 429 stopped being recorded as a rejection: those
+    # documents must be sent again rather than skipped for good.
+    with EnrichStore() as est:
+        est.save_rejection("limited", "429: budget exhausted", "local")
+        est.save_rejection("too-long", "400: too long", "local")
+
+        assert est.rejected_ids("local") == {"too-long"}
+
+
 def test_upsert_replaces_enrichment_only(pg):
     with EnrichStore() as est:
         est.save_enrichment("d1", {"one_line": "a"}, "local", "sv1")
