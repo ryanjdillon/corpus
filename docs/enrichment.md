@@ -32,7 +32,10 @@ unparseable output) is counted as skipped and recorded against the model that
 rejected it, with the reason. Later runs on that model pass the document over
 instead of re-sending it every time; `--retry-rejected` sends them again, and a
 different model is always given a try. A later successful enrichment clears the
-record. If the secret audit fails for a document, the enrichment is kept and the
+record. A 429, or a key or route error (401, 403, 404), is not a rejection: it
+is the endpoint's state, so it is retried or aborts the run like an outage (see
+[Configuration](configuration.md)), and the document is sent again on the next
+run. Rejections recorded for a 429 by earlier versions are ignored. If the secret audit fails for a document, the enrichment is kept and the
 audit is counted as `audit_failed`; configuring the audit model's
 `context_tokens` avoids the overflow case (see below).
 

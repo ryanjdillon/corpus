@@ -103,9 +103,14 @@ connections, then recovers within minutes. Rather than abort the pass, the
 enricher retries such a failure in-process with exponential backoff — capped per
 wait at `CORPUS_ENRICH_RETRY_MAX_WAIT` and jittered, so concurrent workers do not
 return in one burst — over `CORPUS_ENRICH_RETRIES` attempts; the defaults wait
-out roughly four minutes of outage before giving up with
-`EnrichUnavailableError`. A 4xx is never retried: it is the request's own fault,
-and the record is skipped instead.
+out two to four minutes of outage before giving up with
+`EnrichUnavailableError`, and longer when the endpoint sends a `Retry-After`
+(each wait still capped). 408, 425 and a 429 are retried the same way, waiting
+at least a numeric `Retry-After`. A 429 that cannot be outlasted -- a gateway
+budget (`x-envoy-ratelimited`) or a `Retry-After`/`x-ratelimit-reset` past the
+cap -- gives up at once, as do 401, 403 and 404 (a key or route problem every
+document would hit). Any other 4xx is never retried: it is the request's own
+fault, and the record is skipped instead.
 
 Raise `CORPUS_ENRICH_RETRIES` where the endpoint shares a GPU with other work and
 can be gone for longer; enrichment is resumable either way, so a run that does

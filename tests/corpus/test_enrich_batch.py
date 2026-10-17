@@ -15,7 +15,7 @@ from corpus import secret_audit, telemetry
 from corpus.config import settings
 from corpus.enrich_batch import run_audit, run_enrich
 from corpus.enrich_store import EnrichStore
-from corpus.enricher import Enricher, EnrichError
+from corpus.enricher import Enricher, EnrichError, EnrichUnavailableError
 from corpus.enrichment import (
     RECOVERED_MARKER,
     RECOVERED_SCHEMA_VERSION,
@@ -393,6 +393,26 @@ def test_bad_record_is_skipped_not_fatal(store, enricher, documents, key_doc, cl
 
     assert r == {"scanned": 2, "enriched": 0, "recovered": 0, "instruction_like": 0, "audited": 0, "audit_failed": 0, "skipped": 2, "ineligible": 0, "declined": 0, "undeclared": 0}
     store.save_enrichment.assert_not_called()
+
+
+def test_an_unavailable_endpoint_aborts_without_recording_rejections(
+    store, enricher, audit, documents
+):
+    # A spent budget or outage is the endpoint's state: the run must stop, and no
+    # document may be recorded as rejected, or later runs would pass it over.
+    def reply(text):
+        if "budget" in text:
+            raise EnrichUnavailableError("429 budget spent")
+        return Enrichment(one_line="x", abstract="y", category=Category.personal), False
+
+    enricher.enrich_reporting.side_effect = reply
+    docs = [(f"d{i}", "are we on for lunch?", MAIL) for i in range(3)]
+    docs.insert(1, ("dx", "over budget now", MAIL))
+
+    with pytest.raises(EnrichUnavailableError):
+        run_enrich(store, documents=documents(*docs), enricher=enricher, audit=audit, concurrency=2)
+
+    store.save_rejection.assert_not_called()
 
 
 def test_concurrency_one_enriches_all(store, enricher, audit, documents, key_doc, clean_doc):
