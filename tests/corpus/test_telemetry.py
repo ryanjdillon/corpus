@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import create_autospec
 
@@ -209,6 +210,8 @@ def test_every_sync_metric_is_a_gauge_of_the_last_sync(reader, sync_metrics):
 
 #: A fixed "now" for the enrich instruments' clock.
 _NOW = 1_767_225_600.0
+#: When a backlog's oldest document was ingested, a day before ``_NOW``.
+_OLDEST = datetime(2025, 12, 31, tzinfo=UTC)
 
 
 @pytest.fixture
@@ -230,23 +233,45 @@ def test_an_enrichment_that_finished_records_its_success_time_and_backlog(
     reader, enrich_metrics
 ):
     enrich_metrics.record_outcome("imap:test", None)
-    enrich_metrics.record_backlog("imap:test", 12)
+    enrich_metrics.record_backlog("imap:test", 12, _OLDEST)
 
     assert _points(reader) == {
         "corpus.enrich.unavailable": [(0, {"source": "imap:test", "reason": "none"})],
         "corpus.enrich.last_success": [(_NOW, {"source": "imap:test"})],
         "corpus.enrich.backlog": [(12, {"source": "imap:test"})],
+        "corpus.enrich.backlog_oldest": [(_OLDEST.timestamp(), {"source": "imap:test"})],
     }
+
+
+def test_an_empty_backlog_reads_as_waiting_since_the_run(reader, enrich_metrics):
+    # The newest run's timestamp, so max() across runs drops an older run's oldest.
+    enrich_metrics.record_backlog("imap:test", 0, None)
+
+    assert _points(reader) == {
+        "corpus.enrich.backlog": [(0, {"source": "imap:test"})],
+        "corpus.enrich.backlog_oldest": [(_NOW, {"source": "imap:test"})],
+    }
+
+
+def test_a_backlog_of_unknown_age_sets_no_oldest(reader, enrich_metrics, caplog):
+    # The run's time would read as fresh and hide a backlog that is waiting.
+    caplog.set_level("INFO", logger="corpus.telemetry")
+    enrich_metrics.record_backlog("imap:test", 7, None)
+    enrich_metrics.record_backlog("imap:test", 8, None)
+
+    assert _points(reader) == {"corpus.enrich.backlog": [(8, {"source": "imap:test"})]}
+    assert caplog.text.count("enrich backlog of imap:test") == 1
 
 
 def test_an_unavailable_model_records_its_reason_and_no_success(reader, enrich_metrics):
     enrich_metrics.record_outcome("imap:test", "http_503")
-    enrich_metrics.record_backlog("imap:test", 40)
+    enrich_metrics.record_backlog("imap:test", 40, _OLDEST)
 
     # No last_success: the newest success stays the one an earlier run reported.
     assert _points(reader) == {
         "corpus.enrich.unavailable": [(1, {"source": "imap:test", "reason": "http_503"})],
         "corpus.enrich.backlog": [(40, {"source": "imap:test"})],
+        "corpus.enrich.backlog_oldest": [(_OLDEST.timestamp(), {"source": "imap:test"})],
     }
 
 
@@ -254,7 +279,7 @@ def test_every_enrich_metric_is_a_gauge(reader, enrich_metrics):
     from opentelemetry.sdk.metrics.export import Gauge
 
     enrich_metrics.record_outcome("imap:test", None)
-    enrich_metrics.record_backlog("imap:test", 0)
+    enrich_metrics.record_backlog("imap:test", 0, None)
 
     data = reader.get_metrics_data()
     metrics = [m for rm in data.resource_metrics for sm in rm.scope_metrics for m in sm.metrics]
@@ -264,4 +289,5 @@ def test_every_enrich_metric_is_a_gauge(reader, enrich_metrics):
         "corpus.enrich.unavailable": "{run}",
         "corpus.enrich.last_success": "s",
         "corpus.enrich.backlog": "{document}",
+        "corpus.enrich.backlog_oldest": "s",
     }

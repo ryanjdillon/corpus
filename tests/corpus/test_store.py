@@ -1,6 +1,10 @@
+import time
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import UTC, datetime
 from unittest.mock import Mock, create_autospec
 
+import psycopg
 import pytest
 
 from corpus.enrich_batch import run_enrich
@@ -10,7 +14,7 @@ from corpus.enrichment import RECOVERED_SCHEMA_VERSION, SCHEMA_VERSION, Category
 from corpus.models import Classification, Record
 from corpus.secret_audit import audit_secrets
 from corpus.sources import ImapSource, Registry
-from corpus.store import DocumentStore, get_cursor, set_cursor, to_document
+from corpus.store import Backlog, DocumentStore, get_cursor, set_cursor, to_document
 
 pytestmark = pytest.mark.integration
 
@@ -185,15 +189,242 @@ def test_iter_enriched_closed_early_releases_its_cursor(documents):
     assert len(list(documents.iter_enriched())) == 2
 
 
+def _ingested_at(dsn: str) -> dict[str, datetime]:
+    """Every stored document's ``ingested_at``, by id."""
+    with psycopg.connect(dsn) as conn:
+        return dict(conn.execute("SELECT id, ingested_at FROM corpus.documents").fetchall())
+
+
+def _has_ingested_at(dsn: str) -> bool:
+    with psycopg.connect(dsn) as conn:
+        return conn.execute(
+            "SELECT 1 FROM information_schema.columns WHERE table_schema = 'corpus'"
+            " AND table_name = 'documents' AND column_name = 'ingested_at'"
+        ).fetchone() is not None
+
+
+def _drop_ingested_at(dsn: str) -> None:
+    """Leave the table as a release before the column created it."""
+    with psycopg.connect(dsn) as conn:
+        conn.execute("ALTER TABLE corpus.documents DROP COLUMN ingested_at")
+
+
+def test_the_first_write_adds_the_ingest_time_to_the_table_it_creates(pg, documents):
+    documents.write([_doc("1")])
+
+    assert set(_ingested_at(pg)) == {"imap:test::1"}
+
+
+def test_opening_adds_the_ingest_time_to_a_table_from_before_it(pg, documents):
+    documents.write([_doc("1"), _doc("2")])
+    _drop_ingested_at(pg)
+
+    with DocumentStore():
+        pass
+
+    # Rows already stored read the time of the migration: one value, not NULL.
+    stamped = _ingested_at(pg)
+    assert set(stamped) == {"imap:test::1", "imap:test::2"}
+    assert len(set(stamped.values())) == 1
+
+
+def _hold_the_table(conn: psycopg.Connection) -> None:
+    """Hold ACCESS SHARE on the documents table, as a long reader does, until rollback."""
+    conn.execute("SELECT count(*) FROM corpus.documents")
+
+
+def _wait_for_lock_waiters(dsn: str, waiters: int, timeout: float = 10.0) -> None:
+    """Return once *waiters* sessions queue for the documents table's lock."""
+    deadline = time.monotonic() + timeout
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        while time.monotonic() < deadline:
+            queued = conn.execute(
+                "SELECT count(*) FROM pg_locks"
+                " WHERE NOT granted AND relation = 'corpus.documents'::regclass"
+            ).fetchone()
+            if queued is not None and queued[0] >= waiters:
+                return
+            time.sleep(0.01)
+    raise TimeoutError(f"{waiters} lock waiters never queued")
+
+
+def test_opening_a_table_with_the_ingest_time_takes_no_lock(pg, documents, caplog):
+    documents.write([_doc("1")])
+    # A long reader holds the table: an ALTER would time out behind it.
+    with psycopg.connect(pg) as reader:
+        _hold_the_table(reader)
+
+        with DocumentStore(lock_timeout="50ms") as reopened:
+            assert reopened.enrich_backlog("imap:test", "local").count == 1
+
+    assert "ingested_at not added" not in caplog.text
+
+
+def test_a_writer_that_cannot_take_the_lock_goes_on_without_the_column(pg, documents, caplog):
+    documents.write([_doc("1")])
+    _drop_ingested_at(pg)
+    with psycopg.connect(pg) as reader:
+        _hold_the_table(reader)
+
+        with DocumentStore(lock_timeout="50ms") as degraded:
+            assert degraded.enrich_backlog("imap:test", "local") == Backlog(1, None)
+        assert not _has_ingested_at(pg)
+        assert "corpus.documents: ingested_at not added (LockNotAvailable)" in caplog.text
+
+    # The next writable open, with the reader gone, adds it.
+    with DocumentStore(lock_timeout="50ms") as retried:
+        assert retried.enrich_backlog("imap:test", "local").oldest is not None
+    assert _has_ingested_at(pg)
+
+
+def test_two_writers_racing_the_migration_add_one_column(pg, documents):
+    documents.write([_doc("1")])
+    _drop_ingested_at(pg)
+    with psycopg.connect(pg) as reader, ThreadPoolExecutor(2) as pool:
+        _hold_the_table(reader)
+        # Both find the column missing and queue their ALTER behind the reader.
+        opening = [pool.submit(DocumentStore, lock_timeout="30s") for _ in range(2)]
+        _wait_for_lock_waiters(pg, 2)
+        reader.rollback()
+        writers = [o.result(timeout=30) for o in opening]
+
+    try:
+        # The second waited for the first, then found the column and added nothing.
+        with psycopg.connect(pg) as conn:
+            columns = conn.execute(
+                "SELECT count(*) FROM pg_attribute WHERE attrelid = 'corpus.documents'::regclass"
+                " AND attname = 'ingested_at' AND NOT attisdropped"
+            ).fetchone()
+        assert columns == (1,)
+        for writer in writers:
+            assert writer.enrich_backlog("imap:test", "local").oldest is not None
+    finally:
+        for writer in writers:
+            writer.close()
+
+
+def test_a_writer_that_does_not_own_the_table_goes_on_without_the_column(pg, documents, caplog):
+    documents.write([_doc("1")])
+    _drop_ingested_at(pg)
+    # A role that may write the table but, not owning it, may not alter it.
+    with psycopg.connect(pg, autocommit=True) as conn:
+        conn.execute(
+            "DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'docs_rw') "
+            "THEN CREATE ROLE docs_rw LOGIN PASSWORD 'rw'; END IF; END $$"
+        )
+        conn.execute("GRANT USAGE ON SCHEMA corpus TO docs_rw")
+        conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON corpus.documents TO docs_rw")
+
+    with DocumentStore(pg.replace("postgres:test@", "docs_rw:rw@")) as writer:
+        assert writer.enrich_backlog("imap:test", "local") == Backlog(1, None)
+
+    assert not _has_ingested_at(pg)
+    assert "ingested_at not added (InsufficientPrivilege)" in caplog.text
+
+
+def test_any_other_migration_error_fails_the_open(pg, documents):
+    documents.write([_doc("1")])
+    _drop_ingested_at(pg)
+
+    with pytest.raises(psycopg.errors.InvalidParameterValue):
+        DocumentStore(lock_timeout="not an interval")
+
+
+def test_a_read_only_store_runs_no_migration(pg, documents):
+    documents.write([_doc("1")])
+    _drop_ingested_at(pg)
+
+    with DocumentStore(read_only=True) as reader:
+        assert reader.stats()["total"] == 1
+        with pytest.raises(psycopg.errors.ReadOnlySqlTransaction):
+            reader.delete(["imap:test::1"])
+
+    assert not _has_ingested_at(pg)
+
+
+def test_an_overwrite_keeps_the_first_ingest_time_and_a_new_document_gets_its_own(
+    pg, documents
+):
+    documents.write([_doc("1")])
+    first = _ingested_at(pg)["imap:test::1"]
+
+    rewritten = replace(_doc("1"), content="body 1, edited")
+    documents.write([rewritten, _doc("2")])
+
+    stamped = _ingested_at(pg)
+    assert stamped["imap:test::1"] == first
+    assert stamped["imap:test::2"] > first
+    assert documents.get("imap:test::1")["content"] == "body 1, edited"
+
+
 def test_enrich_backlog_of_a_missing_table_is_nothing(documents):
-    assert documents.enrich_backlog("imap:test", "local") == 0
+    assert documents.enrich_backlog("imap:test", "local") == Backlog(0, None)
+
+
+def test_a_reader_opened_before_any_writer_migrated_counts_the_backlog_alone(pg, documents):
+    documents.write([_doc("1"), _doc("2")])
+    _drop_ingested_at(pg)
+
+    with DocumentStore(read_only=True) as reader:
+        assert reader.enrich_backlog("imap:test", "local") == Backlog(2, None)
+        # It looked once: a writer migrating the table now shows on its reopen.
+        with DocumentStore():
+            pass
+        assert reader.enrich_backlog("imap:test", "local") == Backlog(2, None)
+
+    with DocumentStore(read_only=True) as reopened:
+        assert reopened.enrich_backlog("imap:test", "local").oldest is not None
+
+
+def test_enrich_backlog_of_an_ingest_time_with_no_values_has_no_oldest(pg, documents):
+    documents.write([_doc("1")])
+    # A nullable column of that name, as some earlier migration might leave it.
+    _drop_ingested_at(pg)
+    with psycopg.connect(pg) as conn:
+        conn.execute("ALTER TABLE corpus.documents ADD COLUMN ingested_at timestamptz")
+
+    with DocumentStore() as writer:
+        assert writer.enrich_backlog("imap:test", "local") == Backlog(1, None)
+
+
+def test_enrich_backlog_adds_the_ingest_time_to_a_table_created_after_it_opened(pg, documents):
+    with DocumentStore() as other:
+        other.write([_doc("1")])
+    _drop_ingested_at(pg)
+
+    assert documents.enrich_backlog("imap:test", "local").count == 1
+    assert _has_ingested_at(pg)
+
+
+def test_enrich_backlog_is_since_its_oldest_document_was_first_ingested(documents):
+    documents.write([_doc(uid) for uid in "abcd"] + [_doc("z", source="gmail:other")])
+    # Distinct ingest times, oldest first: a on the 1st, b on the 2nd, ...
+    for day, uid in enumerate("abcd", start=1):
+        documents._write(
+            "UPDATE corpus.documents SET ingested_at = %s WHERE id = %s",
+            (datetime(2026, 1, day, tzinfo=UTC), f"imap:test::{uid}"),
+        )
+    with EnrichStore() as enrichments:
+        enrichments.save_enrichment("imap:test::a", {"one_line": "a"}, "local", "sv1")
+        enrichments.save_rejection("imap:test::b", "400: too long", "local")
+
+        # Only what the run would send counts: a is done, b rejected by local.
+        assert documents.enrich_backlog("imap:test", "local") == Backlog(
+            2, datetime(2026, 1, 3, tzinfo=UTC)
+        )
+        assert documents.enrich_backlog("imap:test", "other") == Backlog(
+            3, datetime(2026, 1, 2, tzinfo=UTC)
+        )
+        enrichments.save_enrichment("imap:test::c", {"one_line": "c"}, "local", "sv1")
+        enrichments.save_enrichment("imap:test::d", {"one_line": "d"}, "local", "sv1")
+        assert documents.enrich_backlog("imap:test", "local") == Backlog(0, None)
 
 
 def test_enrich_backlog_counts_every_document_before_any_enrichment(documents):
     # The enrichments table does not exist until an EnrichStore first opens.
     documents.write([_doc("1"), _doc("2"), _doc("3", source="gmail:other")])
 
-    assert documents.enrich_backlog("imap:test", "local") == 2
+    assert documents.enrich_backlog("imap:test", "local").count == 2
 
 
 def test_enrich_backlog_is_what_a_scheduled_enrichment_would_send(documents):
@@ -209,9 +440,9 @@ def test_enrich_backlog_is_what_a_scheduled_enrichment_would_send(documents):
         # Only audited: no enrichment yet.
         enrichments.save_audit("imap:test::f", ["token"], {"verdict": "none"}, "local", "s1")
 
-        assert documents.enrich_backlog("imap:test", "local") == 3  # d, e and f
-        assert documents.enrich_backlog("imap:test", "other") == 3  # c, e and f
-        assert documents.enrich_backlog("gmail:other", "local") == 1
+        assert documents.enrich_backlog("imap:test", "local").count == 3  # d, e and f
+        assert documents.enrich_backlog("imap:test", "other").count == 3  # c, e and f
+        assert documents.enrich_backlog("gmail:other", "local").count == 1
 
 
 def test_enrich_backlog_is_exactly_what_run_enrich_then_sends(documents):
@@ -232,7 +463,7 @@ def test_enrich_backlog_is_exactly_what_run_enrich_then_sends(documents):
         enrichments.save_rejection("imap:test::e", "429: slow down", "local")
         enrichments.save_rejection("imap:test::f", "400: too long", "other")
         enrichments.save_audit("imap:test::g", ["token"], {"verdict": "none"}, "local", "s1")
-        backlog = documents.enrich_backlog("imap:test", "local")
+        backlog = documents.enrich_backlog("imap:test", "local").count
 
         # As the pipeline calls it: the source, no limit and no opt-in reselection.
         run_enrich(
@@ -242,4 +473,4 @@ def test_enrich_backlog_is_exactly_what_run_enrich_then_sends(documents):
         )
 
         assert enricher.enrich_reporting.call_count == backlog == 4  # e, f, g and h
-        assert documents.enrich_backlog("imap:test", "local") == 0
+        assert documents.enrich_backlog("imap:test", "local") == Backlog(0, None)

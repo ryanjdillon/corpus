@@ -163,8 +163,8 @@ class Result:
 
 
 def open_documents(t: Tier) -> DocumentStore:
-    """Open a source tier's documents table."""
-    return DocumentStore(t.serving_dsn(), t.schema)
+    """Open a source tier's documents table read-only, as its reader role if it has one."""
+    return DocumentStore(t.serving_dsn(), t.schema, read_only=True)
 
 
 def open_index_store(t: Tier) -> SanitizedStore:

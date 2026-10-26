@@ -4,15 +4,19 @@ Documents and embeddings live in a Haystack PgvectorDocumentStore table whose
 metadata is one JSONB ``meta`` column. :class:`DocumentStore` is the only code that
 knows that layout: every read of the table, and the Haystack handle that writes
 and vector-searches it, go through it. Small direct-SQL helpers track the
-per-source sync cursor. The document table lives in a dedicated schema
-(settings.db_schema); the DB role owns that schema, so Haystack can create and
-manage its table there.
+per-source sync cursor. The table also carries an ``ingested_at`` column that
+corpus adds itself (:meth:`DocumentStore._ensure_ingested_at`). The document
+table lives in a dedicated schema (settings.db_schema) in which the writer role
+may create tables, so Haystack creates the table there and the role owns it.
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Collection, Iterator
 from contextlib import closing
+from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 import psycopg
@@ -23,6 +27,7 @@ from haystack_integrations.components.retrievers.pgvector import (
     PgvectorEmbeddingRetriever,
 )
 from haystack_integrations.document_stores.pgvector import PgvectorDocumentStore
+from psycopg.sql import SQL, Identifier
 
 from .config import settings
 from .enrich_store import REJECTED_BY_MODEL
@@ -39,6 +44,8 @@ from .query import (
     build_query,
 )
 from .store_base import Store
+
+log = logging.getLogger("corpus.store")
 
 
 def _dsn() -> str:
@@ -92,6 +99,38 @@ def layout(table: str) -> Layout:
     )
 
 
+# Added outside Haystack, which knows only its own columns: its INSERT names
+# them and its upsert sets only them, so the default fills this column once, on
+# a document's first insert, and an overwrite keeps it. now() is stable, not
+# volatile, so Postgres 11+ adds the column without rewriting the table: rows
+# already stored read the time of the ALTER, which also satisfies NOT NULL.
+_ADD_INGESTED_AT = (
+    "ALTER TABLE {} ADD COLUMN IF NOT EXISTS ingested_at timestamptz NOT NULL DEFAULT now()"
+)
+
+#: How long adding ``ingested_at`` waits for the table's lock before giving up
+#: for this open. The ALTER queues for ACCESS EXCLUSIVE, and every later reader
+#: of the table (the MCP server's included) queues behind it, so a writer that
+#: waited out a long-running reader, such as a backfill's open cursor, would
+#: stall them all. The next writable open tries again.
+INGESTED_AT_LOCK_TIMEOUT = "5s"
+
+
+@dataclass(frozen=True)
+class Backlog:
+    """What a scheduled enrichment of a source would still send.
+
+    Attributes:
+        count: How many documents.
+        oldest: When the earliest of them was first ingested; ``None`` when
+            there are none, or when it is not known: the table has no
+            ``ingested_at`` yet, or no value in it.
+    """
+
+    count: int
+    oldest: datetime | None
+
+
 class DocumentStore(Store):
     """The sensitive tier's documents table: raw content, JSONB ``meta``, embedding.
 
@@ -103,16 +142,44 @@ class DocumentStore(Store):
     """
 
     def __init__(
-        self, dsn: str | None = None, schema: str | None = None, table: str | None = None
+        self,
+        dsn: str | None = None,
+        schema: str | None = None,
+        table: str | None = None,
+        *,
+        read_only: bool = False,
+        lock_timeout: str = INGESTED_AT_LOCK_TIMEOUT,
     ) -> None:
-        """Open the sensitive DB; *dsn*, *schema* and *table* default to settings."""
+        """Open the sensitive DB; *dsn*, *schema* and *table* default to settings.
+
+        A writable store adds the ``ingested_at`` column to a table that lacks
+        it, here or once its first write creates the table, waiting at most
+        *lock_timeout* (a Postgres interval) for the table's lock. If it cannot
+        (the lock is busy, or the role does not own the table) it warns and
+        works without the column. A *read_only* store runs no such migration
+        and only reads: it is how a server connects, possibly as a role that
+        may not alter the table.
+        """
         self._dsn = dsn or settings.database_url
         self._schema = schema or settings.db_schema
         self._name = table or settings.documents_table
         self._table = f"{self._schema}.{self._name}"
         self._haystack: PgvectorDocumentStore | None = None
         self._layout = layout(self._table)
+        self._read_only = read_only
+        self._lock_timeout = lock_timeout
+        # Whether the table has the column; None until known, so the catalog is
+        # read (and a migration tried) at most once per store.
+        self._has_ingested_at: bool | None = None
         super().__init__(self._dsn)
+        if read_only:
+            self._conn.read_only = True
+        try:
+            self._ensure_ingested_at()
+        except BaseException:
+            # The caller never gets the store, so cannot close it.
+            self._conn.close()
+            raise
 
     def schema_ddl(self) -> str:
         """Return no DDL: Haystack creates the documents table lazily."""
@@ -156,13 +223,74 @@ class DocumentStore(Store):
             cur.execute(sql, params)
             yield from cur
 
+    def _column_present(self) -> bool:
+        """Whether the table has the ``ingested_at`` column, from the catalog."""
+        return bool(
+            self._read(
+                "SELECT 1 FROM information_schema.columns"
+                " WHERE table_schema = %s AND table_name = %s AND column_name = 'ingested_at'",
+                (self._schema, self._name),
+            )
+        )
+
+    def _ensure_ingested_at(self) -> None:
+        """Add the ``ingested_at`` column to the table if it lacks it (``_ADD_INGESTED_AT``).
+
+        The catalog is read first because ``ADD COLUMN IF NOT EXISTS`` takes
+        the table's ACCESS EXCLUSIVE lock even when it adds nothing, and so
+        would queue behind every long reader on each open. Two stores racing
+        past the check both issue the ALTER; the second waits for the first,
+        then finds the column and adds nothing. A table not created yet has
+        nothing to alter: the write that creates it calls this again.
+
+        The ALTER waits at most ``self._lock_timeout`` for the lock. When it
+        times out, or the role does not own the table, the store warns and goes
+        on without the column for its lifetime; any other error raises.
+        """
+        if self._read_only or self._has_ingested_at is not None or not self.exists():
+            return
+        if self._column_present():
+            self._has_ingested_at = True
+            return
+        alter = SQL(_ADD_INGESTED_AT).format(Identifier(self._schema, self._name))
+        try:
+            with self._conn.transaction(), self._conn.cursor() as cur:
+                cur.execute(SQL("SET LOCAL lock_timeout = {}").format(self._lock_timeout))
+                cur.execute(alter)
+        except (psycopg.errors.LockNotAvailable, psycopg.errors.InsufficientPrivilege) as exc:
+            log.warning(
+                "%s: ingested_at not added (%s); continuing without it, the next writable "
+                "open retries", self._table, type(exc).__name__,
+            )
+            self._has_ingested_at = False
+            return
+        self._has_ingested_at = True
+
+    def _knows_ingested_at(self) -> bool:
+        """Whether the table has ``ingested_at``, migrating it first if this store may.
+
+        The answer is cached for the store, read-only or not, so a read-only
+        store opened before any writer migrated the table reads without the
+        column until it is reopened. Call only once the table exists.
+        """
+        self._ensure_ingested_at()
+        if self._has_ingested_at is None:
+            self._has_ingested_at = self._column_present()
+        return self._has_ingested_at
+
     def exists(self) -> bool:
         """Whether the documents table exists (Haystack creates it on first write)."""
         return self._present(self._table)
 
     def write(self, documents: list[Document]) -> None:
-        """Upsert *documents*: an id already stored is overwritten, not duplicated."""
+        """Upsert *documents*: an id already stored is overwritten, not duplicated.
+
+        An overwrite keeps the document's ``ingested_at``: it records when the
+        document was first stored, not when it was last rewritten.
+        """
         self._vectors().write_documents(documents, policy=DuplicatePolicy.OVERWRITE)
+        # The first write creates the table, after the store opened.
+        self._ensure_ingested_at()
 
     def existing_ids(self, source: str) -> set[str]:
         """Return document ids already stored for a source.
@@ -223,8 +351,8 @@ class DocumentStore(Store):
             for doc_id, meta, enr, enriched_at in rows:
                 yield doc_id, meta, upgrade(enr), enriched_at
 
-    def enrich_backlog(self, source: str, model: str) -> int:
-        """Count *source*'s documents a scheduled enrichment on *model* would still send.
+    def enrich_backlog(self, source: str, model: str) -> Backlog:
+        """*source*'s documents a scheduled enrichment on *model* would still send.
 
         The selection ``enrich_batch.run_enrich`` makes as the pipeline calls it
         (no ``force``, ``upgrade_stale``, ``redo_recovered`` or
@@ -234,22 +362,30 @@ class DocumentStore(Store):
         Whether the source may be enriched at all is the caller's to check
         (``sources.require_enrichable``): every document here has that source.
 
-        One aggregate, so it stays cheap on a large archive. A missing documents
-        table counts nothing; a missing enrichments table leaves every document
-        to do.
+        Counted with the earliest ``ingested_at`` among them, in one aggregate,
+        so it stays cheap on a large archive. A missing documents table counts
+        nothing; a missing enrichments table leaves every document to do. A
+        table without ``ingested_at`` (not yet migrated, or the migration could
+        not take its lock) is counted alone, with ``oldest`` ``None``.
         """
         enrichments = f"{self._schema}.enrichments"
         if not self._present(self._table):
-            return 0
-        sql = f"SELECT count(*) FROM {self._table} d WHERE d.meta->>'source' = %s"
+            return Backlog(0, None)
+        # Also migrates a table another process created after this store opened.
+        oldest = "min(d.ingested_at)" if self._knows_ingested_at() else "NULL"
+        query = (
+            f"SELECT count(*), {oldest} FROM {self._table} d"
+            " WHERE d.meta->>'source' = %s"
+        )
         params: tuple = (source,)
         if self._present(enrichments):
-            sql += (
+            query += (
                 f" AND NOT EXISTS (SELECT 1 FROM {enrichments} e WHERE e.doc_id = d.id"
                 f" AND (e.enrichment IS NOT NULL OR ({REJECTED_BY_MODEL})))"
             )
             params = (source, model)
-        return self._read(sql, params)[0][0]
+        count, oldest = self._read(query, params)[0]
+        return Backlog(count, oldest)
 
     def query_spec(
         self, spec: QuerySpec, policy: QueryPolicy, position: Position | None = None
