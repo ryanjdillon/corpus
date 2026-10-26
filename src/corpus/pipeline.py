@@ -24,6 +24,14 @@ Each stage opens and closes its own stores. The stages use different stores
 run for hours, and a stage that fails releases its connections on the way out;
 opening everything once would hold idle connections across the long stage and
 tie the pipeline to every stage's store wiring.
+
+The enrich stage reports its source's backlog and whether the model was
+available (:class:`~corpus.telemetry.EnrichMetrics`), whether it finished or
+the model was unavailable. An
+unavailable model fails the run unless the run defers it
+(``defer_when_model_unavailable``) and the reason is an outage
+(:func:`~corpus.enricher.deferrable`): the stage then returns what it did,
+marked ``deferred``, and the run goes on to sync.
 """
 
 from __future__ import annotations
@@ -43,7 +51,7 @@ from .sources import source as configured_source
 if TYPE_CHECKING:  # the stages import their modules when they run, keeping the CLI light
     from .enricher import Enricher
     from .fetchers import Fetcher
-    from .telemetry import SyncMetrics
+    from .telemetry import EnrichMetrics, SyncMetrics
 
 log = logging.getLogger("corpus.pipeline")
 
@@ -70,11 +78,15 @@ class Options:
             slow embedder's or gateway's timeout.
         tier: The projected tier sync writes (one with a projection in the
             config file).
+        defer_when_model_unavailable: Whether an enrichment model unavailable
+            for an outage defers enrich, letting the run go on, rather than
+            failing it.
     """
 
     limit: int | None = None
     batch_size: int | None = None
     tier: str | None = None
+    defer_when_model_unavailable: bool | None = None
 
     def over(self, defaults: PipelineOptions) -> PipelineOptions:
         """*defaults* with every option set here in its place (:meth:`PipelineOptions.override`)."""
@@ -92,6 +104,8 @@ class Context:
         enricher: The enricher used; ``None`` builds one from the settings.
         sync_metrics: The instruments sync records its tier's backlog on;
             ``None`` uses ``telemetry.sync_metrics``.
+        enrich_metrics: The instruments enrich records its source's backlog and
+            outcome on; ``None`` uses ``telemetry.enrich_metrics``.
     """
 
     source: Source
@@ -99,6 +113,7 @@ class Context:
     fetcher: Fetcher | None = None
     enricher: Enricher | None = None
     sync_metrics: SyncMetrics | None = None
+    enrich_metrics: EnrichMetrics | None = None
 
 
 def _ready(ctx: Context) -> None:
@@ -138,15 +153,48 @@ def _check_enrich(ctx: Context) -> None:
 
 
 def _enrich(ctx: Context) -> Counts:
+    from .config import settings
     from .enrich_batch import run_enrich
     from .enrich_store import EnrichStore
+    from .enricher import EnrichUnavailableError, deferrable
     from .store import DocumentStore
+    from .telemetry import enrich_metrics
 
+    source = ctx.source.id
+    metrics = ctx.enrich_metrics or enrich_metrics
+    # The model run_enrich uses: rejections are per model, so the backlog is too.
+    model = settings.enrich_model if ctx.enricher is None else ctx.enricher.model
     with EnrichStore() as store, DocumentStore() as documents:
-        return run_enrich(
-            store, documents=documents, source=ctx.source.id, limit=ctx.options.limit,
-            enricher=ctx.enricher,
-        )
+        try:
+            counts = run_enrich(
+                store, documents=documents, source=source, limit=ctx.options.limit,
+                enricher=ctx.enricher,
+            )
+        except EnrichUnavailableError as exc:
+            # Recorded before deciding, so a failed run reports its state too.
+            # The outcome first: it needs no database.
+            metrics.record_outcome(source, exc.reason)
+            backlog = documents.enrich_backlog(source, model)
+            metrics.record_backlog(source, backlog)
+            done = exc.counts or "none"
+            # Only an outage is deferred: a bad key or route fails every later
+            # run too, so it must fail this one however the source is set.
+            if not (ctx.options.defer_when_model_unavailable and deferrable(exc.reason)):
+                log.warning(
+                    "pipeline %s: enrichment unavailable: %s (backlog %d); done: %s",
+                    source, exc.reason, backlog, done,
+                )
+                raise
+            log.warning(
+                "pipeline %s: enrichment deferred: %s (backlog %d); done: %s",
+                source, exc.reason, backlog, done,
+            )
+            return {**exc.counts, "deferred": 1}
+        # The backlog first: if its query fails, the run records none of the three.
+        backlog = documents.enrich_backlog(source, model)
+        metrics.record_outcome(source, None)
+        metrics.record_backlog(source, backlog)
+        return counts
 
 
 def _check_sync(ctx: Context) -> None:
@@ -242,6 +290,7 @@ def run(
     fetcher: Fetcher | None = None,
     enricher: Enricher | None = None,
     sync_metrics: SyncMetrics | None = None,
+    enrich_metrics: EnrichMetrics | None = None,
 ) -> dict[str, Counts]:
     """Run the selected *stages* for *source*, in order, and return each one's counts.
 
@@ -250,7 +299,9 @@ def run(
     checked before any runs. A stage that raises stops the run: the counts so
     far are logged and :class:`StageFailedError` is raised from the stage's
     exception. What the earlier stages committed stays committed, and running
-    again resumes.
+    again resumes. An unavailable enrichment model is the exception when the
+    run defers it and the reason is an outage: enrich returns its counts with
+    ``deferred`` and the run goes on.
 
     Raises:
         ValueError: The selection is invalid, the source is not configured, or a
@@ -262,7 +313,10 @@ def run(
     entry = configured_source(source) if isinstance(source, str) else source
     source_id = entry.id
     resolved = (options or Options()).over(entry.pipeline)
-    ctx = Context(entry, resolved, fetcher=fetcher, enricher=enricher, sync_metrics=sync_metrics)
+    ctx = Context(
+        entry, resolved, fetcher=fetcher, enricher=enricher, sync_metrics=sync_metrics,
+        enrich_metrics=enrich_metrics,
+    )
     for stage in selected:
         stage.check(ctx)
     counts: dict[str, Counts] = {}

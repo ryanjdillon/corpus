@@ -11,6 +11,7 @@ corpus pipeline imap:example --limit 400           # enrich and embed at most 40
 corpus pipeline imap:example --stages ingest       # just ingest
 corpus pipeline imap:example --batch-size 16       # embed 16 records per request
 corpus pipeline imap:example --tier partner        # sync into another projected tier
+corpus pipeline imap:example --defer-when-model-unavailable  # go on to sync if the model is away
 ```
 
 The source must be configured (see [Source configuration](fetchers/config.md)).
@@ -22,6 +23,7 @@ overrides its option:
 | `--limit` | `pipeline.limit` | `0` (no limit) |
 | `--tier` | `pipeline.tier` | `sanitized` |
 | `--batch-size` (and `corpus ingest --batch-size`) | `pipeline.batch_size` | `50` |
+| `--defer-when-model-unavailable` / `--fail-when-model-unavailable` | `pipeline.defer_when_model_unavailable` | `false` (fail) |
 
 ## Stages
 
@@ -84,6 +86,43 @@ because every stage already does:
 
 So a run that fails in enrich keeps what ingest wrote. The next run fetches only
 mail newer than the cursor, then enriches what is left.
+
+### An unavailable model
+
+When the enrichment model is unavailable (an outage that outlasts the retries,
+a spent budget, a key or route error; see [Enrichment](enrichment.md)), the
+enrich stage records the source's [enrichment backlog and the
+reason](observability.md#enrichment-backlog) and logs one line, then:
+
+- **by default**, fails the run like any other stage (`enrichment unavailable:
+  <reason> (backlog N); done: <counts>`, exit status 1). An outage stays loud:
+  the scheduler sees a failed job.
+- **with `--defer-when-model-unavailable`** (or `pipeline.defer_when_model_unavailable:
+  true` in the source's entry), defers an **outage** instead: a 5xx, a timeout,
+  a refused or dropped connection, a rate limit (`http_408`, `http_425`,
+  `http_429`) or a spent budget. It logs a warning (`enrichment deferred:
+  <reason> (backlog N); done: <counts>`), reports what it enriched before the
+  model went away with `deferred 1` added, and the run goes on to sync and
+  exits 0. Sync projects what was enriched; the rest waits for a later run.
+  Use it where the model is expected to come and go, such as a shared GPU, and
+  watch the [`last_success`](observability.md#enrichment-backlog) alert
+  instead of the job's status.
+
+A **misconfiguration** fails the run even when it defers: a 401, 403 or 404 (a
+bad key or a wrong route) never heals by waiting, so deferring it would turn a
+run that can never succeed into a quiet green job. An unavailable error with no
+known cause (`unknown`) fails it too. The reason and the backlog are recorded
+either way. The split is `corpus.enricher.deferrable`; the reasons are listed
+under [Enrichment backlog](observability.md#enrichment-backlog).
+
+Only an unavailable model is deferred. Any other failure in enrich, and any
+failure in sync, still fails the run. `--fail-when-model-unavailable` restores
+the default for one run when the source's entry defers.
+
+Source entries forbid unknown keys (`PipelineOptions` rejects a field it does
+not know), so an image that predates `pipeline.defer_when_model_unavailable`
+refuses a config file that sets it. Roll out the image that knows the key
+before setting it in a deployed config.
 
 ## Stores
 

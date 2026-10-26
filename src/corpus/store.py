@@ -25,6 +25,7 @@ from haystack_integrations.components.retrievers.pgvector import (
 from haystack_integrations.document_stores.pgvector import PgvectorDocumentStore
 
 from .config import settings
+from .enrich_store import REJECTED_BY_MODEL
 from .enrichment import upgrade
 from .query import (
     SEMANTIC_DEPTH,
@@ -221,6 +222,34 @@ class DocumentStore(Store):
         with closing(rows):
             for doc_id, meta, enr, enriched_at in rows:
                 yield doc_id, meta, upgrade(enr), enriched_at
+
+    def enrich_backlog(self, source: str, model: str) -> int:
+        """Count *source*'s documents a scheduled enrichment on *model* would still send.
+
+        The selection ``enrich_batch.run_enrich`` makes as the pipeline calls it
+        (no ``force``, ``upgrade_stale``, ``redo_recovered`` or
+        ``retry_rejected``): a document with no enrichment under any schema
+        version that *model* has not rejected. A record from an older schema
+        counts as done, so a ``SCHEMA_VERSION`` change does not grow the count.
+        Whether the source may be enriched at all is the caller's to check
+        (``sources.require_enrichable``): every document here has that source.
+
+        One aggregate, so it stays cheap on a large archive. A missing documents
+        table counts nothing; a missing enrichments table leaves every document
+        to do.
+        """
+        enrichments = f"{self._schema}.enrichments"
+        if not self._present(self._table):
+            return 0
+        sql = f"SELECT count(*) FROM {self._table} d WHERE d.meta->>'source' = %s"
+        params: tuple = (source,)
+        if self._present(enrichments):
+            sql += (
+                f" AND NOT EXISTS (SELECT 1 FROM {enrichments} e WHERE e.doc_id = d.id"
+                f" AND (e.enrichment IS NOT NULL OR ({REJECTED_BY_MODEL})))"
+            )
+            params = (source, model)
+        return self._read(sql, params)[0][0]
 
     def query_spec(
         self, spec: QuerySpec, policy: QueryPolicy, position: Position | None = None

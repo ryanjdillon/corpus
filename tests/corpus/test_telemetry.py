@@ -205,3 +205,63 @@ def test_every_sync_metric_is_a_gauge_of_the_last_sync(reader, sync_metrics):
         "corpus.sync.embedded": [5],  # the last run's, not the sum
         "corpus.sync.capped": [0],
     }
+
+
+#: A fixed "now" for the enrich instruments' clock.
+_NOW = 1_767_225_600.0
+
+
+@pytest.fixture
+def enrich_metrics(reader):
+    from opentelemetry.sdk.metrics import MeterProvider
+
+    meter = MeterProvider(metric_readers=[reader]).get_meter("test")
+    return telemetry.EnrichMetrics(meter, clock=lambda: _NOW)
+
+
+def _points(reader) -> dict[str, list[tuple[float, dict]]]:
+    return {
+        name: [(p.value, dict(p.attributes)) for p in d.data_points]
+        for name, d in _collect(reader).items()
+    }
+
+
+def test_an_enrichment_that_finished_records_its_success_time_and_backlog(
+    reader, enrich_metrics
+):
+    enrich_metrics.record_outcome("imap:test", None)
+    enrich_metrics.record_backlog("imap:test", 12)
+
+    assert _points(reader) == {
+        "corpus.enrich.unavailable": [(0, {"source": "imap:test", "reason": "none"})],
+        "corpus.enrich.last_success": [(_NOW, {"source": "imap:test"})],
+        "corpus.enrich.backlog": [(12, {"source": "imap:test"})],
+    }
+
+
+def test_an_unavailable_model_records_its_reason_and_no_success(reader, enrich_metrics):
+    enrich_metrics.record_outcome("imap:test", "http_503")
+    enrich_metrics.record_backlog("imap:test", 40)
+
+    # No last_success: the newest success stays the one an earlier run reported.
+    assert _points(reader) == {
+        "corpus.enrich.unavailable": [(1, {"source": "imap:test", "reason": "http_503"})],
+        "corpus.enrich.backlog": [(40, {"source": "imap:test"})],
+    }
+
+
+def test_every_enrich_metric_is_a_gauge(reader, enrich_metrics):
+    from opentelemetry.sdk.metrics.export import Gauge
+
+    enrich_metrics.record_outcome("imap:test", None)
+    enrich_metrics.record_backlog("imap:test", 0)
+
+    data = reader.get_metrics_data()
+    metrics = [m for rm in data.resource_metrics for sm in rm.scope_metrics for m in sm.metrics]
+    assert all(isinstance(m.data, Gauge) for m in metrics)
+    # Units decide the Prometheus names docs/observability.md gives.
+    assert {m.name: m.unit for m in metrics} == {
+        "corpus.enrich.unavailable": "{run}",
+        "corpus.enrich.last_success": "s",
+        "corpus.enrich.backlog": "{document}",
+    }

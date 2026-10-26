@@ -269,25 +269,35 @@ def _stage_names(ctx: click.Context, param: click.Parameter, value: str) -> tupl
     "--tier", "tier_name", default=None,
     help="the projected tier sync writes  [default: the source's pipeline.tier, else sanitized]",
 )
+@click.option(
+    "--defer-when-model-unavailable/--fail-when-model-unavailable", "defer", default=None,
+    help="when the enrichment model is unavailable for an outage, defer enrich and go on to "
+    "sync (exit 0) rather than fail the run; a bad key or route still fails it  "
+    "[default: the source's pipeline.defer_when_model_unavailable, else fail]",
+)
 def pipeline(
     source: str,
     stages: tuple[str, ...],
     limit: int | None,
     batch_size: int | None,
     tier_name: str | None,
+    defer: bool | None,
 ) -> None:
     """Ingest, enrich and sync one configured SOURCE, e.g. 'imap:example', in that order.
 
     Each stage resumes where the last run stopped, so after a failure the same
     command picks up again. A run refused before any stage starts exits 2, as a
-    usage error; a stage that fails stops the run and exits 1. Options the
-    source entry sets in the config file are the defaults; a flag overrides its
-    option.
+    usage error; a stage that fails stops the run and exits 1, as does an
+    unavailable enrichment model unless the run defers it and it is an outage.
+    Options the source entry sets in the config file are the defaults; a flag
+    overrides its option.
     """
     from .pipeline import Options, StageFailedError, run
 
     telemetry.configure("corpus-pipeline")
-    options = Options(limit=limit, batch_size=batch_size, tier=tier_name)
+    options = Options(
+        limit=limit, batch_size=batch_size, tier=tier_name, defer_when_model_unavailable=defer
+    )
     try:
         counts = run(source, stages, options=options)
     except StageFailedError as exc:

@@ -988,6 +988,9 @@
               },
               "tier": {
                 "type": "string"
+              },
+              "defer_when_model_unavailable": {
+                "type": "boolean"
               }
             }
           },

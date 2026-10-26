@@ -3,7 +3,8 @@
 No-op unless OTEL_EXPORTER_OTLP_ENDPOINT is set, so local runs and tests do not
 export. Traces cover outgoing httpx calls; metrics add ingest counters and
 histograms, MCP tool-call counts, the credential scanner each enrich audit ran,
-a corpus-size gauge, and each sync's backlog (:class:`SyncMetrics`). Heavy SDK/exporter imports are deferred to configure()
+a corpus-size gauge, each sync's backlog (:class:`SyncMetrics`), and each pipeline
+run's enrichment backlog and outcome (:class:`EnrichMetrics`). Heavy SDK/exporter imports are deferred to configure()
 so importing this module (for the metric instruments) stays cheap.
 """
 
@@ -268,6 +269,56 @@ class SyncMetrics:
 
 #: The sync instruments on the process's meter provider.
 sync_metrics = SyncMetrics(_meter)
+
+
+class EnrichMetrics:
+    """The instruments a pipeline's enrich stage reports its source's state on.
+
+    Gauges for the reason :class:`SyncMetrics` gives: each pipeline run is a
+    one-shot process and its own series. Labelled by ``source``, the source
+    id: unlike a sync's tier, the backlog is the source's alone.
+
+    ``last_success`` is a timestamp rather than an age so that it keeps ageing
+    while no run reports: a suspended schedule or an absent model leaves the
+    newest success where it was (docs/observability.md).
+    """
+
+    def __init__(self, meter: Meter, clock: Callable[[], float] = time.time) -> None:
+        self._clock = clock
+        self.backlog = meter.create_gauge(
+            "corpus.enrich.backlog",
+            unit="{document}",
+            description="Documents of the source the next enrichment would still send to "
+            "the model.",
+        )
+        self.last_success = meter.create_gauge(
+            "corpus.enrich.last_success",
+            unit="s",
+            description="Unix time the source's enrichment last finished without the model "
+            "being unavailable.",
+        )
+        self.unavailable = meter.create_gauge(
+            "corpus.enrich.unavailable",
+            unit="{run}",
+            description="1 if the run's enrichment stopped because the model was "
+            "unavailable, by reason, else 0.",
+        )
+
+    def record_outcome(self, source: str, unavailable: str | None) -> None:
+        """Record how *source*'s enrichment ended: the *unavailable* reason, or ``None``."""
+        self.unavailable.set(
+            0 if unavailable is None else 1, {"source": source, "reason": unavailable or "none"}
+        )
+        if unavailable is None:
+            self.last_success.set(self._clock(), {"source": source})
+
+    def record_backlog(self, source: str, documents: int) -> None:
+        """Record *documents* left to enrich for *source*."""
+        self.backlog.set(documents, {"source": source})
+
+
+#: The enrich instruments on the process's meter provider.
+enrich_metrics = EnrichMetrics(_meter)
 
 
 # --- MCP tool-call audit -------------------------------------------------------

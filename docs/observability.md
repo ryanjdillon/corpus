@@ -11,8 +11,9 @@ sanitized`) unless `OTEL_SERVICE_NAME` says otherwise.
   sensitive server), MCP tool calls by principal (see below), and enrichments
   whose free text reads like instructions to an AI
   (`corpus.enrich.instruction_like`, by model), the credential scanner each
-  enrich audit ran (`corpus.detect.leaks_scanner`, see below), and each sync's
-  backlog (see below).
+  enrich audit ran (`corpus.detect.leaks_scanner`, see below), each sync's
+  backlog, and each pipeline run's enrichment backlog and model availability
+  (see below).
 
 It is a no-op when the endpoint is unset. Heavy SDK imports are deferred until
 telemetry is configured, and a one-shot process (an ingest run) flushes the
@@ -151,6 +152,107 @@ Pick the `embed_stale` window from the backlog a policy change creates: at the
 default 500 rows a run, it takes as many syncs as the changed rows divided by
 500, unless drained with `--reembed-limit 0` (see
 [Rolling out a policy change](tiers.md#rolling-out-a-policy-change)).
+
+## Enrichment backlog
+
+The enrich stage of `corpus pipeline` records, for its source, what is left to
+enrich and whether the model was there. Each is attributed by `source`, the
+source id: unlike a sync's tier, the backlog belongs to one source.
+
+| Metric (OTel) | Prometheus | Unit | Reads |
+|---|---|---|---|
+| `corpus.enrich.backlog` | `corpus_enrich_backlog` | `{document}` | the source's documents the next run would send to the model |
+| `corpus.enrich.last_success` | `corpus_enrich_last_success_seconds` | `s` | unix time the stage last finished without the model being unavailable |
+| `corpus.enrich.unavailable` | `corpus_enrich_unavailable` | `{run}` | 1 if the stage stopped because the model was unavailable, else 0; also by `reason` |
+
+They are gauges, one series per run, for the reasons given for the
+[sync backlog](#sync-backlog): read them with `last_over_time`, never `rate`.
+The `{document}` and `{run}` units add no suffix; `s` adds `_seconds`.
+
+- **`backlog`** is read after the stage, however it ended: finished, capped by
+  `--limit`, or stopped by an unavailable model. It is
+  `DocumentStore.enrich_backlog`, one `count(*)` that makes the selection the
+  stage makes: the source's documents with no enrichment under **any** schema
+  version and no rejection by the run's model (a rejection recorded for a 429
+  does not count). The pipeline does not upgrade stale records, so a
+  `SCHEMA_VERSION` change does not grow it; `corpus enrich --upgrade-stale`
+  and `--retry-rejected` send documents it does not count.
+- **`last_success`** is set whenever the stage finishes without the model being
+  unavailable, including a run that enriched nothing or stopped at its
+  `--limit`. A failure for any other reason fails the run and records none of
+  the three.
+- **`unavailable`** is 1 with a `reason` when the model was unavailable, and 0
+  with `reason="none"` otherwise. `reason` is a bounded slug, never the error
+  text (see below).
+
+The order differs by outcome, so that a failing backlog query never leaves a
+half-recorded run:
+
+- **Finished:** the stage reads the backlog **first**, then records
+  `unavailable` 0 and `last_success`, then `backlog`. If the backlog query
+  fails, the run fails and records none of the three.
+- **Unavailable:** the stage records `unavailable` 1 with its reason
+  **first**, which needs no database, then reads and records `backlog`. If the
+  backlog query fails, the reason is still recorded. It does both before it
+  fails the run or [defers](pipeline.md#an-unavailable-model).
+
+The command flushes them on exit either way.
+
+The `reason` slugs:
+
+| `reason` | Means | Deferred |
+|---|---|---|
+| `none` | the model was available (`unavailable` 0) | n/a |
+| `http_5xx`, as `http_500`, `http_503`, … | the endpoint failed through every retry | yes |
+| `http_408`, `http_425`, `http_429` | a timeout or rate limit outlasted the retries | yes |
+| `http_429_budget` | a rate limit asked for longer than the retry budget allows | yes |
+| `timeout`, `connect`, `transport` | the request timed out, was refused, or failed in transit | yes |
+| `http_401`, `http_403`, `http_404` | a bad key or a wrong route: a misconfiguration | no |
+| `unknown` | raised without a cause; not expected from the enricher | no |
+
+"Deferred" is what `--defer-when-model-unavailable` does with it
+(`corpus.enricher.deferrable`); without the flag every reason fails the run.
+The status is kept whole rather than collapsed into a class, so match a class
+with a regex in rules, `reason=~"http_5.."`, rather than listing statuses.
+
+Alert on how long ago enrichment last succeeded:
+
+```promql
+# A source has not finished an enrichment for twelve hours.
+time() - max by (source) (last_over_time(corpus_enrich_last_success_seconds[7d])) > 12*3600
+```
+
+This works because `last_success` is a timestamp, not an age:
+
+- While the CronJob is suspended or the model is away, no run sets it, so the
+  newest value stays put and `time()` minus it keeps growing. An age gauge
+  would freeze at whatever the last run reported.
+- Each run is its own series, and the newest successful run holds the largest
+  timestamp, so `max` picks it over the older runs still in the window.
+- Past the 7-day window every series has aged out, the expression returns
+  nothing and the alert goes silent. Keep the CronJob's own stale or failed-job
+  alerts as the dead-man's switch for a source that has stopped running at all.
+
+The other two give the alert its context, for example in its annotations:
+
+```promql
+# What is waiting: the largest backlog a run reported in the last day. While
+# nothing is enriched the backlog only grows, so this is the newest run's.
+max by (source) (last_over_time(corpus_enrich_backlog[1d]))
+
+# Runs that found the model unavailable in the last day, and why. Each series
+# holds one sample, so sum_over_time counts the runs.
+sum by (source, reason) (sum_over_time(corpus_enrich_unavailable[1d]))
+```
+
+A misconfiguration fails the run even when it defers, but the job alert fires
+only as fast as the scheduler's. Alert on it separately so a bad key or route
+is caught on its first run:
+
+```promql
+# The newest run found the model refusing its key or route.
+last_over_time(corpus_enrich_unavailable{reason=~"http_40[134]"}[1h]) == 1
+```
 
 ## Credential scanner fallback
 

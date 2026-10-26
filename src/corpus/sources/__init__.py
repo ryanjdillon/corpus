@@ -68,14 +68,25 @@ class PipelineOptions(_Strict):
         limit: The most documents enrich sends to the model and sync projects;
             ``0`` is no limit.
         tier: The projected tier sync writes.
+        defer_when_model_unavailable: Whether an enrichment model unavailable
+            for an outage (a 5xx, a timeout, a rate limit) defers the enrich
+            stage, so the run goes on to sync and succeeds, rather than failing
+            the run. A bad key or route fails the run regardless. Off, so an
+            outage stays loud.
     """
 
     batch_size: Annotated[int, msgspec.Meta(ge=1)] = INGEST_BATCH_SIZE
     limit: Annotated[int, msgspec.Meta(ge=0)] = 0
     tier: _TierName = "sanitized"
+    defer_when_model_unavailable: bool = False
 
     def override(
-        self, *, batch_size: int | None = None, limit: int | None = None, tier: str | None = None
+        self,
+        *,
+        batch_size: int | None = None,
+        limit: int | None = None,
+        tier: str | None = None,
+        defer_when_model_unavailable: bool | None = None,
     ) -> PipelineOptions:
         """These options with every one given in its place; ``None`` keeps this one.
 
@@ -83,7 +94,10 @@ class PipelineOptions(_Strict):
         ``corpus ingest`` alike: the flag, else the source entry's value, else
         the entry's default (:data:`INGEST_BATCH_SIZE` for the batch size).
         """
-        given = {"batch_size": batch_size, "limit": limit, "tier": tier}
+        given = {
+            "batch_size": batch_size, "limit": limit, "tier": tier,
+            "defer_when_model_unavailable": defer_when_model_unavailable,
+        }
         return msgspec.structs.replace(self, **{k: v for k, v in given.items() if v is not None})
 
 
