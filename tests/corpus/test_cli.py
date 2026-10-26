@@ -620,6 +620,25 @@ def test_pipeline_command(runner, configure, shutdown, pipeline_run):
     shutdown.assert_called_once()
 
 
+@pytest.mark.parametrize(
+    ("flag", "defer"),
+    [("--defer-when-model-unavailable", True), ("--fail-when-model-unavailable", False)],
+)
+def test_pipeline_passes_what_an_unavailable_model_should_do(
+    runner, configure, shutdown, pipeline_run, flag, defer
+):
+    pipeline_run.return_value = {"enrich": {"scanned": 3, "enriched": 1, "deferred": 1}}
+
+    result = runner.invoke(cli.main, ["pipeline", "imap:test", flag])
+
+    assert result.exit_code == 0, result.output
+    assert pipeline_run.call_args.kwargs == {
+        "options": pipeline.Options(defer_when_model_unavailable=defer)
+    }
+    assert "enrich: scanned 3, enriched 1, deferred 1" in result.output
+    shutdown.assert_called_once()
+
+
 def test_pipeline_reports_a_re_embedding_skipped_for_another_sync(
     runner, configure, shutdown, pipeline_run
 ):

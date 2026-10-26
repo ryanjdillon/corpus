@@ -25,7 +25,15 @@ the ones already done.
 
 Requests run `CORPUS_ENRICH_CONCURRENCY` at a time. A transient endpoint failure
 is retried in-process (see [Configuration](configuration.md)), and an endpoint
-that stays down aborts the run so it can resume later.
+that stays down aborts the run so it can resume later. By default that fails
+the job too, so an outage is loud; `corpus pipeline --defer-when-model-unavailable`
+instead defers enrichment and goes on to sync when the cause is an outage (a
+5xx, a timeout, a rate limit, a spent budget). A 401, 403 or 404 is a bad key
+or route that waiting will not fix, so it fails the job even then (see
+[An unavailable model](pipeline.md#an-unavailable-model)). Either way the
+pipeline records the source's backlog, the time enrichment last succeeded and
+why the model was unavailable (see
+[Enrichment backlog](observability.md#enrichment-backlog)).
 
 A per-document rejection (a 4xx such as an input over the model's context, or
 unparseable output) is counted as skipped and recorded against the model that

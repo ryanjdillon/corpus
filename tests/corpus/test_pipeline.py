@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 from datetime import UTC, datetime
-from unittest.mock import create_autospec
+from unittest.mock import call, create_autospec
 
 import pytest
 
@@ -30,7 +30,7 @@ from corpus.pipeline import (
 from corpus.sanitized_store import SanitizedStore
 from corpus.sources import ImapSource, PipelineOptions
 from corpus.store import get_cursor
-from corpus.telemetry import SyncMetrics
+from corpus.telemetry import EnrichMetrics, SyncMetrics
 
 SOURCE = "imap:test"
 CURSOR = "1:3"
@@ -141,6 +141,11 @@ def test_an_unconfigured_source_is_refused_before_ingest(fetcher, default_tiers)
         (Options(), PipelineOptions(batch_size=20, limit=400, tier="partner")),
         (Options(limit=0), PipelineOptions(batch_size=20, limit=0, tier="partner")),
         (Options(tier="sanitized", batch_size=5), PipelineOptions(batch_size=5, limit=400)),
+        (
+            Options(defer_when_model_unavailable=True),
+            PipelineOptions(batch_size=20, limit=400, tier="partner",
+                            defer_when_model_unavailable=True),
+        ),
     ],
 )
 def test_options_override_the_sources_one_by_one(overrides, resolved):
@@ -150,6 +155,18 @@ def test_options_override_the_sources_one_by_one(overrides, resolved):
 
 def test_with_neither_a_flag_nor_an_entry_value_ingest_batches_by_the_shared_default():
     assert Options().over(PipelineOptions()).batch_size == INGEST_BATCH_SIZE
+
+
+def test_an_unavailable_model_fails_the_run_unless_told_otherwise():
+    assert Options().over(PipelineOptions()).defer_when_model_unavailable is False
+
+
+def test_a_false_flag_overrides_an_entry_that_defers():
+    # False is an override, not an unset option: --fail-when-model-unavailable.
+    entry = PipelineOptions(defer_when_model_unavailable=True)
+
+    assert Options(defer_when_model_unavailable=False).over(entry).defer_when_model_unavailable \
+        is False
 
 
 def test_the_sources_tier_is_checked_before_ingest(fetcher, default_tiers):
@@ -308,3 +325,113 @@ def test_the_sync_stage_re_embeds_stale_rows_up_to_the_setting(
     counts = run(SOURCE, ("sync",))
 
     assert (counts["sync"]["embedded"], counts["sync"]["embed_stale"]) == (2, 1)
+
+
+@pytest.fixture
+def enrich_metrics() -> EnrichMetrics:
+    return create_autospec(EnrichMetrics, instance=True)
+
+
+@pytest.mark.integration
+def test_the_enrich_stage_records_its_success_and_what_the_next_run_would_send(
+    stores, fetcher, enricher, enrich_metrics
+):
+    # Capped by the limit is still a success; the one left is the backlog.
+    run(SOURCE, options=Options(limit=2), fetcher=fetcher, enricher=enricher,
+        enrich_metrics=enrich_metrics)
+
+    enrich_metrics.record_outcome.assert_called_once_with(SOURCE, None)
+    enrich_metrics.record_backlog.assert_called_once_with(SOURCE, 1)
+    enricher.enrich_reporting.reset_mock()
+    enrich_metrics.reset_mock()
+
+    counts = run(SOURCE, fetcher=fetcher, enricher=enricher, enrich_metrics=enrich_metrics)
+
+    # The backlog was exactly what this run sent.
+    assert enricher.enrich_reporting.call_count == counts["enrich"]["enriched"] == 1
+    enrich_metrics.record_outcome.assert_called_once_with(SOURCE, None)
+    enrich_metrics.record_backlog.assert_called_once_with(SOURCE, 0)
+
+
+@pytest.mark.integration
+def test_an_unavailable_model_is_recorded_before_the_run_fails(
+    stores, fetcher, enricher, enrich_metrics, caplog
+):
+    enricher.enrich_reporting.side_effect = EnrichUnavailableError("down", "http_503")
+
+    with pytest.raises(StageFailedError) as failed, caplog.at_level("WARNING"):
+        run(SOURCE, fetcher=fetcher, enricher=enricher, enrich_metrics=enrich_metrics)
+
+    assert failed.value.stage == "enrich"
+    # The outcome before the backlog: it needs no database, so a failing
+    # backlog query still leaves the reason recorded.
+    assert enrich_metrics.mock_calls == [
+        call.record_outcome(SOURCE, "http_503"),
+        call.record_backlog(SOURCE, 3),
+    ]
+    assert "enrichment unavailable: http_503 (backlog 3)" in caplog.text
+
+
+@pytest.mark.integration
+def test_a_bad_key_fails_the_run_even_when_it_defers(
+    stores, fetcher, enricher, enrich_metrics, caplog
+):
+    # A 401 never heals by waiting: deferring it would hide a run that cannot succeed.
+    enricher.enrich_reporting.side_effect = EnrichUnavailableError("no", "http_401")
+
+    with pytest.raises(StageFailedError) as failed, caplog.at_level("WARNING"):
+        run(SOURCE, options=Options(defer_when_model_unavailable=True), fetcher=fetcher,
+            enricher=enricher, enrich_metrics=enrich_metrics)
+
+    assert failed.value.stage == "enrich"
+    assert isinstance(failed.value.__cause__, EnrichUnavailableError)
+    assert enrich_metrics.mock_calls == [
+        call.record_outcome(SOURCE, "http_401"),
+        call.record_backlog(SOURCE, 3),
+    ]
+    assert "enrichment unavailable: http_401 (backlog 3)" in caplog.text
+    assert _synced(stores) == set()  # sync never ran
+
+
+@pytest.mark.integration
+def test_a_deferred_enrichment_goes_on_to_sync(
+    stores, fetcher, enricher, enrich_metrics, caplog, monkeypatch
+):
+    # One at a time, so the first document is persisted before the model goes away.
+    monkeypatch.setattr(settings, "enrich_concurrency", 1)
+    enricher.enrich_reporting.side_effect = [
+        (Enrichment(one_line="a rota note", abstract="invented", category=Category.personal),
+         False),
+        EnrichUnavailableError("down", "http_429_budget"),
+    ]
+    source = ImapSource(
+        name="test", enrich=True, pipeline=PipelineOptions(defer_when_model_unavailable=True)
+    )
+
+    with caplog.at_level("WARNING"):
+        counts = run(source, fetcher=fetcher, enricher=enricher, enrich_metrics=enrich_metrics)
+
+    assert list(counts) == ["ingest", "enrich", "sync"]
+    assert (counts["enrich"]["enriched"], counts["enrich"]["deferred"]) == (1, 1)
+    enrich_metrics.record_outcome.assert_called_once_with(SOURCE, "http_429_budget")
+    enrich_metrics.record_backlog.assert_called_once_with(SOURCE, 2)
+    # Sync projected what was enriched before the model went away.
+    assert (counts["sync"]["synced"], counts["sync"]["embedded"]) == (1, 1)
+    assert len(_synced(stores)) == 1
+    assert "enrichment deferred: http_429_budget (backlog 2)" in caplog.text
+
+
+@pytest.mark.integration
+def test_deferring_does_not_hide_any_other_enrich_failure(
+    stores, fetcher, enricher, enrich_metrics
+):
+    enricher.enrich_reporting.side_effect = RuntimeError("a bug, not an outage")
+
+    with pytest.raises(StageFailedError) as failed:
+        run(SOURCE, options=Options(defer_when_model_unavailable=True), fetcher=fetcher,
+            enricher=enricher, enrich_metrics=enrich_metrics)
+
+    assert failed.value.stage == "enrich"
+    assert isinstance(failed.value.__cause__, RuntimeError)
+    assert _synced(stores) == set()
+    enrich_metrics.record_outcome.assert_not_called()

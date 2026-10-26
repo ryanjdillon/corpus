@@ -1,9 +1,15 @@
 from datetime import UTC, datetime
+from unittest.mock import Mock, create_autospec
 
 import pytest
 
+from corpus.enrich_batch import run_enrich
 from corpus.enrich_store import EnrichStore
+from corpus.enricher import Enricher
+from corpus.enrichment import RECOVERED_SCHEMA_VERSION, SCHEMA_VERSION, Category, Enrichment
 from corpus.models import Classification, Record
+from corpus.secret_audit import audit_secrets
+from corpus.sources import ImapSource, Registry
 from corpus.store import DocumentStore, get_cursor, set_cursor, to_document
 
 pytestmark = pytest.mark.integration
@@ -177,3 +183,63 @@ def test_iter_enriched_closed_early_releases_its_cursor(documents):
 
     # The server-side cursor and its transaction are gone: the connection reads again.
     assert len(list(documents.iter_enriched())) == 2
+
+
+def test_enrich_backlog_of_a_missing_table_is_nothing(documents):
+    assert documents.enrich_backlog("imap:test", "local") == 0
+
+
+def test_enrich_backlog_counts_every_document_before_any_enrichment(documents):
+    # The enrichments table does not exist until an EnrichStore first opens.
+    documents.write([_doc("1"), _doc("2"), _doc("3", source="gmail:other")])
+
+    assert documents.enrich_backlog("imap:test", "local") == 2
+
+
+def test_enrich_backlog_is_what_a_scheduled_enrichment_would_send(documents):
+    documents.write([_doc(uid) for uid in "abcdef"] + [_doc("g", source="gmail:other")])
+    with EnrichStore() as enrichments:
+        enrichments.save_enrichment("imap:test::a", {"one_line": "a"}, "local", "sv1")
+        # An older schema still counts as done: the pipeline does not upgrade stale.
+        enrichments.save_enrichment("imap:test::b", {"one_line": "b"}, "older", "sv0")
+        enrichments.save_rejection("imap:test::c", "400: too long", "local")
+        # Rejected by another model, or for a rate limit: still to do.
+        enrichments.save_rejection("imap:test::d", "400: too long", "other")
+        enrichments.save_rejection("imap:test::e", "429: slow down", "local")
+        # Only audited: no enrichment yet.
+        enrichments.save_audit("imap:test::f", ["token"], {"verdict": "none"}, "local", "s1")
+
+        assert documents.enrich_backlog("imap:test", "local") == 3  # d, e and f
+        assert documents.enrich_backlog("imap:test", "other") == 3  # c, e and f
+        assert documents.enrich_backlog("gmail:other", "local") == 1
+
+
+def test_enrich_backlog_is_exactly_what_run_enrich_then_sends(documents):
+    # Every kind of row the selection weighs, against the selection itself.
+    documents.write([_doc(uid) for uid in "abcdefgh"] + [_doc("z", source="gmail:other")])
+    enricher = create_autospec(Enricher, instance=True)
+    enricher.model = "local"  # an __init__ attribute, so set explicitly on the spec mock
+    enricher.enrich_reporting.return_value = (
+        Enrichment(one_line="x", abstract="y", category=Category.personal), False
+    )
+    with EnrichStore() as enrichments:
+        enrichments.save_enrichment("imap:test::a", {"one_line": "a"}, "local", SCHEMA_VERSION)
+        enrichments.save_enrichment("imap:test::b", {"one_line": "b"}, "older", "sv0")
+        enrichments.save_enrichment(
+            "imap:test::c", {"one_line": "c"}, "local", RECOVERED_SCHEMA_VERSION
+        )
+        enrichments.save_rejection("imap:test::d", "400: too long", "local")
+        enrichments.save_rejection("imap:test::e", "429: slow down", "local")
+        enrichments.save_rejection("imap:test::f", "400: too long", "other")
+        enrichments.save_audit("imap:test::g", ["token"], {"verdict": "none"}, "local", "s1")
+        backlog = documents.enrich_backlog("imap:test", "local")
+
+        # As the pipeline calls it: the source, no limit and no opt-in reselection.
+        run_enrich(
+            enrichments, documents=documents, source="imap:test", enricher=enricher,
+            audit=create_autospec(audit_secrets), concurrency=1,
+            sources=Registry([ImapSource(name="test", enrich=True)]), on_scanner=Mock(),
+        )
+
+        assert enricher.enrich_reporting.call_count == backlog == 4  # e, f, g and h
+        assert documents.enrich_backlog("imap:test", "local") == 0
