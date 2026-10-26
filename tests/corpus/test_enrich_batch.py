@@ -415,6 +415,21 @@ def test_an_unavailable_endpoint_aborts_without_recording_rejections(
     store.save_rejection.assert_not_called()
 
 
+def test_an_unavailable_endpoint_carries_what_the_batch_had_done(store, enricher, documents):
+    # A pipeline that defers the stage reports these rather than nothing.
+    enricher.enrich_reporting.side_effect = [
+        (Enrichment(one_line="x", abstract="y", category=Category.personal), False),
+        EnrichUnavailableError("down", "http_503"),
+    ]
+    docs = [("d0", "are we on for lunch?", MAIL), ("d1", "and dinner?", MAIL)]
+
+    with pytest.raises(EnrichUnavailableError) as excinfo:
+        run_enrich(store, documents=documents(*docs), enricher=enricher, concurrency=1)
+
+    assert (excinfo.value.counts["scanned"], excinfo.value.counts["enriched"]) == (2, 1)
+    assert excinfo.value.reason == "http_503"
+
+
 def test_concurrency_one_enriches_all(store, enricher, audit, documents, key_doc, clean_doc):
     # concurrency=1 chunks one at a time; every document is still enriched
     r = run_enrich(

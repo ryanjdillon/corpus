@@ -35,7 +35,7 @@ from corpus_detect.leaks import Scanner
 
 from . import scan, telemetry
 from .config import settings
-from .enricher import Enricher, EnrichError
+from .enricher import Enricher, EnrichError, EnrichUnavailableError
 from .enrichment import (
     FREE_TEXT_FIELDS,
     RECOVERED_MARKER,
@@ -111,7 +111,8 @@ and ``documents`` an open DocumentStore, whose lifecycles the caller owns.
     Enrichment/audit LLM calls run ``concurrency`` at a time (the local server
     batches them); the store writes stay single-threaded on the caller's one
     connection. A per-record ``EnrichError`` (a bad message) is skipped so it can't
-    abort a long backfill; an ``EnrichUnavailableError`` still propagates.
+    abort a long backfill; an ``EnrichUnavailableError`` still propagates, carrying
+    the counts so far as its ``counts``.
 
     ``sources`` decides which documents may be enriched; ``None`` uses the
     process's (:func:`corpus.sources.registry`). Of the documents it refuses,
@@ -242,6 +243,11 @@ and ``documents`` an open DocumentStore, whose lifecycles the caller owns.
                 for fut in done:
                     persist(fut.result())
                 inflight.update(pool.submit(work, item) for item in islice(items, len(done)))
+    except EnrichUnavailableError as exc:
+        # What was persisted before the endpoint went away stays; a caller that
+        # defers rather than fails reports it.
+        exc.counts = dict(counts)
+        raise
     finally:
         if own:
             enricher.close()

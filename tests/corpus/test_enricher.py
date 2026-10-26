@@ -19,6 +19,7 @@ from corpus.enricher import (
     EnrichError,
     EnrichUnavailableError,
     cap_input,
+    deferrable,
 )
 from corpus.enrichment import (
     MAX_ITEMS,
@@ -133,9 +134,10 @@ def test_server_error_retries_then_raises_unavailable(client, monkeypatch):
     monkeypatch.setattr(enricher_mod.time, "sleep", lambda *_: None)
     client.post.return_value = _response(503, text="overloaded")
 
-    with pytest.raises(EnrichUnavailableError):
+    with pytest.raises(EnrichUnavailableError) as excinfo:
         Enricher(model="local", client=client).enrich("x")
     assert client.post.call_count == 3  # enrich_retries attempts
+    assert excinfo.value.reason == "http_503"
 
 
 def test_rate_limit_retries_then_raises_unavailable_not_a_rejection(client, monkeypatch):
@@ -145,9 +147,10 @@ def test_rate_limit_retries_then_raises_unavailable_not_a_rejection(client, monk
     monkeypatch.setattr(enricher_mod.time, "sleep", lambda *_: None)
     client.post.return_value = _response(429, text="budget exhausted")
 
-    with pytest.raises(EnrichUnavailableError):
+    with pytest.raises(EnrichUnavailableError) as excinfo:
         Enricher(model="local", client=client).enrich("x")
     assert client.post.call_count == 3
+    assert excinfo.value.reason == "http_429"
 
 
 def test_rate_limit_recovers_within_the_retry_budget(client, monkeypatch):
@@ -217,9 +220,10 @@ def test_a_spent_budget_is_unavailable_at_once(client, monkeypatch, headers):
     monkeypatch.setattr(enricher_mod.time, "sleep", lambda *_: pytest.fail("must not wait"))
     client.post.return_value = _response(429, text="budget exhausted", headers=headers)
 
-    with pytest.raises(EnrichUnavailableError):
+    with pytest.raises(EnrichUnavailableError) as excinfo:
         Enricher(model="local", client=client).enrich("x")
     assert client.post.call_count == 1
+    assert excinfo.value.reason == "http_429_budget"
 
 
 @pytest.mark.parametrize("status", [408, 425])
@@ -237,9 +241,10 @@ def test_key_or_route_errors_are_unavailable_not_rejections(client, status):
     # Every document would fail the same way; rejecting each one would bury them.
     client.post.return_value = _response(status, text="no")
 
-    with pytest.raises(EnrichUnavailableError):
+    with pytest.raises(EnrichUnavailableError) as excinfo:
         Enricher(model="local", client=client).enrich("x")
     assert client.post.call_count == 1
+    assert excinfo.value.reason == f"http_{status}"
 
 
 def test_server_error_recovers_within_the_retry_budget(client, monkeypatch):
@@ -318,6 +323,58 @@ def test_a_dropped_connection_is_described_by_kind(client, monkeypatch, caplog):
 
     assert "ReadTimeout in " in caplog.text
     assert "ReadTimeout" in str(excinfo.value)
+    assert excinfo.value.reason == "timeout"
+
+
+@pytest.mark.parametrize(
+    ("exc", "reason"),
+    [
+        (httpx.ConnectError("refused"), "connect"),
+        (httpx.ConnectTimeout("timed out"), "timeout"),
+        (httpx.RemoteProtocolError("server disconnected"), "transport"),
+    ],
+    ids=["connect", "connect-timeout", "other"],
+)
+def test_a_transport_failure_is_unavailable_with_its_kind(client, monkeypatch, exc, reason):
+    # The reason is a metric attribute: bounded, never the message or the URL.
+    monkeypatch.setattr(enricher_mod.settings, "enrich_retries", 1)
+    client.post.side_effect = exc
+
+    with pytest.raises(EnrichUnavailableError) as excinfo:
+        Enricher(model="local", client=client).enrich("x")
+
+    assert excinfo.value.reason == reason
+    assert excinfo.value.counts == {}  # raised outside a batch
+
+
+def test_an_unavailable_error_raised_without_a_reason_is_unknown():
+    assert EnrichUnavailableError("down").reason == "unknown"
+
+
+@pytest.mark.parametrize(
+    ("reason", "outage"),
+    [
+        ("http_500", True),
+        ("http_503", True),
+        ("http_599", True),
+        ("http_408", True),
+        ("http_425", True),
+        ("http_429", True),
+        ("http_429_budget", True),
+        ("timeout", True),
+        ("connect", True),
+        ("transport", True),
+        # A bad key or route never heals by waiting; an unknown cause is not known to.
+        ("http_401", False),
+        ("http_403", False),
+        ("http_404", False),
+        ("unknown", False),
+        ("http_5", False),
+        ("http_5000", False),
+    ],
+)
+def test_only_an_outage_is_deferrable(reason, outage):
+    assert deferrable(reason) is outage
 
 
 def test_unparseable_output_is_enrich_error(client):

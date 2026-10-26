@@ -39,6 +39,15 @@ ALTER TABLE {table} ADD COLUMN IF NOT EXISTS rejected_model text;
 ALTER TABLE {table} ADD COLUMN IF NOT EXISTS rejected_at timestamptz;
 """
 
+#: The rows recording that the model bound to ``%s`` rejected the document.
+#: A 429 is a rate limit, not a rejection, and is no longer recorded as one;
+#: rows recorded for it before that do not count, so those documents are
+#: enriched again. Shared with ``DocumentStore.enrich_backlog`` so the backlog
+#: counts exactly what a run passes over.
+REJECTED_BY_MODEL = (
+    "rejected_model = %s AND (rejected_reason IS NULL OR rejected_reason NOT LIKE '429:%%')"
+)
+
 
 class EnrichStore(Store):
     """The derived enrichments table on the sensitive DB (lazy DDL, upserts, resume)."""
@@ -117,15 +126,10 @@ class EnrichStore(Store):
     def rejected_ids(self, model: str) -> set[str]:
         """Return doc ids that *model* rejected, so a run on it can pass them over.
 
-        A 429 is a rate limit, not a rejection, and is no longer recorded as one;
-        rows recorded for it before that are ignored, so those documents are
-        enriched again.
+        A 429 is a rate limit, not a rejection (:data:`REJECTED_BY_MODEL`).
         """
         rows = self._read(
-            f"SELECT doc_id FROM {self._table} "
-            "WHERE rejected_model = %s "
-            "AND (rejected_reason IS NULL OR rejected_reason NOT LIKE '429:%%')",
-            (model,),
+            f"SELECT doc_id FROM {self._table} WHERE {REJECTED_BY_MODEL}", (model,)
         )
         return {row[0] for row in rows}
 
