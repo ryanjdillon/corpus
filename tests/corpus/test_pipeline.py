@@ -11,6 +11,7 @@ import re
 from datetime import UTC, datetime
 from unittest.mock import call, create_autospec
 
+import psycopg
 import pytest
 
 from corpus import sources, tiers
@@ -89,6 +90,17 @@ def stores(pg, fake_embeddings, default_tiers, monkeypatch) -> str:
     """The test database as both the source and the sanitized tier's store."""
     monkeypatch.setenv("CORPUS_SANITIZED_DATABASE_URL", pg)
     return pg
+
+
+def _first_ingested(dsn: str, *uids: str) -> datetime:
+    """The earliest ``ingested_at`` among the documents of *uids*."""
+    with psycopg.connect(dsn) as conn:
+        row = conn.execute(
+            "SELECT min(ingested_at) FROM corpus.documents WHERE id = ANY(%s)",
+            ([f"{SOURCE}::{uid}" for uid in uids],),
+        ).fetchone()
+    assert row is not None and row[0] is not None
+    return row[0]
 
 
 def _synced(dsn: str) -> set[str]:
@@ -340,8 +352,11 @@ def test_the_enrich_stage_records_its_success_and_what_the_next_run_would_send(
     run(SOURCE, options=Options(limit=2), fetcher=fetcher, enricher=enricher,
         enrich_metrics=enrich_metrics)
 
-    enrich_metrics.record_outcome.assert_called_once_with(SOURCE, None)
-    enrich_metrics.record_backlog.assert_called_once_with(SOURCE, 1)
+    # Newest first, so the one left is the oldest mail.
+    assert enrich_metrics.mock_calls == [
+        call.record_outcome(SOURCE, None),
+        call.record_backlog(SOURCE, 1, _first_ingested(stores, "0")),
+    ]
     enricher.enrich_reporting.reset_mock()
     enrich_metrics.reset_mock()
 
@@ -349,8 +364,10 @@ def test_the_enrich_stage_records_its_success_and_what_the_next_run_would_send(
 
     # The backlog was exactly what this run sent.
     assert enricher.enrich_reporting.call_count == counts["enrich"]["enriched"] == 1
-    enrich_metrics.record_outcome.assert_called_once_with(SOURCE, None)
-    enrich_metrics.record_backlog.assert_called_once_with(SOURCE, 0)
+    assert enrich_metrics.mock_calls == [
+        call.record_outcome(SOURCE, None),
+        call.record_backlog(SOURCE, 0, None),
+    ]
 
 
 @pytest.mark.integration
@@ -367,7 +384,7 @@ def test_an_unavailable_model_is_recorded_before_the_run_fails(
     # backlog query still leaves the reason recorded.
     assert enrich_metrics.mock_calls == [
         call.record_outcome(SOURCE, "http_503"),
-        call.record_backlog(SOURCE, 3),
+        call.record_backlog(SOURCE, 3, _first_ingested(stores, "0", "1", "2")),
     ]
     assert "enrichment unavailable: http_503 (backlog 3)" in caplog.text
 
@@ -387,7 +404,7 @@ def test_a_bad_key_fails_the_run_even_when_it_defers(
     assert isinstance(failed.value.__cause__, EnrichUnavailableError)
     assert enrich_metrics.mock_calls == [
         call.record_outcome(SOURCE, "http_401"),
-        call.record_backlog(SOURCE, 3),
+        call.record_backlog(SOURCE, 3, _first_ingested(stores, "0", "1", "2")),
     ]
     assert "enrichment unavailable: http_401 (backlog 3)" in caplog.text
     assert _synced(stores) == set()  # sync never ran
@@ -413,8 +430,10 @@ def test_a_deferred_enrichment_goes_on_to_sync(
 
     assert list(counts) == ["ingest", "enrich", "sync"]
     assert (counts["enrich"]["enriched"], counts["enrich"]["deferred"]) == (1, 1)
-    enrich_metrics.record_outcome.assert_called_once_with(SOURCE, "http_429_budget")
-    enrich_metrics.record_backlog.assert_called_once_with(SOURCE, 2)
+    assert enrich_metrics.mock_calls == [
+        call.record_outcome(SOURCE, "http_429_budget"),
+        call.record_backlog(SOURCE, 2, _first_ingested(stores, "0", "1")),
+    ]
     # Sync projected what was enriched before the model went away.
     assert (counts["sync"]["synced"], counts["sync"]["embedded"]) == (1, 1)
     assert len(_synced(stores)) == 1

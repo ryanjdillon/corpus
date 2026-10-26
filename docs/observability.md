@@ -162,6 +162,7 @@ source id: unlike a sync's tier, the backlog belongs to one source.
 | Metric (OTel) | Prometheus | Unit | Reads |
 |---|---|---|---|
 | `corpus.enrich.backlog` | `corpus_enrich_backlog` | `{document}` | the source's documents the next run would send to the model |
+| `corpus.enrich.backlog_oldest` | `corpus_enrich_backlog_oldest_seconds` | `s` | unix time the oldest of them was first ingested; the run's own time when there are none; unset when not known |
 | `corpus.enrich.last_success` | `corpus_enrich_last_success_seconds` | `s` | unix time the stage last finished without the model being unavailable |
 | `corpus.enrich.unavailable` | `corpus_enrich_unavailable` | `{run}` | 1 if the stage stopped because the model was unavailable, else 0; also by `reason` |
 
@@ -171,12 +172,24 @@ The `{document}` and `{run}` units add no suffix; `s` adds `_seconds`.
 
 - **`backlog`** is read after the stage, however it ended: finished, capped by
   `--limit`, or stopped by an unavailable model. It is
-  `DocumentStore.enrich_backlog`, one `count(*)` that makes the selection the
+  `DocumentStore.enrich_backlog`, one aggregate that makes the selection the
   stage makes: the source's documents with no enrichment under **any** schema
   version and no rejection by the run's model (a rejection recorded for a 429
   does not count). The pipeline does not upgrade stale records, so a
   `SCHEMA_VERSION` change does not grow it; `corpus enrich --upgrade-stale`
   and `--retry-rejected` send documents it does not count.
+- **`backlog_oldest`** is read in the same query: the earliest `ingested_at`
+  (see [When a document arrived](database.md#when-a-document-arrived)) among
+  the documents `backlog` counts. When the backlog is empty it is the run's
+  own time, so the newest run holds the largest value and `max` across the
+  runs' series picks it, rather than an older run's oldest document. It is
+  recorded with `backlog`, every time `backlog` is, except when there is a
+  backlog whose oldest time is not known: the documents table has no
+  `ingested_at` yet (a migration that could not take its lock, or a role that
+  does not own the table; see
+  [When a document arrived](database.md#when-a-document-arrived)). Then the run
+  sets no `backlog_oldest` and logs it once at info, since the run's own time
+  would read as fresh and hide a backlog; `backlog` is still recorded.
 - **`last_success`** is set whenever the stage finishes without the model being
   unavailable, including a run that enriched nothing or stopped at its
   `--limit`. A failure for any other reason fails the run and records none of
@@ -189,10 +202,11 @@ The order differs by outcome, so that a failing backlog query never leaves a
 half-recorded run:
 
 - **Finished:** the stage reads the backlog **first**, then records
-  `unavailable` 0 and `last_success`, then `backlog`. If the backlog query
-  fails, the run fails and records none of the three.
+  `unavailable` 0 and `last_success`, then `backlog` and `backlog_oldest`. If
+  the backlog query fails, the run fails and records none of them.
 - **Unavailable:** the stage records `unavailable` 1 with its reason
-  **first**, which needs no database, then reads and records `backlog`. If the
+  **first**, which needs no database, then reads and records `backlog` and
+  `backlog_oldest`. If the
   backlog query fails, the reason is still recorded. It does both before it
   fails the run or [defers](pipeline.md#an-unavailable-model).
 
@@ -215,11 +229,21 @@ The `reason` slugs:
 The status is kept whole rather than collapsed into a class, so match a class
 with a regex in rules, `reason=~"http_5.."`, rather than listing statuses.
 
+Both timestamp alerts below age between runs even when all is well: just
+before the next scheduled run, `time()` minus the last run's time is the whole
+gap between runs, and an empty backlog's `backlog_oldest` is that run's own
+time, so the gap is the floor of either age. **Set each threshold above the
+longest gap between a source's scheduled runs**, with room for a run's own
+duration, or the alert fires on a healthy schedule. The examples use 18 hours,
+which suits a source run at least every twelve hours; derive yours from your
+own schedule.
+
 Alert on how long ago enrichment last succeeded:
 
 ```promql
-# A source has not finished an enrichment for twelve hours.
-time() - max by (source) (last_over_time(corpus_enrich_last_success_seconds[7d])) > 12*3600
+# A source has not finished an enrichment for 18 hours (above the longest gap
+# between its scheduled runs).
+time() - max by (source) (last_over_time(corpus_enrich_last_success_seconds[7d])) > 18*3600
 ```
 
 This works because `last_success` is a timestamp, not an age:
@@ -233,7 +257,36 @@ This works because `last_success` is a timestamp, not an age:
   nothing and the alert goes silent. Keep the CronJob's own stale or failed-job
   alerts as the dead-man's switch for a source that has stopped running at all.
 
-The other two give the alert its context, for example in its annotations:
+Alert on how long the oldest waiting document has waited, which catches a
+backlog that runs keep finishing but never drain, as when each is capped by
+`--limit` below the arrival rate:
+
+```promql
+# A source has had a document waiting for enrichment for 18 hours (above the
+# longest gap between its scheduled runs).
+time() - max by (source) (last_over_time(corpus_enrich_backlog_oldest_seconds[2d])) > 18*3600
+```
+
+It reads like the `last_success` alert: a timestamp, so it keeps ageing while
+no run reports, and `max` picks the newest run's value, since while nothing is
+put back the oldest waiting document only moves forward. Three caveats:
+
+- **A backlog of unknown age sets no value**, so while the table lacks
+  `ingested_at` the alert reads the last run that knew it, and goes silent
+  once that ages out of the window. Watch `backlog` for that case.
+
+- **Documents stored before the column existed** read as ingested when it was
+  added (see [When a document arrived](database.md#when-a-document-arrived)),
+  so until they are drained the age is "since the migration", a floor on
+  the true wait.
+- **Putting older documents back moves it backwards**, and `max` hides that
+  for up to the window: an earlier run's later value still wins until it ages
+  out. A `SCHEMA_VERSION` bump does not put any back, since the backlog counts
+  a record under any schema version as done. Switching the enrichment model
+  does: the old model's rejections no longer count, so documents it rejected
+  wait again from when they were first ingested.
+
+The others give the alerts their context, for example in their annotations:
 
 ```promql
 # What is waiting: the largest backlog a run reported in the last day. While

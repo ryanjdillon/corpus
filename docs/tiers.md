@@ -208,8 +208,8 @@ the file does not define.
 
 What a tier serves follows from its kind:
 
-- a **source tier** (no `projection`) serves the documents table with the
-  `corpus_*` presets, like `sensitive`, and reports telemetry as `corpus-mcp`;
+- a **source tier** (no `projection`) serves the documents table, read-only
+  (through its reader DSN if it has one), with the `corpus_*` presets, like `sensitive`, and reports telemetry as `corpus-mcp`;
 - a **projected tier** serves its `messages` table, read-only through its reader
   DSN, with the `index_*` presets, like `sanitized`, and reports telemetry as
   `corpus-index`.

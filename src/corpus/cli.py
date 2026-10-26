@@ -200,7 +200,7 @@ def sync(
         reembed_limit = settings.sync_reembed_limit
     try:
         with SanitizedStore(dst_dsn, dst.schema) as store, \
-                DocumentStore(src_dsn, src.schema) as documents:
+                DocumentStore(src_dsn, src.schema, read_only=True) as documents:
             r = run_sync(
                 store, documents=documents, source=source, limit=limit, force=reproject,
                 policy=dst.projection.policy, reembed_limit=reembed_limit,
@@ -334,7 +334,7 @@ def export(source: str | None, account: str | None, limit: int, force: bool) -> 
     from .store import DocumentStore
 
     try:
-        with DocumentStore() as documents:
+        with DocumentStore(read_only=True) as documents:
             r = export_archive(documents, source=source, account=account, limit=limit, force=force)
         click.echo(f"wrote {r['written']}, unchanged {r['unchanged']} of {r['scanned']} scanned")
     finally:
@@ -441,7 +441,7 @@ def scan(source: str | None, account: str | None, limit: int, json_out: str | No
     from .scan import scan_archive
     from .store import DocumentStore
 
-    with DocumentStore() as documents:
+    with DocumentStore(read_only=True) as documents:
         report = scan_archive(documents, source=source, account=account, limit=limit)
     click.echo(f"scanned {report['scanned']}; {report['with_secrets']} contain secrets")
     for secret_type, count in sorted(report["totals"].items(), key=lambda kv: -kv[1]):

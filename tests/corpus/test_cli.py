@@ -241,6 +241,7 @@ def test_sync_command(
     src = tier(dst.projection.source)
     assert sanitized_store_cls.call_args.args == (SANITIZED_DSN, dst.schema)
     assert document_store_cls.call_args.args == (src.dsn, src.schema)
+    assert document_store_cls.call_args.kwargs == {"read_only": True}
     kwargs = run_sync.call_args.kwargs
     assert (kwargs["source"], kwargs["force"]) == (None, False)
     assert kwargs["policy"] == dst.projection.policy
@@ -402,6 +403,7 @@ def test_scan_command(runner, scan_archive, tmp_path, document_store_cls):
     assert "[us_ssn]  a@b.com  form" in result.output
     assert out.exists()
     assert '"us_ssn"' in out.read_text()
+    document_store_cls.assert_called_once_with(read_only=True)
 
 
 def test_ingest_without_a_batch_size_takes_the_sources(runner, configure, shutdown, ingest_fn):
@@ -493,6 +495,7 @@ def test_export_command(runner, configure, shutdown, export_archive, document_st
     assert "wrote 4, unchanged 1 of 5 scanned" in result.output
     assert configure.call_args.args == ("corpus-export",)
     assert export_archive.call_args.kwargs["limit"] == 5
+    document_store_cls.assert_called_once_with(read_only=True)
     shutdown.assert_called_once()
 
 
@@ -542,6 +545,7 @@ def test_sync_into_a_tier_defined_only_in_the_file(
     src = tier("sensitive")
     assert sanitized_store_cls.call_args.args == (PARTNER_DSN, "partner")
     assert document_store_cls.call_args.args == (src.dsn, src.schema)
+    assert document_store_cls.call_args.kwargs == {"read_only": True}
     policy = run_sync.call_args.kwargs["policy"]
     assert (policy.sensitivity_gate.value, policy.fields) == ("low", ("domain", "one_line"))
     assert (policy.gate_action, policy.redact.person_name) == ("stub", "initial")

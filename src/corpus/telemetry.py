@@ -21,6 +21,7 @@ import os
 import re
 import time
 from collections.abc import Callable, Mapping
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from opentelemetry import metrics
@@ -280,16 +281,27 @@ class EnrichMetrics:
 
     ``last_success`` is a timestamp rather than an age so that it keeps ageing
     while no run reports: a suspended schedule or an absent model leaves the
-    newest success where it was (docs/observability.md).
+    newest success where it was (docs/observability.md). ``backlog_oldest``
+    is a timestamp for the same reason: the age of the oldest waiting document
+    keeps growing between runs.
     """
 
     def __init__(self, meter: Meter, clock: Callable[[], float] = time.time) -> None:
         self._clock = clock
+        # Sources already logged as having a backlog of unknown age.
+        self._undated: set[str] = set()
         self.backlog = meter.create_gauge(
             "corpus.enrich.backlog",
             unit="{document}",
             description="Documents of the source the next enrichment would still send to "
             "the model.",
+        )
+        self.backlog_oldest = meter.create_gauge(
+            "corpus.enrich.backlog_oldest",
+            unit="s",
+            description="Unix time the oldest document in the source's enrichment backlog "
+            "was first ingested; the run's own time when the backlog is empty; unset when "
+            "that is not known.",
         )
         self.last_success = meter.create_gauge(
             "corpus.enrich.last_success",
@@ -312,9 +324,24 @@ class EnrichMetrics:
         if unavailable is None:
             self.last_success.set(self._clock(), {"source": source})
 
-    def record_backlog(self, source: str, documents: int) -> None:
-        """Record *documents* left to enrich for *source*."""
-        self.backlog.set(documents, {"source": source})
+    def record_backlog(self, source: str, documents: int, oldest: datetime | None) -> None:
+        """Record *documents* left to enrich for *source*, the *oldest* first ingested when.
+
+        An empty backlog reads as now: nothing has waited, and as the newest
+        run's timestamp it is the one ``max`` picks across the runs' series, so
+        an earlier run's oldest does not linger. A backlog whose *oldest* is
+        not known (the table has no ``ingested_at`` yet) sets no
+        ``backlog_oldest``: the run's time would read as fresh and hide it.
+        """
+        attrs = {"source": source}
+        self.backlog.set(documents, attrs)
+        if documents == 0:
+            self.backlog_oldest.set(self._clock(), attrs)
+        elif oldest is not None:
+            self.backlog_oldest.set(oldest.timestamp(), attrs)
+        elif source not in self._undated:
+            self._undated.add(source)
+            log.info("enrich backlog of %s: %d documents, oldest unknown", source, documents)
 
 
 #: The enrich instruments on the process's meter provider.

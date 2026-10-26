@@ -7,7 +7,7 @@ version, timestamp) so either can be regenerated -- a better model, tightened
 rules -- without touching the other. Values are never stored: the audit holds the
 LLM's verdict (types, severity, worded notes), never the secret itself.
 
-The table is created lazily (the DB role owns the schema), so no out-of-band
+The table is created lazily (the DB role may create tables in the schema), so no out-of-band
 migration is needed for it to appear.
 """
 

@@ -175,25 +175,25 @@ def _enrich(ctx: Context) -> Counts:
             # The outcome first: it needs no database.
             metrics.record_outcome(source, exc.reason)
             backlog = documents.enrich_backlog(source, model)
-            metrics.record_backlog(source, backlog)
+            metrics.record_backlog(source, backlog.count, backlog.oldest)
             done = exc.counts or "none"
             # Only an outage is deferred: a bad key or route fails every later
             # run too, so it must fail this one however the source is set.
             if not (ctx.options.defer_when_model_unavailable and deferrable(exc.reason)):
                 log.warning(
                     "pipeline %s: enrichment unavailable: %s (backlog %d); done: %s",
-                    source, exc.reason, backlog, done,
+                    source, exc.reason, backlog.count, done,
                 )
                 raise
             log.warning(
                 "pipeline %s: enrichment deferred: %s (backlog %d); done: %s",
-                source, exc.reason, backlog, done,
+                source, exc.reason, backlog.count, done,
             )
             return {**exc.counts, "deferred": 1}
         # The backlog first: if its query fails, the run records none of the three.
         backlog = documents.enrich_backlog(source, model)
         metrics.record_outcome(source, None)
-        metrics.record_backlog(source, backlog)
+        metrics.record_backlog(source, backlog.count, backlog.oldest)
         return counts
 
 
@@ -213,7 +213,7 @@ def _sync(ctx: Context) -> Counts:
     dst, src = projected(ctx.options.tier)
     assert dst.projection is not None  # projected() refuses a source tier
     with SanitizedStore(dst.store_dsn(), dst.schema) as store, \
-            DocumentStore(src.store_dsn(), src.schema) as documents:
+            DocumentStore(src.store_dsn(), src.schema, read_only=True) as documents:
         # The embedding phase takes the tier's embed-stale rows whatever their
         # source: a policy change makes every source's rows stale at once, and
         # the cap bounds the embedder's load per run either way.
