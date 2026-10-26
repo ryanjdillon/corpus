@@ -203,7 +203,18 @@ class EnrichUnavailableError(Exception):
     """Raise when the endpoint is unavailable (5xx / transport error) after all retries.
 
     A systemic failure; the caller should abort and resume later.
+
+    Attributes:
+        reason: Why, as a short slug from a bounded set (see :func:`unavailable_reason`),
+            safe as a metric attribute; the message keeps the full detail.
+        counts: What the batch had done when it stopped, set by
+            ``enrich_batch.run_enrich``; empty when raised outside a batch.
     """
+
+    def __init__(self, detail: str, reason: str = "unknown") -> None:
+        super().__init__(detail)
+        self.reason = reason
+        self.counts: dict[str, int] = {}
 
 
 # Response headers that say which layer answered. ``server`` names the process;
@@ -328,6 +339,40 @@ _RETRYABLE_CLIENT_STATUS = frozenset({408, 425, 429})
 _UNAVAILABLE_CLIENT_STATUS = frozenset({401, 403, 404})
 
 
+def unavailable_reason(exc: Exception, *, budget_spent: bool = False) -> str:
+    """The slug :class:`EnrichUnavailableError` carries for the failure *exc*.
+
+    Bounded, unlike the detail: ``http_<status>`` for a status that reaches here
+    (401, 403, 404, 408, 425, 429 or a 5xx), ``http_429_budget`` for a spent
+    budget, ``timeout`` or ``connect`` for a transport failure of that kind, and
+    ``transport`` for any other.
+    """
+    if isinstance(exc, httpx.HTTPStatusError):
+        return "http_429_budget" if budget_spent else f"http_{exc.response.status_code}"
+    if isinstance(exc, httpx.TimeoutException):
+        return "timeout"
+    if isinstance(exc, httpx.ConnectError):
+        return "connect"
+    return "transport"
+
+
+#: The reasons that mean an outage rather than a misconfiguration, besides a 5xx.
+_OUTAGE_REASONS = frozenset(
+    {"http_408", "http_425", "http_429", "http_429_budget", "timeout", "connect", "transport"}
+)
+
+
+def deferrable(reason: str) -> bool:
+    """Whether the :func:`unavailable_reason` *reason* is an outage a later run may outlast.
+
+    A 5xx, a timeout, a rate limit or a spent budget, a refused or dropped
+    connection: waiting can heal these. A 401, 403 or 404 is a bad key or a
+    wrong route, which no amount of waiting heals, and ``unknown`` says nothing
+    about the cause; deferring those would hide a run that can never succeed.
+    """
+    return reason in _OUTAGE_REASONS or re.fullmatch(r"http_5\d\d", reason) is not None
+
+
 def _retry_after(exc: Exception | None) -> float | None:
     """Seconds a numeric ``Retry-After`` (or ``x-ratelimit-reset``) asks for, else None."""
     if not isinstance(exc, httpx.HTTPStatusError):
@@ -394,11 +439,11 @@ def chat_completion(client: httpx.Client, payload: dict) -> str:
             return resp.json()["choices"][0]["message"]["content"] or ""
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
-            if status in _UNAVAILABLE_CLIENT_STATUS or (
-                status == 429 and _budget_spent(exc, max_wait)
-            ):
+            budget_spent = status == 429 and _budget_spent(exc, max_wait)
+            if status in _UNAVAILABLE_CLIENT_STATUS or budget_spent:
                 detail = _describe(exc, time.monotonic() - started)
-                raise EnrichUnavailableError(detail) from exc
+                reason = unavailable_reason(exc, budget_spent=budget_spent)
+                raise EnrichUnavailableError(detail, reason) from exc
             if status < 500 and status not in _RETRYABLE_CLIENT_STATUS:
                 raise EnrichError(f"{status}: {exc.response.text[:200]}") from exc
             last = exc
@@ -425,7 +470,9 @@ def chat_completion(client: httpx.Client, payload: dict) -> str:
             )
             time.sleep(wait)
     assert last is not None
-    raise EnrichUnavailableError(f"after {attempts} attempts: {detail}") from last
+    raise EnrichUnavailableError(
+        f"after {attempts} attempts: {detail}", unavailable_reason(last)
+    ) from last
 
 
 class Enricher:
