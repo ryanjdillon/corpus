@@ -1,4 +1,3 @@
-import 'agents.just'
 
 # corpus dev tasks. Enter the dev shell first: `nix develop`.
 
