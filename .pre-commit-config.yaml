@@ -1,0 +1,8 @@
+# Run with prek (pre-commit reads the same file): `prek install` one time
+# in each clone. CI runs the same check. See
+# https://github.com/ryanjdillon/agents/blob/main/docs/ci-and-checks.md
+repos:
+  - repo: https://github.com/ryanjdillon/workflows
+    rev: eb0eae46c65049d246c8c84471206619c38f0115 # main
+    hooks:
+      - id: check-instructions
