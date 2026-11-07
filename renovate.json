@@ -1,4 +1,11 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["github>ryanjdillon/workflows//renovate/default#v1"]
+  "extends": ["github>ryanjdillon/workflows//renovate/default#v1"],
+  "packageRules": [
+    {
+      "description": "The Helm chart takes the corpus image tag from its appVersion. Do not pin or update the image in values.yaml.",
+      "matchPackageNames": ["ghcr.io/ryanjdillon/corpus"],
+      "enabled": false
+    }
+  ]
 }
