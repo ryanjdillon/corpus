@@ -66,8 +66,8 @@ to take upstream updates, and commit the result. Pushing a `v*` tag builds and
 publishes `ghcr.io/<owner>/corpus` (see `.github/workflows/docker.yml`).
 
 The base images (`python:3.12-slim`, `debian:12-slim`) are pinned by digest
-next to their tag, so a rebuild gets the same layers; Dependabot's `docker`
-ecosystem proposes digest bumps.
+next to their tag, so a rebuild gets the same layers; Renovate proposes
+digest bumps.
 
 ### The Betterleaks pin
 

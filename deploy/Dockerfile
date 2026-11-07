@@ -1,6 +1,6 @@
 # Base images are pinned by digest, so a rebuild of a
 # release gets the same layers; the tag stays in the reference for readers and
-# Dependabot (docker ecosystem), which proposes the bumps.
+# Renovate, which proposes the bumps.
 FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1 AS build
 WORKDIR /src
 RUN pip install --no-cache-dir hatchling build
