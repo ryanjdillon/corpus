@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: ryanjdillon/workflows/check-instructions@eb0eae46c65049d246c8c84471206619c38f0115 # main
+      - uses: ryanjdillon/workflows/check-instructions@f7aa26b3ffb54bb032d2710a44296ec3b82a3f7e # v1.0.0
       - uses: astral-sh/ruff-action@4919ec5cf1f49eff0871dbcea0da843445b837e6 # v3.6.1
         # Pin to the same ruff as pyproject's dev extra so `just check` locally
         # matches CI exactly.
