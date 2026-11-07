@@ -18,7 +18,7 @@ commonLabels: {}
 image:
   repository: ghcr.io/ryanjdillon/corpus
   # Default: "v" + the chart's appVersion.
-  tag: ""
+  tag: "@sha256:02decb9589cec1309becfd4b8f32c9b0282204f226ef79b09d243b5ee2de6ec6"
   # Unset leaves the cluster default.
   pullPolicy: ""
 imagePullSecrets: []
