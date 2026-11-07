@@ -3,6 +3,6 @@
 # https://github.com/ryanjdillon/agents/blob/main/docs/ci-and-checks.md
 repos:
   - repo: https://github.com/ryanjdillon/workflows
-    rev: eb0eae46c65049d246c8c84471206619c38f0115 # main
+    rev: f7aa26b3ffb54bb032d2710a44296ec3b82a3f7e # frozen: v1.0.0
     hooks:
       - id: check-instructions
