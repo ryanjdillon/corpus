@@ -18,7 +18,7 @@ jobs:
         # Pin to the same ruff as pyproject's dev extra so `just check` locally
         # matches CI exactly.
         with:
-          version: "0.16.4"
+          version: "0.17.4"
 
   # Stdlib-only and diff-scoped, so it needs neither setup-python nor an install
   # step; it adds a couple of seconds to a ~2 minute run.
