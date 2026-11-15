@@ -1,7 +1,7 @@
 # Base images are pinned by digest, so a rebuild of a
 # release gets the same layers; the tag stays in the reference for readers and
 # Renovate, which proposes the bumps.
-FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1 AS build
+FROM python:3.15-slim@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928 AS build
 WORKDIR /src
 RUN pip install --no-cache-dir hatchling build
 COPY pyproject.toml README.md ./
@@ -31,7 +31,7 @@ RUN apt-get update \
  && install -m 0755 /tmp/betterleaks /usr/local/bin/betterleaks \
  && /usr/local/bin/betterleaks version
 
-FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
+FROM python:3.15-slim@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928
 ENV PYTHONUNBUFFERED=1
 # Enable the external credential scanner. corpus_detect.leaks falls back to its local
 # regexes if the binary is ever absent or fails; the enrich audit counts which ran
