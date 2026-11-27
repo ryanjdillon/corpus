@@ -8,6 +8,12 @@ on:
 permissions:
   contents: read
 
+# A new push to a PR cancels the PR's older run. A push to main gets its own
+# group (the commit), so a main run is never cancelled or queued.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   lint:
     runs-on: ubuntu-latest
